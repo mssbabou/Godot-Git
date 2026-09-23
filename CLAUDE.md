@@ -2,6 +2,8 @@
 
 Guidance for Claude (and humans) working on **godot-git**: a Git panel for the Godot 4.7 editor, written as a C++ GDExtension on top of [godot-cpp](https://github.com/godotengine/godot-cpp) and [libgit2](https://libgit2.org/).
 
+Repository: https://github.com/mssbabou/Godot-Git (public, default branch `master`).
+
 The first half is reference (what, where, how to build and test, conventions). The second half is the hard-won stuff: engine and library gotchas, design decisions with their reasons, known gaps, and where I'd take it next.
 
 ---
@@ -182,7 +184,7 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 ## Known gaps and risks
 
 Unproven or untested:
-- **CI has never run.** Linux, macOS and Windows ARM builds have never been compiled. Expect fixes in `tools/libgit2.py`, e.g. link libraries or macOS deployment target mismatches, on the first run.
+- **CI has never run** (the first push went to `master` while the workflow still listened on `main`). Linux, macOS and Windows ARM builds have never been compiled. Expect fixes in `tools/libgit2.py`, e.g. link libraries or macOS deployment target mismatches, on the first run.
 - **Push over HTTPS/SSH to a real server** is untested. HTTPS *fetch* from GitHub works. The credential-helper path has only been reasoned about, not exercised against a login.
 - **Light editor theme** was never looked at. Everything uses theme colors, so it should be fine.
 - **RTL layouts**: `_draw_file_row` assumes left-to-right.
@@ -209,7 +211,7 @@ Behavior worth knowing:
 
 ## Where I'd take it next
 
-1. **Push the repo and fix CI.** Everything else is guesswork until all five platforms build. Then ship a `v0.1.0` release and try it on at least one Mac and one Linux machine.
+1. **Get CI green.** The repo is pushed; CI triggers on pushes to `master` (it originally said `main`, so the first push didn't run it). Everything else is guesswork until all five platforms build. Then ship a `v0.1.0` release and try it on at least one Mac and one Linux machine.
 2. **Diff view.** It makes the panel useful for *reviewing* changes, not just staging them. Keep it native: a bottom-panel `EditorDock` with a unified/split toggle, reusing editor code fonts and success/error colors.
 3. **Move the scratch test scripts into `tests/`** (backend GDScript suite + UI driver) and run them in CI. The backend suite is quick and has caught real bugs (a staged-count bug, the pull/autostash issues).
 4. **Conflict handling**, minimal and honest (see above). This is the feature that makes Pull feel safe instead of just refusing.

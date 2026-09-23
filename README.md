@@ -67,7 +67,7 @@ Dev loop: edit C++ → run `scons` → click back into the editor. Hot reload is
 
 ## CI and releases
 
-`.github/workflows/build.yml` runs on every push to `main` and every pull request:
+`.github/workflows/build.yml` runs on every push to `master` and every pull request:
 
 1. Builds the plugin on Windows x86_64/arm64, Linux x86_64/arm64 and macOS (universal).
 2. Packages everything into one `godot_git` zip, downloadable from the workflow run's *Artifacts*.
@@ -82,7 +82,7 @@ repo.open("res://")            # also accepts absolute paths; searches parent fo
 repo.get_workdir()
 repo.get_current_branch()
 repo.get_branches()            # local branch names
-repo.get_remote_branches()     # ["origin/main", ...]
+repo.get_remote_branches()     # ["origin/master", ...]
 repo.get_remotes()
 repo.get_sync_status()         # { branch, upstream, ahead, behind, has_remotes }
 repo.get_status()              # [{ path, index, worktree }, ...]
