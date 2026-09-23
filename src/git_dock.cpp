@@ -364,6 +364,8 @@ void GitDock::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_EXIT_TREE: {
+			// Don't let a login window nobody finishes keep the editor from closing.
+			GitRepository::cancel_pending_login();
 			_finish_network_thread();
 		} break;
 	}

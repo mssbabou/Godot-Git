@@ -157,7 +157,9 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 11. **Editor APIs we rely on (all present in 4.7):** `EditorDock` (`set_default_slot`, `set_layout_key`, `set_icon_name`), `EditorPlugin::add_dock`, `FoldableContainer::add_title_bar_control`, `Tree::get_custom_drawing_canvas_item`, `EditorToaster::push_toast`.
 12. **Not available to extensions:** `TextFile`, `ScriptEditor::open_file`. There is no way to open `.md`/`.txt`/`.cpp` in Godot's script editor from a plugin, so those go to the external editor.
 13. **`include_tags` in `.gdextension`** (keeps an editor-only extension out of exports) exists only from **4.8**. On 4.7, users must exclude `addons/godot_git/*` in their export presets, or exports warn and the game logs one harmless error. The key is already in our `.gdextension`; 4.7 ignores it.
-14. `EditorInterface` singletons aren't ready in constructors. Do editor-dependent setup in `NOTIFICATION_READY` / `THEME_CHANGED`.
+14. **Pipes from `OS::execute_with_pipe` never report `eof_reached()`**: it's hard-coded to `false` on Windows and Unix in 4.7.2. Read until `get_error() != OK` instead. Looping on `eof_reached()` spun one core forever and froze pulls from private repos.
+15. `reloadable = true` makes Godot drop `~` copies of the library next to it. Fine for development; `tools/package.py` switches it off in release zips so users don't get them in their projects.
+16. `EditorInterface` singletons aren't ready in constructors. Do editor-dependent setup in `NOTIFICATION_READY` / `THEME_CHANGED`.
 
 ## libgit2 gotchas
 

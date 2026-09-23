@@ -81,7 +81,14 @@ def make_zip(version=None, out_dir=None, require_all=False):
                     continue
                 full = os.path.join(dirpath, name)
                 rel = os.path.relpath(full, ADDON_DIR).replace(os.sep, "/")
-                zf.write(full, "{}/{}".format(ZIP_PREFIX, rel))
+                if name.endswith(".gdextension"):
+                    # Hot reload is for developing the plugin. For users it only makes Godot drop
+                    # "~" copies of the library into their project (and their git status).
+                    with open(full, encoding="utf-8") as f:
+                        text = f.read().replace("reloadable = true", "reloadable = false")
+                    zf.writestr("{}/{}".format(ZIP_PREFIX, rel), text)
+                else:
+                    zf.write(full, "{}/{}".format(ZIP_PREFIX, rel))
         for src, dest in EXTRA_FILES.items():
             zf.write(os.path.join(ROOT, src), "{}/{}".format(ZIP_PREFIX, dest))
 

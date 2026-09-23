@@ -55,6 +55,7 @@ public:
 	Error push();
 	String get_notice() const;
 
+	static void cancel_pending_login();
 	static String get_last_error();
 	static String get_libgit2_version();
 

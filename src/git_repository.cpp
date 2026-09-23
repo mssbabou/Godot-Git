@@ -11,6 +11,8 @@
 #include <godot_cpp/templates/hash_set.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
+#include <atomic>
+
 namespace {
 
 String index_status_name(unsigned int p_status) {
@@ -153,6 +155,10 @@ PackedStringArray stashed_paths(git_repository *p_repo, const git_oid *p_stash) 
 
 // --- Remote callbacks -------------------------------------------------------
 
+// PID of a running `git credential fill` (0 if none), so the editor can stop it when closing
+// instead of waiting forever on e.g. a login window nobody finishes.
+std::atomic<int64_t> credential_pid{ 0 };
+
 struct RemoteContext {
 	String workdir;
 	int credential_attempts = 0;
@@ -176,6 +182,9 @@ bool credential_fill(const String &p_workdir, const String &p_url, const String 
 		return false;
 	}
 
+	const int64_t pid = process.get("pid", -1);
+	credential_pid = pid;
+
 	String request = vformat("url=%s\n", p_url);
 	if (!p_username.is_empty()) {
 		request += vformat("username=%s\n", p_username);
@@ -183,15 +192,21 @@ bool credential_fill(const String &p_workdir, const String &p_url, const String 
 	io->store_string(request + String("\n"));
 	io->flush();
 
-	while (!io->eof_reached()) {
+	// Read until git exits. Godot's pipes never report eof_reached() (it's hard-coded to false
+	// on Windows and Unix); a closed pipe shows up as a read error instead.
+	while (true) {
 		const String line = io->get_line();
 		if (line.begins_with("username=")) {
 			r_username = line.substr(9);
 		} else if (line.begins_with("password=")) {
 			r_password = line.substr(9);
 		}
+		if (io->get_error() != OK) {
+			break;
+		}
 	}
-	OS::get_singleton()->get_process_exit_code(process.get("pid", -1));
+	credential_pid = 0;
+	OS::get_singleton()->get_process_exit_code(pid);
 	return !r_password.is_empty();
 }
 
@@ -1063,6 +1078,15 @@ Error GitRepository::push() {
 // to stay in a stash), or "".
 String GitRepository::get_notice() const {
 	return notice;
+}
+
+// Stops a `git credential fill` that a network operation is waiting on, so that operation fails
+// quickly instead of blocking (used when the editor closes during a login).
+void GitRepository::cancel_pending_login() {
+	const int64_t pid = credential_pid.load();
+	if (pid > 0) {
+		OS::get_singleton()->kill(pid);
+	}
 }
 
 String GitRepository::get_last_error() {
