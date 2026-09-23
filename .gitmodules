@@ -1,0 +1,6 @@
+[submodule "thirdparty/godot-cpp"]
+	path = thirdparty/godot-cpp
+	url = https://github.com/godotengine/godot-cpp
+[submodule "thirdparty/libgit2"]
+	path = thirdparty/libgit2
+	url = https://github.com/libgit2/libgit2

@@ -1,0 +1,16 @@
+[configuration]
+
+entry_symbol = "godot_git_library_init"
+compatibility_minimum = "4.7"
+reloadable = true
+; Editor-only tool: never load or export this in games (honored from Godot 4.8).
+; On 4.7, add "addons/godot_git/*" to the export preset's exclude filter instead.
+include_tags = ["editor"]
+
+[libraries]
+
+windows.editor.x86_64 = "res://addons/godot_git/bin/windows/libgodot_git.windows.editor.x86_64.dll"
+windows.editor.arm64 = "res://addons/godot_git/bin/windows/libgodot_git.windows.editor.arm64.dll"
+linux.editor.x86_64 = "res://addons/godot_git/bin/linux/libgodot_git.linux.editor.x86_64.so"
+linux.editor.arm64 = "res://addons/godot_git/bin/linux/libgodot_git.linux.editor.arm64.so"
+macos.editor = "res://addons/godot_git/bin/macos/libgodot_git.macos.editor.framework"

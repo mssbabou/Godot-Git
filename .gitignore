@@ -1,0 +1,32 @@
+# Build output
+/build/
+/dist/
+/project/addons/godot_git/bin/
+*.obj
+*.o
+*.os
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.a
+.sconsign*.dblite
+compile_commands.json
+src/gen/
+__pycache__/
+
+# Godot
+.godot/
+*.import
+export_presets.cfg
+
+# Local overrides
+custom.py
+
+# Editors / OS
+.vs/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
