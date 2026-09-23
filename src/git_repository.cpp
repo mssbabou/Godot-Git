@@ -651,12 +651,25 @@ Error GitRepository::stage_all() {
 Error GitRepository::unstage_all() {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
 
+	// Like `git reset`: the index goes back to HEAD, files on disk are untouched.
+	// (git_reset_default can't do "all paths"; it requires a non-empty pathspec.)
 	git_object *head = nullptr;
-	git_revparse_single(&head, repo, "HEAD");
+	if (git_revparse_single(&head, repo, "HEAD^{commit}") == 0) {
+		const int err = git_reset(repo, head, GIT_RESET_MIXED, nullptr);
+		git_object_free(head);
+		return to_error(err);
+	}
 
-	const git_strarray everything = { nullptr, 0 };
-	const int err = git_reset_default(repo, head, &everything);
-	git_object_free(head);
+	// No commits yet: everything staged is new, so unstaging all means an empty index.
+	git_index *index = nullptr;
+	int err = git_repository_index(&index, repo);
+	if (err >= 0) {
+		err = git_index_clear(index);
+	}
+	if (err >= 0) {
+		err = git_index_write(index);
+	}
+	git_index_free(index);
 	return to_error(err);
 }
 

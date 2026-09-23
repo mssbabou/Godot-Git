@@ -64,6 +64,7 @@ class GitDock : public EditorDock {
 	struct FilePane {
 		FoldableContainer *container = nullptr;
 		Tree *tree = nullptr;
+		Label *empty_label = nullptr; // "No changes.", shown instead of the tree.
 		Label *count = nullptr;
 		Label *added = nullptr;
 		Label *removed = nullptr;
@@ -90,6 +91,7 @@ class GitDock : public EditorDock {
 	FilePane changes_pane;
 	FoldableContainer *history_pane = nullptr;
 	Tree *history_tree = nullptr;
+	Label *history_empty = nullptr;
 
 	Label *no_repo_label = nullptr;
 	Control *repo_ui = nullptr;
@@ -110,6 +112,7 @@ class GitDock : public EditorDock {
 	Ref<Thread> network_thread;
 	NetworkOp network_op = NETWORK_NONE;
 
+	Label *_make_body(Control *p_section, Tree *p_tree);
 	void _make_file_pane(FilePane &r_pane, Control *p_parent, const String &p_title, bool p_staged);
 	void _fill_file_pane(FilePane &p_pane, const Array &p_status, const Dictionary &p_stats);
 	void _fill_history();

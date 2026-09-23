@@ -85,7 +85,8 @@ jobs:
   package:
     name: Package
     needs: build
-    runs-on: ubuntu-latest
+    # Pinned so the image doesn't change underneath us; this job only zips files and uploads them.
+    runs-on: ubuntu-24.04
     permissions:
       contents: write # To attach the zip to a release.
 

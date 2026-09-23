@@ -262,7 +262,7 @@ GitDock::GitDock() {
 	history_tree->set_column_clip_content(0, true);
 	history_tree->set_column_expand(1, false);
 	history_tree->connect("item_mouse_selected", callable_mp(this, &GitDock::_on_tree_mouse_selected).bind(history_tree));
-	history_pane->add_child(history_tree);
+	history_empty = _make_body(history_pane, history_tree);
 
 	// Menus and dialogs.
 	context_menu = memnew(PopupMenu);
@@ -340,8 +340,23 @@ void GitDock::_make_file_pane(FilePane &r_pane, Control *p_parent, const String 
 	tree->connect("item_mouse_selected", callable_mp(this, &GitDock::_on_tree_mouse_selected).bind(tree));
 	tree->connect("gui_input", callable_mp(this, &GitDock::_on_tree_gui_input).bind(tree));
 	tree->connect("mouse_exited", callable_mp(this, &GitDock::_on_tree_mouse_exited).bind(tree));
-	r_pane.container->add_child(tree);
 	r_pane.tree = tree;
+	r_pane.empty_label = _make_body(r_pane.container, tree);
+}
+
+// A section's content: the tree, and a plain label shown instead when the tree is empty.
+Label *GitDock::_make_body(Control *p_section, Tree *p_tree) {
+	VBoxContainer *body = memnew(VBoxContainer);
+	body->add_theme_constant_override("separation", 0);
+	p_section->add_child(body);
+	body->add_child(p_tree);
+
+	MarginContainer *empty_margin = memnew(MarginContainer);
+	empty_margin->hide();
+	body->add_child(empty_margin);
+	Label *label = memnew(Label);
+	empty_margin->add_child(label);
+	return label;
 }
 
 void GitDock::_notification(int p_what) {
@@ -414,6 +429,11 @@ void GitDock::_update_icons() {
 	_queue_align_header_buttons();
 
 	const Color dim = _dim_color();
+	const int text_inset = changes_pane.tree->get_theme_constant("inner_item_margin_left");
+	for (Label *label : { staged_pane.empty_label, changes_pane.empty_label, history_empty }) {
+		label->add_theme_color_override("font_color", dim);
+		Object::cast_to<MarginContainer>(label->get_parent())->add_theme_constant_override("margin_left", text_inset);
+	}
 	staged_pane.count->add_theme_color_override("font_color", dim);
 	changes_pane.count->add_theme_color_override("font_color", dim);
 	for (FilePane *pane : { &staged_pane, &changes_pane }) {
@@ -497,7 +517,6 @@ void GitDock::refresh() {
 	_fill_file_pane(changes_pane, status, repo->get_line_stats(false));
 
 	staged_count = staged_pane.file_count;
-	staged_pane.container->set_visible(staged_count > 0);
 	set_title(status.is_empty() ? String("Git") : vformat("Git (%d)", status.size()));
 
 	_fill_history();
@@ -556,14 +575,9 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status, const Dic
 		item->set_tooltip_text(COLUMN_NAME, vformat("%s\n%s", path, status_name(state)));
 	}
 
-	if (files == 0) {
-		TreeItem *empty = tree->create_item(root);
-		empty->set_text(COLUMN_NAME, p_pane.staged ? "Nothing staged." : "No changes.");
-		empty->set_custom_color(COLUMN_NAME, dim);
-		for (int c = 0; c < FILE_COLUMN_COUNT; c++) {
-			empty->set_selectable(c, false);
-		}
-	}
+	tree->set_visible(files > 0);
+	p_pane.empty_label->get_parent_control()->set_visible(files == 0);
+	p_pane.empty_label->set_text(p_pane.staged ? "Nothing staged." : "No changes.");
 
 	p_pane.file_count = files;
 
@@ -595,11 +609,11 @@ void GitDock::_align_header_buttons() {
 			continue;
 		}
 		Tree *tree = pane->tree;
-		float rows_right = tree->get_global_position().x + tree->get_size().x;
 		TreeItem *first = tree->get_root() ? tree->get_root()->get_first_child() : nullptr;
-		if (first) {
-			rows_right = tree->get_global_position().x + tree->get_item_area_rect(first, COLUMN_NAME).get_end().x;
+		if (!first || !tree->is_visible()) {
+			continue; // Nothing to line up with while the section is empty.
 		}
+		const float rows_right = tree->get_global_position().x + tree->get_item_area_rect(first, COLUMN_NAME).get_end().x;
 		const float buttons_right = pane->buttons->get_global_position().x + pane->buttons->get_size().x;
 		const int margin = pane->buttons_margin->get_theme_constant("margin_right");
 		const int aligned = MAX(0, (int)Math::round(margin + buttons_right - rows_right));
@@ -773,12 +787,10 @@ void GitDock::_fill_history() {
 	const Color dim = _dim_color();
 	has_commits = !commits.is_empty();
 
+	history_tree->set_visible(!commits.is_empty());
+	history_empty->get_parent_control()->set_visible(commits.is_empty());
+	history_empty->set_text("No commits yet.");
 	if (commits.is_empty()) {
-		TreeItem *empty = history_tree->create_item(root);
-		empty->set_text(0, "No commits yet.");
-		empty->set_custom_color(0, dim);
-		empty->set_selectable(0, false);
-		empty->set_selectable(1, false);
 		return;
 	}
 
@@ -853,7 +865,7 @@ void GitDock::_set_hovered(FilePane &p_pane, TreeItem *p_item) {
 		previous->clear_buttons();
 	}
 	p_pane.hovered_item = 0;
-	if (!p_item || String(p_item->get_metadata(COLUMN_NAME)).is_empty()) {
+	if (!p_item || p_item->get_metadata(COLUMN_NAME).get_type() != Variant::STRING) {
 		return;
 	}
 
