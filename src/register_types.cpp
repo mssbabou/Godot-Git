@@ -7,9 +7,9 @@
 #include <godot_cpp/core/defs.hpp>
 #include <godot_cpp/godot.hpp>
 
-#include "git_dock.h"
-#include "git_editor_plugin.h"
-#include "git_repository.h"
+#include "editor/git_dock.h"
+#include "editor/git_editor_plugin.h"
+#include "git/git_repository.h"
 
 using namespace godot;
 

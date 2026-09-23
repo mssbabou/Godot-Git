@@ -82,6 +82,50 @@ jobs:
             !project/addons/godot_git/bin/**/*.pdb
           if-no-files-found: error
 
+  # Runs project/tests (the GitRepository suites) with the official Godot, headless, against each
+  # platform's freshly built library. Covers the backend only; the dock UI isn't tested here.
+  test:
+    name: Test ${{ matrix.name }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows x86_64, os: windows-2025-vs2026, platform: windows, arch: x86_64, godot_zip: win64.exe.zip, godot_bin: Godot_v4.7.2-stable_win64_console.exe }
+          - { name: Linux x86_64, os: ubuntu-22.04, platform: linux, arch: x86_64, godot_zip: linux.x86_64.zip, godot_bin: Godot_v4.7.2-stable_linux.x86_64 }
+          - { name: Linux arm64, os: ubuntu-22.04-arm, platform: linux, arch: arm64, godot_zip: linux.arm64.zip, godot_bin: Godot_v4.7.2-stable_linux.arm64 }
+          - { name: macOS, os: macos-26, platform: macos, arch: universal, godot_zip: macos.universal.zip, godot_bin: Godot.app/Contents/MacOS/Godot }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Download library
+        uses: actions/download-artifact@v8
+        with:
+          name: bin-${{ matrix.platform }}-${{ matrix.arch }}
+          path: project/addons/godot_git/bin
+
+      - name: Download Godot
+        shell: bash
+        run: |
+          curl -sSfL -o godot.zip "https://github.com/godotengine/godot/releases/download/4.7.2-stable/Godot_v4.7.2-stable_${{ matrix.godot_zip }}"
+          mkdir -p godot && unzip -q godot.zip -d godot
+          chmod +x "godot/${{ matrix.godot_bin }}" || true
+          echo "GODOT=$PWD/godot/${{ matrix.godot_bin }}" >> "$GITHUB_ENV"
+
+      # The first editor run registers the extension (.godot/extension_list.cfg); scripts run
+      # with -s only load extensions that are registered. Not `--import`: in 4.7.2 that crashes
+      # on exit when it loads an extension with an editor plugin for the first time.
+      - name: Open project in the editor once
+        shell: bash
+        run: '"$GODOT" --headless -e --path project --quit-after 300'
+
+      - name: Run tests
+        shell: bash
+        run: '"$GODOT" --headless --path project -s res://tests/run_tests.gd -- --online'
+
   package:
     name: Package
     needs: build

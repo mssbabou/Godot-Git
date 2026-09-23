@@ -2,6 +2,7 @@
 
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/callable.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/string.hpp>
@@ -20,6 +21,10 @@ class GitRepository : public RefCounted {
 
 	git_repository *repo = nullptr;
 	String notice;
+	int pulled_commits = 0;
+	bool pull_merged = false;
+	Callable progress_callback;
+	bool login_prompts_allowed = true;
 
 	void close();
 	Error _fetch_remote(const String &p_remote);
@@ -54,8 +59,11 @@ public:
 	Error pull();
 	Error push();
 	String get_notice() const;
+	Dictionary get_pull_result() const;
+	void set_progress_callback(const Callable &p_callback);
+	void set_login_prompts_allowed(bool p_allowed);
 
-	static void cancel_pending_login();
+	static void cancel_network();
 	static String get_last_error();
 	static String get_libgit2_version();
 

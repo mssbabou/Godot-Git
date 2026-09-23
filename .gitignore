@@ -12,7 +12,6 @@
 *.a
 .sconsign*.dblite
 compile_commands.json
-src/gen/
 __pycache__/
 
 # Godot

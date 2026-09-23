@@ -47,14 +47,13 @@ env = SConscript("thirdparty/godot-cpp/SConstruct", {"env": env, "customs": cust
 libgit2.setup(env, Dir("#").abspath)
 
 env.Append(CPPPATH=["src/"])
-sources = Glob("src/*.cpp")
+# Object files go to build/obj/ instead of next to the sources. Their names already carry the
+# platform, target and arch (e.g. .windows.editor.x86_64.obj), so one folder serves all builds.
+env.VariantDir("build/obj", "src", duplicate=False)
+sources = Glob("build/obj/*.cpp") + Glob("build/obj/git/*.cpp") + Glob("build/obj/editor/*.cpp")
 
-if env["target"] in ["editor", "template_debug"]:
-    try:
-        doc_data = env.GodotCPPDocData("src/gen/doc_data.gen.cpp", source=Glob("doc_classes/*.xml"))
-        sources.append(doc_data)
-    except AttributeError:
-        print("Not including class reference as we're targeting a pre-4.3 baseline.")
+# Class reference for GitRepository from doc_classes/*.xml (none written yet).
+sources.append(env.GodotCPPDocData("build/gen/doc_data.gen.cpp", source=Glob("doc_classes/*.xml")))
 
 # Output: project/addons/godot_git/bin/<platform>/libgodot_git.<platform>.<target>.<arch>.<ext>
 # (macOS gets a .framework bundle instead). Must match godot_git.gdextension next to it.

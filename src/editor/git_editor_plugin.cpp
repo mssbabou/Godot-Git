@@ -1,4 +1,4 @@
-#include "git_editor_plugin.h"
+#include "editor/git_editor_plugin.h"
 
 void GitEditorPlugin::_enter_tree() {
 	dock = memnew(GitDock);

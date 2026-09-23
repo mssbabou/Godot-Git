@@ -8,8 +8,10 @@ It adds a **Git** dock next to the Inspector:
 - Under the commit message: *Commit*, plus *Pull* (↓ commits to get) and *Push* (↑ commits to send, or *Publish* for a new branch). Pull and Push only appear when the repository has a remote.
 - Staged Changes / Changes sections with +/− line totals; hover a file for stage/unstage/discard, right-click for more
 - Recent History (unpushed commits highlighted); stage/unstage/discard all, new branch and more in the ⋮ menu
+- A status line under the branch picker: what's running (with progress and Cancel), then the last result or error, which stays until the next one
+- Automatic fetching every few minutes in the background (never opens a sign-in window; can be turned off in the ⋮ menu)
 
-Network operations run in the background. Pull fast-forwards, or makes a merge commit when both sides have new commits. Uncommitted changes are set aside during the merge and put back afterwards (like `git pull --autostash`); if the pull changed a file you have uncommitted edits to, your edits stay untouched in a git stash and the panel tells you. If the merge itself would conflict, nothing changes and the panel says so (resolving conflicts in the panel isn't supported yet).
+Network operations run in the background. Pull fast-forwards, or makes a merge commit when both sides have new commits. Your uncommitted changes to other files are kept as they are. If the new commits change a file you have uncommitted changes to, the pull is refused up front and names the files, so nothing is changed and nothing ends up in a stash; commit or discard those changes, then pull. If the merge itself would conflict, nothing changes and the panel says so (resolving conflicts in the panel isn't supported yet).
 
 Authentication: HTTPS remotes use git's own credential helper (e.g. Git Credential Manager), so if `git fetch` works in a terminal it works here. SSH remotes use the system `ssh` client with your keys/agent.
 
@@ -27,7 +29,8 @@ Supported: Windows (x86_64, arm64), Linux (x86_64, arm64), macOS (universal).
 
 | Path | What |
 |---|---|
-| `src/` | Extension source: `GitRepository` (libgit2 wrapper), `GitDock` (the panel), `GitEditorPlugin` |
+| `src/git/` | `GitRepository`, the libgit2 wrapper (usable from GDScript) |
+| `src/editor/` | The Git dock and the editor plugin that adds it |
 | `project/` | Godot project used to develop and test the plugin |
 | `project/addons/godot_git/` | The plugin itself: this folder is what gets shipped |
 | `project/addons/godot_git/godot_git.gdextension` | Tells Godot which library to load per platform |
@@ -65,12 +68,25 @@ A local `scons package` only contains your own platform. Full multi-platform zip
 
 Dev loop: edit C++ → run `scons` → click back into the editor. Hot reload is on, so the editor picks up the new library without restarting. If a change doesn't show (or the editor misbehaves after a reload), restart the editor.
 
+## Tests
+
+`project/tests/` holds headless tests for `GitRepository`. They build throwaway repositories with the git CLI and check the results against what git says. Build first, open `project/` in the editor once (so the extension is registered), then:
+
+```bash
+godot --headless --path project -s res://tests/run_tests.gd                 # local tests only
+godot --headless --path project -s res://tests/run_tests.gd -- --online     # also the ones that talk to GitHub
+godot --headless --path project -s res://tests/run_tests.gd -- pull_safety  # just one suite
+```
+
+The exit code is 1 if anything failed.
+
 ## CI and releases
 
 `.github/workflows/build.yml` runs on every push to `master` and every pull request:
 
 1. Builds the plugin on Windows x86_64/arm64, Linux x86_64/arm64 and macOS (universal).
-2. Packages everything into one `godot_git` zip, downloadable from the workflow run's *Artifacts*.
+2. Runs the test suite (`project/tests`) with the official Godot 4.7.2, headless, on Windows, Linux x86_64/arm64 and macOS.
+3. Packages everything into one `godot_git` zip, downloadable from the workflow run's *Artifacts*.
 
 To release: create a GitHub release (e.g. tag `v0.1.0`). The same workflow runs and attaches `godot_git-v0.1.0.zip` to the release.
 
@@ -84,7 +100,7 @@ repo.get_current_branch()
 repo.get_branches()            # local branch names
 repo.get_remote_branches()     # ["origin/master", ...]
 repo.get_remotes()
-repo.get_sync_status()         # { branch, upstream, ahead, behind, has_remotes }
+repo.get_sync_status()         # { branch, upstream, ahead, behind, has_remotes, last_fetched }
 repo.get_status()              # [{ path, index, worktree }, ...]
 repo.get_line_stats(staged)    # { path: Vector2i(added, removed) }, binary = (-1, -1)
 repo.get_commits(50)           # [{ id, hash, summary, message, author, time, unpushed }, ...]
@@ -94,6 +110,11 @@ repo.commit(message)           # uses user.name / user.email from git config
 repo.checkout_branch(name)     # local, or "origin/x" to create a tracking branch
 repo.create_branch(name)       # from HEAD, and switches to it
 repo.fetch() / repo.pull() / repo.push()   # blocking; the dock runs them on a thread
+repo.get_pull_result()         # { commits, merged } for the last pull
+repo.get_notice()              # a warning from an operation that still succeeded, or ""
+repo.set_progress_callback(func(step: String, fraction: float, cancellable: bool): ...)
+repo.set_login_prompts_allowed(false)   # only use saved logins (for background work)
+GitRepository.cancel_network()  # from any thread; the running op returns ERR_SKIP
 GitRepository.get_last_error()
 GitRepository.get_libgit2_version()
 ```

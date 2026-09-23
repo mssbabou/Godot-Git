@@ -2,7 +2,7 @@
 
 #include <godot_cpp/classes/editor_plugin.hpp>
 
-#include "git_dock.h"
+#include "editor/git_dock.h"
 
 using namespace godot;
 
