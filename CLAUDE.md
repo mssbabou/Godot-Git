@@ -23,7 +23,11 @@ What the dock does today:
 - Double-click opens a file: in Godot if it's a scene/script/resource, otherwise in the external editor from Godot's settings, or VS Code.
 - Pull fast-forwards or creates a merge commit, with autostash. Conflicting merges are refused and fully undone.
 
-Supported targets: Windows x86_64/arm64, Linux x86_64/arm64, macOS universal. Only **Windows x86_64** has actually been built and run; the rest are set up in CI but unproven (see "Known gaps").
+Supported targets: Windows x86_64/arm64, Linux x86_64/arm64, macOS universal. All five build in CI; only **Windows x86_64** has actually been run (see "Known gaps").
+
+Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` on a CI zip):
+- **macOS 10.13 (Intel) / 11.0 (Apple Silicon)**, matching Godot 4.7. Set via `macos_deployment_target` in `SConstruct` and passed to libgit2's CMake. Without it the library requires the CI runner's macOS version (the first CI build required macOS 26).
+- **Linux: glibc 2.34+** (Ubuntu 22.04+, Debian 12+, Fedora 35+), because CI builds on Ubuntu 22.04. Older distros would need a build in an older container. Runtime deps are only libc/libm/libstdc++; OpenSSL is loaded at runtime.
 
 ---
 

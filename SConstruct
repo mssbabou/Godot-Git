@@ -37,6 +37,11 @@ if not (os.path.isdir("thirdparty/godot-cpp") and os.listdir("thirdparty/godot-c
     print("thirdparty/godot-cpp is empty. Run: git submodule update --init --recursive")
     sys.exit(1)
 
+# Match Godot 4.7's own minimum macOS (10.13 on Intel; the compiler raises Apple Silicon to 11.0).
+# Without this the library requires the macOS version it was built on. godot-cpp only reads this
+# option from the command line, hence setting a default there.
+ARGUMENTS.setdefault("macos_deployment_target", "10.13")
+
 env = SConscript("thirdparty/godot-cpp/SConstruct", {"env": env, "customs": customs, "api_version": "4.7"})
 
 libgit2.setup(env, Dir("#").abspath)

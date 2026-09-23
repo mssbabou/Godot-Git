@@ -49,9 +49,10 @@ def _cmake_args(env):
         options["USE_HTTPS"] = "SecureTransport"
         options["USE_ICONV"] = "ON"
         options["CMAKE_OSX_ARCHITECTURES"] = "arm64;x86_64" if arch == "universal" else arch
-        options["CMAKE_OSX_DEPLOYMENT_TARGET"] = env.get("macos_deployment_target", "11.0")
-        if options["CMAKE_OSX_DEPLOYMENT_TARGET"] == "default":
-            options["CMAKE_OSX_DEPLOYMENT_TARGET"] = "11.0"
+        # Same minimum as the extension itself (set in SConstruct); must never be "default",
+        # which would mean "the macOS version of the build machine".
+        target = env.get("macos_deployment_target", "10.13")
+        options["CMAKE_OSX_DEPLOYMENT_TARGET"] = "10.13" if target == "default" else target
     elif platform == "linux":
         # Loads OpenSSL at runtime, so the extension doesn't hard-depend on a libssl version.
         options["USE_HTTPS"] = "OpenSSL-Dynamic"
