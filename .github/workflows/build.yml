@@ -93,6 +93,7 @@ jobs:
       matrix:
         include:
           - { name: Windows x86_64, os: windows-2025-vs2026, platform: windows, arch: x86_64, godot_zip: win64.exe.zip, godot_bin: Godot_v4.7.2-stable_win64_console.exe }
+          - { name: Windows arm64, os: windows-11-vs2026-arm, platform: windows, arch: arm64, godot_zip: windows_arm64.exe.zip, godot_bin: Godot_v4.7.2-stable_windows_arm64_console.exe }
           - { name: Linux x86_64, os: ubuntu-22.04, platform: linux, arch: x86_64, godot_zip: linux.x86_64.zip, godot_bin: Godot_v4.7.2-stable_linux.x86_64 }
           - { name: Linux arm64, os: ubuntu-22.04-arm, platform: linux, arch: arm64, godot_zip: linux.arm64.zip, godot_bin: Godot_v4.7.2-stable_linux.arm64 }
           - { name: macOS, os: macos-26, platform: macos, arch: universal, godot_zip: macos.universal.zip, godot_bin: Godot.app/Contents/MacOS/Godot }

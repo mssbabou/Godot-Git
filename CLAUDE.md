@@ -35,7 +35,7 @@ What the dock does today:
 - Pull fast-forwards or creates a merge commit; uncommitted changes to other files stay put. It's refused up front (naming the files) if the new commits touch files you have uncommitted changes to, and conflicting merges are refused and fully undone. It never leaves anything in a stash.
 - Auto-fetch every few minutes, quietly, never opening a sign-in window (toggle in the ⋮ menu).
 
-Supported targets: Windows x86_64/arm64, Linux x86_64/arm64, macOS universal. All five build in CI; only **Windows x86_64** has actually been run. It's in real use on the maintainer's StorageWars project, a private GitHub repo over HTTPS.
+Supported targets: Windows x86_64/arm64, Linux x86_64/arm64, macOS universal. All five build in CI. The backend test suite (including HTTPS fetches from GitHub) passes on Windows x86_64, Linux x86_64/arm64 and macOS in CI (first confirmed 2026-09-23). The dock UI has only been seen on **Windows x86_64**. (Windows arm64 has a test job since the next push; unconfirmed until it runs.) It's in real use on the maintainer's StorageWars project, a private GitHub repo over HTTPS.
 
 Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` on a CI zip):
 - **macOS 10.13 (Intel) / 11.0 (Apple Silicon)**, matching Godot 4.7. Set via `macos_deployment_target` in `SConstruct` and passed to libgit2's CMake. Without it the library requires the CI runner's macOS version (the first CI build required macOS 26).
@@ -71,7 +71,7 @@ Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` o
 | `tools/libgit2.py` | Configures + builds libgit2 as a static lib with CMake, per platform, and links it into the SCons env. |
 | `tools/package.py` | Zips the addon (+ LICENSE + third-party licenses) into `dist/godot_git-<version>.zip`. `--require-all` fails if any platform library is missing. |
 | `SConstruct` | Build entry. Default target `editor`, hot reload on, `SCONS_CACHE` support, `package` alias. |
-| `.github/workflows/build.yml` | CI: builds 5 targets in parallel, runs the tests on 4 of them (all but Windows arm64), packages one zip, attaches it to published releases. |
+| `.github/workflows/build.yml` | CI: builds 5 targets in parallel, runs the tests on all 5, packages one zip, attaches it to published releases. |
 
 Build by-products (all git-ignored) stay out of `src/`: `build/obj/` (object files, via `VariantDir`), `build/gen/` (generated class-reference source), `build/libgit2/<platform>.<arch>/`, `dist/`, `project/.godot/`, `project/addons/godot_git/bin/`.
 
@@ -259,7 +259,7 @@ It has been verified end to end in a real editor (fetch, pull, merge, commit, co
 
 ### Unproven or untested
 
-- **Running on Linux, macOS and Windows ARM.** All five build in CI, and the libraries' formats, dependencies and minimum OS versions were checked, but only Windows x86_64 has run. macOS builds aren't signed, so Gatekeeper warns on first use.
+- **The dock on Linux and macOS, and anything on Windows ARM.** CI proves the Linux (x86_64, arm64) and macOS libraries load in the official Godot 4.7.2 and pass the backend suite, HTTPS included. Nobody has looked at the dock UI there (fonts, scaling, file manager and VS Code paths). Windows arm64 got a test job after the first CI run; check it passed. macOS builds aren't signed; loading worked in CI (downloaded with curl, so no quarantine flag), but a browser-downloaded zip will likely hit Gatekeeper.
 - **Push over HTTPS/SSH to a real server.** Authenticated HTTPS *fetch/pull* from a private GitHub repo works (verified on StorageWars through Git Credential Manager). Push uses the same credential path but hasn't been exercised. SSH is untested.
 - **Light editor theme** was never looked at. Everything uses theme colors, so it should be fine.
 - **RTL layouts**: `_draw_file_row` assumes left-to-right.
@@ -310,7 +310,7 @@ Two tiers: small **stepping stones** that make the base solid, then the **big fe
 ### Stepping stones
 
 1. **Real use of the status strip and auto-fetch.** *Waiting on the maintainer.* They use it on StorageWars and report what still feels untrustworthy. The design is only settled after real use.
-2. ~~Tests in the repo, run in CI.~~ **Done:** `project/tests/`, run on Windows, Linux x86_64/arm64 and macOS in CI. Keep adding a test for every bug from real use. A first CI run on GitHub still has to confirm the non-Windows jobs pass.
+2. ~~Tests in the repo, run in CI.~~ **Done:** `project/tests/`, run on Windows x86_64/arm64, Linux x86_64/arm64 and macOS in CI. Keep adding a test for every bug from real use. All four test jobs passed on the first CI run (105 checks each).
 3. ~~Small gaps.~~ **Done:**
    - Saving inside Godot refreshes the panel. It already did via `filesystem_changed`, and `project.godot` is now watched too.
    - Auto-fetch.

@@ -85,7 +85,7 @@ The exit code is 1 if anything failed.
 `.github/workflows/build.yml` runs on every push to `master` and every pull request:
 
 1. Builds the plugin on Windows x86_64/arm64, Linux x86_64/arm64 and macOS (universal).
-2. Runs the test suite (`project/tests`) with the official Godot 4.7.2, headless, on Windows, Linux x86_64/arm64 and macOS.
+2. Runs the test suite (`project/tests`) with the official Godot 4.7.2, headless, on Windows x86_64/arm64, Linux x86_64/arm64 and macOS.
 3. Packages everything into one `godot_git` zip, downloadable from the workflow run's *Artifacts*.
 
 To release: create a GitHub release (e.g. tag `v0.1.0`). The same workflow runs and attaches `godot_git-v0.1.0.zip` to the release.
