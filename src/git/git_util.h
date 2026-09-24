@@ -102,6 +102,12 @@ int checkout_all_or_nothing(git_repository *p_repo, const git_object *p_target, 
 // change) from libgit2's p_error, and the paths restore() couldn't put back, if any.
 Error explain_checkout_failure(git_repository *p_repo, const String &p_error, const PackedStringArray &p_not_restored);
 
+// Waits for a process started with execute_with_pipe to end and returns its exit code, or -1 if
+// it's still running after 10 seconds. Its pipes close a moment before it has fully exited, and
+// OS::get_process_exit_code() returns -1 until then (read too early, a git that succeeded looked
+// like it failed; seen on CI's Linux arm64 runner).
+int wait_for_exit_code(int64_t p_pid);
+
 // libgit2's current error message and class, before something else overwrites them.
 String last_git_error(int *r_class = nullptr);
 

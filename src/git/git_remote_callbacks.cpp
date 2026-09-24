@@ -11,6 +11,8 @@
 
 #include <atomic>
 
+#include "git/git_util.h"
+
 namespace godot_git {
 
 namespace {
@@ -92,7 +94,7 @@ String run_git_credential(const String &p_workdir, const String &p_action, const
 		}
 	}
 	track_process(0);
-	OS::get_singleton()->get_process_exit_code(pid);
+	wait_for_exit_code(pid); // Reaps it.
 	return output;
 }
 

@@ -178,6 +178,14 @@ PackedStringArray CheckoutGuard::restore(git_repository *p_repo, const git_tree 
 	return failed;
 }
 
+int wait_for_exit_code(int64_t p_pid) {
+	OS *os = OS::get_singleton();
+	for (int waited = 0; os->is_process_running(p_pid) && waited < 10000; waited += 5) {
+		os->delay_msec(5);
+	}
+	return os->get_process_exit_code(p_pid);
+}
+
 String last_git_error(int *r_class) {
 	const git_error *err = git_error_last();
 	const bool real = err && err->klass != GIT_ERROR_NONE && err->message;

@@ -134,7 +134,7 @@ Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const Packed
 		}
 	}
 	track_process(0);
-	r_exit_code = OS::get_singleton()->get_process_exit_code(pid);
+	r_exit_code = wait_for_exit_code(pid);
 
 	if (is_cancel_requested()) {
 		git_error_set_str(GIT_ERROR_NET, "Canceled.");

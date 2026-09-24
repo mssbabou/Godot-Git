@@ -237,6 +237,7 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 24. `OS.execute("cmd", ["/c", "rmdir", "/s", "/q", path])` silently does nothing: Godot quotes each argument separately. Pass cmd one string: `["/c", "rd /s /q \"path\""]`.
 25. **`OS.execute` drops empty arguments and mangles embedded quotes** on Windows: `git config credential.helper ""` became a read, and `"$1"` inside an argument lost its quotes. The test suite writes such config lines into `.git/config` directly.
 26. **`FileAccess.get_buffer()` on a pipe drops a partial last chunk** when the process exits. Reading `git upload-pack` output that way lost its final `0000`. Read binary pipe output byte by byte (`get_8` until `get_error() != OK`); line-based reads (`get_line`) are fine for newline-terminated text.
+27. **`OS::get_process_exit_code()` returns -1 while the process is still running**, and a process's pipes close a moment before it has fully exited. Reading the code right after the pipe closes lost that race on CI's Linux arm64 runner: a `git push` that succeeded was reported as failed. Use `wait_for_exit_code()` (`git_util.h`).
 
 ## libgit2 gotchas
 

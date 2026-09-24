@@ -109,12 +109,15 @@ func _pre_push() -> void:
 
 func _signing() -> void:
 	var key := dir.path_join("signing-key")
+	var out := []
+	var code: int
 	if OS.get_name() == "Windows":
-		OS.execute("cmd", ["/c", "ssh-keygen -q -t ed25519 -N \"\" -C test -f \"%s\"" % key])
+		# Godot drops empty arguments on Windows (CLAUDE.md gotcha 25), so -N "" goes through cmd.
+		code = OS.execute("cmd", ["/c", "ssh-keygen -q -t ed25519 -N \"\" -C test -f \"%s\"" % key], out, true)
 	else:
-		OS.execute("sh", ["-c", "ssh-keygen -q -t ed25519 -N '' -C test -f \"$1\"", "sh", key])
+		code = OS.execute("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f", key], out, true)
 	if not exists(key):
-		print("  (signing skipped; ssh-keygen isn't available)")
+		print("  (signing skipped; ssh-keygen failed with code %d: %s)" % [code, "".join(out).strip_edges()])
 		return
 	var shared := make_shared("signing")
 	for setting in [["gpg.format", "ssh"], ["user.signingkey", key], ["commit.gpgsign", "true"]]:
