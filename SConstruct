@@ -44,6 +44,13 @@ ARGUMENTS.setdefault("macos_deployment_target", "10.13")
 
 env = SConscript("thirdparty/godot-cpp/SConstruct", {"env": env, "customs": customs, "api_version": "4.7"})
 
+# Let the Linux linker drop functions nothing calls (plenty in godot-cpp's bindings and libgit2).
+# macOS gets this from -dead_strip and Windows from /OPT:REF; without it the Linux library was
+# twice as big (4.2 MB vs about 2 MB per architecture on macOS). No effect on speed. godot-cpp
+# builds with this same env, so the flags reach it too; libgit2 gets them in tools/libgit2.py.
+if env["platform"] == "linux":
+    env.Append(CCFLAGS=["-ffunction-sections", "-fdata-sections"], LINKFLAGS=["-Wl,--gc-sections"])
+
 libgit2.setup(env, Dir("#").abspath)
 
 env.Append(CPPPATH=["src/"])

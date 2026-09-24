@@ -19,6 +19,9 @@ Error GitRepository::_fetch_remote(const String &p_remote) {
 	if (err < 0) {
 		return to_error(err);
 	}
+	if (git_remote_url(remote) && is_ssh_url(String::utf8(git_remote_url(remote)))) {
+		return _fetch_with_git(p_remote);
+	}
 
 	RemoteContext ctx;
 	ctx.workdir = get_workdir();
@@ -390,9 +393,18 @@ Error GitRepository::push() {
 	}
 
 	const String refspec_text = vformat("%s:%s", local_ref, remote_ref);
-	if (has_hook(repo, "pre-push")) {
-		// libgit2 doesn't run hooks; git does.
-		const Error result = _push_with_git(remote_name, refspec_text);
+	String push_url;
+	{
+		RemotePtr lookup;
+		if (git_remote_lookup(lookup.out(), repo, remote_name.utf8().get_data()) == 0) {
+			const char *url = git_remote_pushurl(lookup) ? git_remote_pushurl(lookup) : git_remote_url(lookup);
+			push_url = url ? String::utf8(url) : String();
+		}
+	}
+	const bool ssh = is_ssh_url(push_url);
+	if (ssh || has_hook(repo, "pre-push")) {
+		// libgit2 runs no hooks, and handles SSH badly (see is_ssh_url); git does both.
+		const Error result = _push_with_git(remote_name, refspec_text, ssh);
 		if (result == OK && publish) {
 			git_branch_set_upstream(head, vformat("%s/%s", remote_name, branch).utf8().get_data());
 		}
@@ -429,10 +441,10 @@ Error GitRepository::push() {
 }
 
 // `git push`, for repositories with a pre-push hook. git asks for logins itself, the same way.
-Error GitRepository::_push_with_git(const String &p_remote, const String &p_refspec) {
+Error GitRepository::_push_with_git(const String &p_remote, const String &p_refspec, bool p_ssh) {
 	RemoteContext ctx;
 	ctx.progress = progress_callback;
-	PackedStringArray args;
+	PackedStringArray args = ssh_args(repo);
 	args.push_back("-c");
 	args.push_back(vformat("credential.interactive=%s", login_prompts_allowed ? "always" : "never"));
 	args.push_back("push");
@@ -455,7 +467,31 @@ Error GitRepository::_push_with_git(const String &p_remote, const String &p_refs
 	if (output.contains("[rejected]") && (output.contains("fetch first") || output.contains("non-fast-forward"))) {
 		return fail("The remote has commits you don't have yet. Pull first, then push.");
 	}
+	if (p_ssh) {
+		return network_failure(output, "push", true);
+	}
 	return fail(vformat("Git didn't push (a pre-push hook may have stopped it):\n%s", output_tail(output, 8)));
+}
+
+// `git fetch`, for SSH remotes (see is_ssh_url).
+Error GitRepository::_fetch_with_git(const String &p_remote) {
+	RemoteContext ctx;
+	ctx.progress = progress_callback;
+	PackedStringArray args = ssh_args(repo);
+	args.push_back("fetch");
+	args.push_back("--progress");
+	args.push_back(p_remote);
+	String output;
+	int exit_code = 0;
+	const Error err = run_git_command(repo, ctx, args, "Connecting...", output, exit_code);
+	if (err == ERR_SKIP) {
+		git_error_set_str(GIT_ERROR_NET, "Canceled. Nothing was changed.");
+		return ERR_SKIP;
+	}
+	if (err != OK) {
+		return err;
+	}
+	return exit_code == 0 ? OK : network_failure(output, "fetch", true);
 }
 
 // A warning from the last operation that still succeeded (e.g. a pull whose local changes had

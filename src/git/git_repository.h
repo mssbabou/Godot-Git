@@ -31,7 +31,8 @@ class GitRepository : public RefCounted {
 	Error _fetch_remote(const String &p_remote);
 	Error _fetch_lfs_files(const char *p_refname, const git_oid *p_commit);
 	Error _commit_with_git(const String &p_message, bool p_amend);
-	Error _push_with_git(const String &p_remote, const String &p_refspec);
+	Error _push_with_git(const String &p_remote, const String &p_refspec, bool p_ssh);
+	Error _fetch_with_git(const String &p_remote);
 
 protected:
 	static void _bind_methods();

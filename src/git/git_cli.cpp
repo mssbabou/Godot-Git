@@ -100,7 +100,9 @@ Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const Packed
 	}
 
 	report_progress(&p_ctx, p_step, String(), -1);
-	Dictionary process = OS::get_singleton()->execute_with_pipe(program, args, true);
+	OS *os = OS::get_singleton();
+	// Non-blocking: see the loop below.
+	Dictionary process = os->execute_with_pipe(program, args, false);
 	Ref<FileAccess> io = process.get("stdio", Variant());
 	if (io.is_null()) {
 		return fail("Couldn't start git.");
@@ -110,37 +112,110 @@ Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const Packed
 
 	// Progress lines end in \r, everything else in \n.
 	std::string bytes;
-	while (true) {
-		const uint8_t byte = io->get_8();
-		const bool closed = io->get_error() != OK;
-		if (!closed && byte != '\r' && byte != '\n') {
-			bytes += (char)byte;
-			continue;
-		}
+	const auto take_line = [&]() {
 		const String line = String::utf8(bytes.data(), bytes.size()).strip_edges();
 		bytes.clear();
-		if (!line.is_empty()) {
-			r_output += line + String("\n");
-			const double fraction = progress_fraction(line);
-			const int colon = line.find(":");
-			if (fraction >= 0 && colon > 0) {
-				report_progress(&p_ctx, line.substr(0, colon + 1), line.substr(colon + 1).strip_edges(), fraction);
-			} else {
-				report_progress(&p_ctx, p_step, line, -1);
+		if (line.is_empty()) {
+			return;
+		}
+		r_output += line + String("\n");
+		const double fraction = progress_fraction(line);
+		const int colon = line.find(":");
+		if (fraction >= 0 && colon > 0) {
+			report_progress(&p_ctx, line.substr(0, colon + 1), line.substr(colon + 1).strip_edges(), fraction);
+		} else {
+			report_progress(&p_ctx, p_step, line, -1);
+		}
+	};
+	const auto read_available = [&]() {
+		uint8_t buffer[4096];
+		uint64_t total = 0;
+		uint64_t got;
+		while ((got = io->get_buffer(buffer, sizeof(buffer))) > 0 && got <= sizeof(buffer)) {
+			total += got;
+			for (uint64_t i = 0; i < got; i++) {
+				if (buffer[i] == '\r' || buffer[i] == '\n') {
+					take_line();
+				} else {
+					bytes += (char)buffer[i];
+				}
 			}
 		}
-		if (closed) {
+		return total;
+	};
+	// Done when git exits (or on Cancel), not when the pipe closes: a process git started can
+	// outlive it and keep the pipe open. On Windows an ssh (or hook) started through git's shell
+	// isn't even in git's process tree, so Cancel can't end it; it's left to time out.
+	while (true) {
+		if (read_available() > 0) {
+			continue;
+		}
+		if (is_cancel_requested()) {
 			break;
 		}
+		if (!os->is_process_running(pid)) {
+			read_available();
+			break;
+		}
+		os->delay_msec(10);
 	}
+	take_line();
 	track_process(0);
-	r_exit_code = wait_for_exit_code(pid);
+	r_exit_code = is_cancel_requested() ? -1 : wait_for_exit_code(pid);
 
 	if (is_cancel_requested()) {
 		git_error_set_str(GIT_ERROR_NET, "Canceled.");
 		return ERR_SKIP;
 	}
 	return OK;
+}
+
+bool is_ssh_url(const String &p_url) {
+	if (p_url.begins_with("ssh://") || p_url.begins_with("git+ssh://") || p_url.begins_with("ssh+git://")) {
+		return true;
+	}
+	if (p_url.contains("://")) {
+		return false;
+	}
+	// scp-like "[user@]host:path". Not "C:/path" (a Windows drive) or a plain local path.
+	const int colon = p_url.find(":");
+	const int slash = p_url.find("/");
+	return colon > 1 && (slash < 0 || colon < slash);
+}
+
+PackedStringArray ssh_args(git_repository *p_repo) {
+	PackedStringArray args;
+	OS *os = OS::get_singleton();
+	if (!os->get_environment("GIT_SSH_COMMAND").is_empty() || !os->get_environment("GIT_SSH").is_empty()) {
+		return args;
+	}
+	ConfigPtr config;
+	git_buf command = GIT_BUF_INIT;
+	const bool configured = git_repository_config_snapshot(config.out(), p_repo) == 0 && git_config_get_string_buf(&command, config, "core.sshCommand") == 0;
+	git_buf_dispose(&command);
+	if (!configured) {
+		// Plain "ssh" is git's own on Windows too (it runs this through its shell). ConnectTimeout:
+		// after a Cancel, an ssh stuck connecting may be out of reach (see run_git_command).
+		args.push_back("-c");
+		args.push_back("core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=15");
+	}
+	return args;
+}
+
+Error network_failure(const String &p_output, const String &p_action, bool p_ssh) {
+	const String tail = output_tail(p_output, 6);
+	if (p_ssh) {
+		if (p_output.contains("Host key verification failed")) {
+			return fail(vformat("SSH doesn't know this server yet, so it didn't connect. Connect to it once from a terminal (e.g. `ssh -T git@github.com`) and confirm its fingerprint, then try again.\n%s", tail));
+		}
+		if (p_output.contains("Permission denied") || p_output.contains("passphrase")) {
+			return fail(vformat("SSH couldn't log in. Check that `ssh -T` to this server works in a terminal; a key with a passphrase must be added to ssh-agent, since the panel can't ask for it.\n%s", tail));
+		}
+		if (p_output.contains("Could not resolve hostname") || p_output.contains("Connection refused") || p_output.contains("timed out") || p_output.contains("Network is unreachable")) {
+			return fail(vformat("Couldn't reach the server over SSH. Check your connection and the remote's address.\n%s", tail));
+		}
+	}
+	return fail(vformat("Git couldn't %s:\n%s", p_action, tail.is_empty() ? String("(no details)") : tail));
 }
 
 String output_tail(const String &p_output, int p_count) {

@@ -53,7 +53,7 @@ Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` o
 | `src/git/git_repository.cpp` | Opening, reading state (status, line stats, branches, history), local changes (stage, discard, commit, checkout). |
 | `src/git/git_repository_remote.cpp` | Fetch, pull, push. `pull()` is split into `paths_blocking_pull` / `fast_forward` / `merge_and_commit` / `merge_with_autostash`. |
 | `src/git/git_remote_callbacks.{h,cpp}` | libgit2 remote callbacks: logins via `git credential fill/approve/reject`, progress reporting (`RemoteContext`, `report_progress`), cancel. |
-| `src/git/git_cli.{h,cpp}` | Steps handed to the git CLI because libgit2 would skip hooks or signing: `commit_needs_git`, `has_hook`, `commit_with_git`, and `run_git_command` (runs git with merged output, live progress lines, Cancel). |
+| `src/git/git_cli.{h,cpp}` | Steps handed to the git CLI because libgit2 would skip hooks or signing, or handles SSH badly: `commit_needs_git`, `has_hook`, `commit_with_git`, and `run_git_command` (runs git with merged output, live progress lines, Cancel). |
 | `src/git/git_lfs.{h,cpp}` | Git LFS: a libgit2 filter for `filter=lfs` backed by `git lfs filter-process`, plus `git lfs fetch`/`push` with progress. |
 | `src/git/git_util.{h,cpp}` | Small libgit2 helpers shared by the above (`Owned` pointers like `CommitPtr`, `fail`, `to_error`, `head_branch`, `changed_paths`, `uncommitted_paths`, ...). |
 | `src/editor/` | **Editor UI.** |
@@ -153,6 +153,14 @@ libgit2 runs no hooks and never signs. Committing that way would silently skip a
 - `run_git_command` merges stdout and stderr through `cmd /c ... 2>&1` / `sh -c`, for the same reason as the LFS filter: an unread stderr pipe blocks the process. git-lfs fetch/push use it too.
 - Not covered: `pre-merge-commit` (only `git merge` runs it; we commit merges with `git commit`), and `post-checkout`/`post-merge` after libgit2 checkouts. GPG signing needs a pinentry that can show a window (e.g. Gpg4win's); a terminal-only pinentry fails, since there's no terminal.
 
+### SSH remotes
+
+libgit2 runs ssh itself (`USE_SSH=exec`), but badly for us. On Windows it ignores "shell" mode, so a `GIT_SSH_COMMAND`/`core.sshCommand` with options is taken as one program name and fails. It starts the first `ssh` on PATH (Windows' own), not git's. And it discards ssh's stderr (`capture_err = 0`), so every failure read "could not read refs". So **fetch and push for SSH remotes go through `git fetch`/`git push`** (`is_ssh_url`, `_fetch_with_git`, `_push_with_git`):
+- git runs its own ssh (checked: `/usr/bin/ssh` inside Git for Windows), with the user's keys, agent and `~/.ssh/config`, exactly as in a terminal.
+- Unless the user set `GIT_SSH_COMMAND`, `GIT_SSH` or `core.sshCommand` (then used as is), we pass `core.sshCommand=ssh -o BatchMode=yes -o ConnectTimeout=15`. BatchMode means ssh fails instead of waiting on a passphrase or host-key prompt nobody can see.
+- `network_failure` turns the usual ssh errors into instructions: unknown server (connect once with `ssh -T`), rejected key (use ssh-agent), can't connect. ssh's own lines are kept below.
+- **Cancel on Windows**: an ssh started through Git's shell isn't in git's Windows process tree (the MSYS process in between has exited), so `taskkill /T` can't reach it, and it keeps our pipe open. `run_git_command` therefore reads without blocking and finishes when git exits or on Cancel, not when the pipe closes. An orphaned ssh ends by itself (ConnectTimeout).
+
 ### GitDock (UI)
 
 - Layout, top to bottom: toolbar (branch `OptionButton`, ⋮ `MenuButton`) → status strip → sync row (Fetch, Pull, Push; `SIZE_EXPAND_FILL` each) → commit `TextEdit` → commit row (Amend `CheckBox`, Commit) → `ScrollContainer` holding three `FoldableContainer`s (Staged Changes, Changes, History).
@@ -194,7 +202,7 @@ libgit2 runs no hooks and never signs. Committing that way would silently skip a
 
 ## Testing
 
-1. **Backend tests: `project/tests/`, in the repo and in CI.** `run_tests.gd` (a `SceneTree` script) runs the suites `test_local.gd`, `test_sync.gd`, `test_pull_safety.gd`, `test_checkout_safety.gd` (Windows only), `test_amend.gd`, `test_hooks.gd` (real hooks, and SSH signing with a throwaway key), `test_credentials.gd`, `test_lfs.gd` (skipped without git-lfs; CI installs it) and `test_online.gd` (the last only with `-- --online`). Each suite extends `test_case.gd`, which builds throwaway repos with the real git CLI (a bare "remote" plus "mine" and "theirs" clones via `make_shared()`). Checks are made against what git itself says. Run:
+1. **Backend tests: `project/tests/`, in the repo and in CI.** `run_tests.gd` (a `SceneTree` script) runs the suites `test_local.gd`, `test_sync.gd`, `test_pull_safety.gd`, `test_checkout_safety.gd` (Windows only), `test_amend.gd`, `test_hooks.gd` (real hooks, and SSH signing with a throwaway key), `test_credentials.gd`, `test_ssh.gd` (fake ssh), `test_lfs.gd` (skipped without git-lfs; CI installs it) and `test_online.gd` (the last only with `-- --online`). Each suite extends `test_case.gd`, which builds throwaway repos with the real git CLI (a bare "remote" plus "mine" and "theirs" clones via `make_shared()`). Checks are made against what git itself says. Run:
    `godot --headless --path project -s res://tests/run_tests.gd [-- --online] [-- <suite>]`. Exit code 1 on failure; scratch repos go to the OS temp folder and are kept (path printed) when something fails. CI runs them on Windows, Linux x86_64/arm64 and macOS against each freshly built library. It first opens the project with `-e --quit-after 300` so the extension gets registered; see gotcha about `--import`. **Every bug from real use gets a test here.** The suite has already caught one on its first run: the push "pull first" message never showed for the common unfetched case.
 2. **UI tests in a real (headless) editor.** Not in the repo yet; these run from the session scratchpad. Copy the addon into a throwaway project and add a test-only `EditorPlugin` (`addons/ui_driver/`) enabled in `project.godot` that finds dock controls (`find_children` on `EditorInterface.get_base_control()`) and presses them (`button.pressed.emit()`, `popup.id_pressed.emit(id)`), then prints results. Run with `--headless -e --path <project> --quit-after <frames>` and **redirect stdout**. Gotchas:
    - PowerShell 5's `Set-Content -Encoding utf8` writes a **BOM**, and Godot then silently ignores `plugin.cfg`. Write files with `[IO.File]::WriteAllText(path, text, (New-Object Text.UTF8Encoding $false))`.
@@ -267,6 +275,8 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 - **Opening files never surprises.** Godot opens what Godot can (scenes, scripts, resources, which respect Godot's own "use external editor" setting). Everything else goes to the external editor configured in Godot, else VS Code, else a toast explaining how to set one. We never hand files to random OS apps or the file manager.
 - **Pull safety.** A pull either completes with your uncommitted work exactly where it was, or refuses and changes nothing. Unrelated uncommitted edits are carried through a merge (internally with a stash that's always restored), which makes pull usable in real Godot projects where the editor constantly rewrites `project.godot` and scenes. Edits to files the pull touches make it refuse up front. A conflicting merge is always fully undone; the panel doesn't resolve conflicts yet. `test_pull_safety.gd` covers all of this.
 - **Network on a worker thread** so the editor never freezes on slow remotes or credential prompts.
+- **Failed checkouts put everything back, stricter than git** (decided 2026-09-24). When a file is locked, the git CLI still "succeeds" (exit 0, one warning line). It moves HEAD and leaves the locked file with the old branch's content as a fake modification, which a later commit would silently revert. The panel instead retries briefly, then undoes everything and says which file was in use. The maintainer agreed after the two were compared by experiment.
+- **No speed traded for binary size** (decided 2026-09-24). Size optimization (`/O1`, `-Os`) saved only 6% on Windows. What's kept are free wins only: dead-code removal on Linux (`--gc-sections`). About 2–2.7 MB per platform is the real cost of bundling a complete git (libgit2 with zlib, regex and HTTP parser) plus godot-cpp. Per-platform downloads are out, because teams commit the addon for every OS.
 - **Name**: `godot-git`. The maintainer considers pun names pointless. The official plugin is "Godot Git Plugin", so an Asset Library listing should explain the difference in its description rather than through the name.
 
 ---
@@ -295,13 +305,13 @@ It has been verified end to end in a real editor (fetch, pull, merge, commit, co
   - **git clone of a project with the addon committed: no flag, loads.**
   - **Browser-downloaded zip: flagged, likely blocked** ("Apple cannot check it for malicious software"). Widely reported for GDExtensions, not tested here. The workaround is `xattr -dr com.apple.quarantine addons/godot_git` or System Settings > Privacy & Security > Allow Anyway. It could be verified in CI by setting the flag on the macOS runner (check `spctl --status` first; runners may have Gatekeeper off, which would make the test meaningless).
   - **Consequence:** a Developer ID ($99/year) plus notarization is only needed for a smooth browser-zip install. It is **not** a blocker for an Asset Library listing.
-- **SSH remotes** are untested with a real login (no SSH keys on the dev machine). Findings from probing (2026-09-23), not fixed yet:
-  1. On Windows the panel runs `C:\Windows\System32\OpenSSH\ssh.exe` (first `ssh` on PATH), while the git CLI uses Git for Windows' own `usr\bin\ssh.exe`. Different key agents, so "works in git, fails in the panel" is possible. That contradicts the README's "if `git fetch` works in a terminal it works here". Fix: when `GIT_SSH_COMMAND`/`GIT_SSH`/`core.sshCommand` are unset, point `GIT_SSH` at git's ssh.
-  2. libgit2's exec transport doesn't capture ssh's stderr (`capture_err = 0` in `ssh_exec.c`), so every SSH failure reads "could not read refs from remote repository". Fix idea: `ssh -E <logfile>` via `GIT_SSH_COMMAND`, then show ssh's real reason with a hint (`ssh -T git@host`).
-  3. ssh can't prompt (no terminal). On Windows it fails. On Linux/macOS, an editor started from a terminal could leave ssh waiting there on a passphrase or host-key question, hanging a background fetch. Fix: `-o BatchMode=yes` at least for quiet fetches.
-  4. Cancel only takes effect once ssh gives up connecting (seen: ~9 s extra against a dead address; HTTPS connects behave the same).
-  5. No console window appeared for ssh when the editor was launched without a console (checked via the process's console), even though libgit2 doesn't pass `CREATE_NO_WINDOW`.
-  CI could test real SSH: the Linux runner can start `sshd` with a throwaway key and serve a bare repo. Authenticated HTTPS works both ways through Git Credential Manager: fetch/pull on StorageWars (private), and commit + push on this repo (`39a940b`, from an early build; the push path has since gained progress, cancel and the "pull first" message, all covered by the local tests).
+- **SSH remotes** have never been used with a real login (no SSH keys on the dev machine). Since 2026-09-24 fetch and push for SSH remotes go through git (see "SSH remotes" under Architecture), which fixed the earlier findings:
+  - the panel ran Windows' own `ssh` while git uses its bundled one;
+  - every failure read "could not read refs";
+  - ssh could wait on a prompt nobody sees;
+  - Cancel waited until ssh gave up.
+
+  `test_ssh.gd` covers routing, ssh's own errors and Cancel with a fake ssh (`core.sshCommand`). A real `ssh` against GitHub without keys fails in 0.5 s with the unknown-server message. Still untested: a real SSH login, fetch and push (CI could run `sshd` on the Linux runner with a throwaway key).
 - **Light editor theme** was never looked at. Everything uses theme colors, so it should be fine.
 - **RTL layouts**: `_draw_file_row` assumes left-to-right.
 
@@ -367,7 +377,7 @@ Two tiers: small **stepping stones** that make the base solid, then the **big fe
 
 1. ~~Git LFS.~~ **Done** (2026-09-24), see "Git LFS" under Architecture. Still open: a real LFS server with a sign-in, and a project with thousands of LFS files (speed).
 2. ~~Commit hooks and signing.~~ **Done** (2026-09-24), see "Hooks and commit signing" under Architecture. GPG signing with a real key and pinentry is untested (the tests sign with SSH keys).
-3. **SSH fixes**: see "SSH remotes" under Unproven or untested.
+3. ~~SSH fixes.~~ **Done** (2026-09-24), see "SSH remotes" under Architecture.
 4. ~~New action layout plus Amend.~~ **Done** (2026-09-24), pulled forward so the maintainer can use it while the rest is built. Checked on screen at normal and narrowest (~190 px) dock widths.
 
 ### Big features (in order)
@@ -388,6 +398,41 @@ Two tiers: small **stepping stones** that make the base solid, then the **big fe
 **3. Conflict resolution.** Let a pull stop at conflicts instead of refusing. List conflicted files with "keep mine / take theirs / open in editor", show them in the diff view, and finish the merge when all are resolved (or abort cleanly). This removes the last "use git in a terminal" message.
 
 **4. Stash and branch management.** A stash list with restore/drop, and branch delete/rename. Tags fit here too.
+
+## Where we left off (2026-09-24)
+
+A long session: RAII cleanup, sign-in from the panel, Git LFS, the new action layout with Amend, hooks and signing, all-or-nothing checkouts, SSH through git, and a CI race fix. All of "Next up" is done. The notes below are for picking it up again.
+
+**Before anything else**
+- **Push what's uncommitted** (SSH through git, Linux `--gc-sections`, docs), then check CI:
+  - all five test jobs green; `test_ssh.gd` has only run on Windows so far, and its fake ssh is a `sh` script;
+  - the Linux `.so` size: expected about 2 MB instead of 4.2 MB (inferred from the macOS numbers, not measured);
+  - signing tested on all five (it was on the last run).
+- **The playground** (`MyGame`, built by `make_playground.py` in the session scratchpad) is in the broken half-switched state from the checkout bug, and runs an old build. The scratchpad may be gone next time. Rebuilding a playground like it is quick, and worth keeping as `tools/make_playground.py` if UI testing becomes a habit: a teammate remote, LFS art, a feature branch, staged/unstaged/unpushed work.
+
+**Built but never seen by a human**
+- Ticking **Amend** and pressing it in a real editor (headless drivers can't click; backend tests only).
+- The **Signing in...** strip text, a **background commit** with a slow hook, and a **background LFS branch switch**, in the GUI. Headless drivers checked the logic, not the looks.
+- The sync row at the narrowest dock width **while an operation runs**. Its labels get longer ("Publishing...") and may push the row wider.
+
+**Unverified against the real thing**
+- Git LFS against a real server with a sign-in (only local remotes so far), and with thousands of LFS files (speed of one `filter-process` round trip per file).
+- GPG signing with a real key and passphrase window (the tests sign with SSH keys).
+- An actual SSH login that fetches and pushes. CI could run `sshd` on the Linux runner with a throwaway key.
+- Cancel during a real LFS download (local ones finish too fast).
+- The dock on Linux at all, and on macOS beyond a friend's quick look. That's what stands between us and `v0.1.0`.
+
+**Things I'd think about**
+- **What locked `boss.png`?** Unknown: Godot importing it, the thumbnail generator, or antivirus. Background operations (LFS switch, commit with hooks) now let the editor keep scanning while files change. Checkouts survive it now, but pausing or deferring Godot's filesystem scan during our own operations might avoid the lock in the first place (`EditorFileSystem` has no pause API; worth a look).
+- **The git CLI is now required** for sign-in, LFS, hooks, signing and SSH. Without git on PATH those fail with generic errors. The panel should check once (`git --version`) and say plainly what won't work, per principle 1.
+- **Two commit paths** (libgit2 without hooks or signing, git with them) can drift apart. If they ever do, "always commit through git" is simpler and costs a process start (~50–100 ms).
+- **Process-wide environment variables** (`GIT_TERMINAL_PROMPT`, `GIT_LFS_FORCE_PROGRESS`) are set on the editor process and so leak into games started from the editor. Harmless as far as known; passing them per command would be cleaner.
+- **Hooks not run**: `pre-merge-commit` (we commit merges with `git commit`), and `post-checkout`/`post-merge` after libgit2 checkouts. git-lfs installs `post-checkout`/`post-merge` for file locking, which the panel doesn't support either.
+- **LFS limits**: only the root `.gitattributes` is checked, each file is held in memory while filtered, and there's no LFS locking.
+- **The test suite keeps growing** (223 checks, a few minutes on Windows). Fine for now; split slow suites if it starts to hurt.
+- **Asset Library**: check whether the official plugin is listed there for 4.x before writing our description.
+
+**Next**: `v0.1.0` (look at the dock on Linux, then tag), the Asset Library listing, then the diff viewer (Big features 1).
 
 ## Advice
 

@@ -57,6 +57,8 @@ def _cmake_args(env):
         # Loads OpenSSL at runtime, so the extension doesn't hard-depend on a libssl version.
         options["USE_HTTPS"] = "OpenSSL-Dynamic"
         options["CMAKE_POSITION_INDEPENDENT_CODE"] = "ON"
+        # One section per function, so the extension's --gc-sections link can drop unused ones.
+        options["CMAKE_C_FLAGS"] = "-ffunction-sections -fdata-sections"
     else:
         raise RuntimeError("libgit2 build is not set up for platform '%s' yet." % platform)
 
