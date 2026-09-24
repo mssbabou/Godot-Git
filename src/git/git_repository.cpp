@@ -12,8 +12,12 @@
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/templates/hash_set.hpp>
+#include <godot_cpp/templates/local_vector.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
+#include "git/git_cli.h"
+#include "git/git_lfs.h"
+#include "git/git_remote_callbacks.h"
 #include "git/git_util.h"
 
 using namespace godot_git;
@@ -75,6 +79,7 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_status"), &GitRepository::get_status);
 	ClassDB::bind_method(D_METHOD("get_line_stats", "staged"), &GitRepository::get_line_stats);
 	ClassDB::bind_method(D_METHOD("get_commits", "max_count"), &GitRepository::get_commits, DEFVAL(50));
+	ClassDB::bind_method(D_METHOD("uses_lfs"), &GitRepository::uses_lfs);
 
 	ClassDB::bind_method(D_METHOD("stage", "path"), &GitRepository::stage);
 	ClassDB::bind_method(D_METHOD("unstage", "path"), &GitRepository::unstage);
@@ -82,6 +87,9 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("unstage_all"), &GitRepository::unstage_all);
 	ClassDB::bind_method(D_METHOD("discard", "path"), &GitRepository::discard);
 	ClassDB::bind_method(D_METHOD("commit", "message"), &GitRepository::commit);
+	ClassDB::bind_method(D_METHOD("amend", "message"), &GitRepository::amend);
+	ClassDB::bind_method(D_METHOD("is_head_pushed"), &GitRepository::is_head_pushed);
+	ClassDB::bind_method(D_METHOD("commit_runs_git", "amend"), &GitRepository::commit_runs_git);
 	ClassDB::bind_method(D_METHOD("checkout_branch", "branch"), &GitRepository::checkout_branch);
 	ClassDB::bind_method(D_METHOD("create_branch", "name"), &GitRepository::create_branch);
 
@@ -105,6 +113,7 @@ GitRepository::~GitRepository() {
 
 void GitRepository::close() {
 	if (repo) {
+		release_lfs(repo);
 		git_repository_free(repo);
 		repo = nullptr;
 	}
@@ -137,28 +146,21 @@ String GitRepository::get_workdir() const {
 String GitRepository::get_current_branch() const {
 	ERR_FAIL_NULL_V_MSG(repo, String(), "Repository is not open.");
 
-	git_reference *head = nullptr;
-	const int err = git_repository_head(&head, repo);
+	ReferencePtr head;
+	const int err = git_repository_head(head.out(), repo);
 	if (err == GIT_EUNBORNBRANCH) {
 		// Fresh repo with no commits: HEAD points at a branch that doesn't exist yet.
-		String name;
-		if (git_reference_lookup(&head, repo, "HEAD") == 0) {
-			const char *target = git_reference_symbolic_target(head);
-			if (target) {
-				name = String::utf8(target).trim_prefix("refs/heads/");
-			}
-			git_reference_free(head);
+		if (git_reference_lookup(head.out(), repo, "HEAD") == 0 && git_reference_symbolic_target(head)) {
+			return String::utf8(git_reference_symbolic_target(head)).trim_prefix("refs/heads/");
 		}
-		return name;
+		return String();
 	}
 	if (err < 0) {
 		return String();
 	}
 
 	// Detached HEAD yields "HEAD" here.
-	const String name = String::utf8(git_reference_shorthand(head));
-	git_reference_free(head);
-	return name;
+	return String::utf8(git_reference_shorthand(head));
 }
 
 // Returns an Array of Dictionaries: { "path": String, "index": String, "worktree": String }.
@@ -171,8 +173,8 @@ Array GitRepository::get_status() const {
 	opts.show = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
 	opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS | GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX;
 
-	git_status_list *list = nullptr;
-	if (git_status_list_new(&list, repo, &opts) < 0) {
+	StatusListPtr list;
+	if (git_status_list_new(list.out(), repo, &opts) < 0) {
 		ERR_FAIL_V_MSG(result, "git status failed: " + get_last_error());
 	}
 
@@ -192,8 +194,6 @@ Array GitRepository::get_status() const {
 		item["worktree"] = worktree_status_name(entry->status);
 		result.push_back(item);
 	}
-
-	git_status_list_free(list);
 	return result;
 }
 
@@ -207,19 +207,18 @@ Dictionary GitRepository::get_line_stats(bool p_staged) const {
 	git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
 	opts.max_size = 2 * 1024 * 1024; // Bigger files are treated as binary; counting them isn't worth the time.
 
-	git_diff *diff = nullptr;
+	DiffPtr diff;
 	int err = 0;
 	if (p_staged) {
-		git_object *head_tree = nullptr;
-		git_revparse_single(&head_tree, repo, "HEAD^{tree}"); // Stays null before the first commit.
-		err = git_diff_tree_to_index(&diff, repo, (git_tree *)head_tree, nullptr, &opts);
-		git_object_free(head_tree);
+		ObjectPtr head_tree;
+		git_revparse_single(head_tree.out(), repo, "HEAD^{tree}"); // Stays null before the first commit.
+		err = git_diff_tree_to_index(diff.out(), repo, (git_tree *)head_tree.get(), nullptr, &opts);
 		if (err >= 0) {
 			git_diff_find_similar(diff, nullptr);
 		}
 	} else {
 		opts.flags = GIT_DIFF_INCLUDE_UNTRACKED | GIT_DIFF_RECURSE_UNTRACKED_DIRS | GIT_DIFF_SHOW_UNTRACKED_CONTENT;
-		err = git_diff_index_to_workdir(&diff, repo, nullptr, &opts);
+		err = git_diff_index_to_workdir(diff.out(), repo, nullptr, &opts);
 	}
 	if (err < 0) {
 		return result;
@@ -227,8 +226,17 @@ Dictionary GitRepository::get_line_stats(bool p_staged) const {
 
 	const size_t count = git_diff_num_deltas(diff);
 	for (size_t i = 0; i < count; i++) {
-		git_patch *patch = nullptr;
-		if (git_patch_from_diff(&patch, diff, i) < 0 || !patch) {
+		// An LFS file's diff would be of its pointer text, which says nothing about the real file,
+		// and computing it runs the whole file through git-lfs.
+		const git_diff_delta *lfs_delta = git_diff_get_delta(diff, i);
+		const char *lfs_path = lfs_delta->new_file.path ? lfs_delta->new_file.path : lfs_delta->old_file.path;
+		if (is_lfs_path(repo, lfs_path)) {
+			result[String::utf8(lfs_path)] = Vector2i(-1, -1);
+			continue;
+		}
+
+		PatchPtr patch;
+		if (git_patch_from_diff(patch.out(), diff, i) < 0 || !patch) {
 			continue;
 		}
 		const git_diff_delta *delta = git_patch_get_delta(patch);
@@ -240,32 +248,34 @@ Dictionary GitRepository::get_line_stats(bool p_staged) const {
 		} else if (git_patch_line_stats(nullptr, &added, &removed, patch) == 0) {
 			result[String::utf8(path)] = Vector2i((int32_t)added, (int32_t)removed);
 		}
-		git_patch_free(patch);
 	}
-
-	git_diff_free(diff);
 	return result;
+}
+
+// Whether some files are stored with Git LFS. Switching branches can then download files, so the
+// dock runs it in the background.
+bool GitRepository::uses_lfs() const {
+	ERR_FAIL_NULL_V_MSG(repo, false, "Repository is not open.");
+	return repo_uses_lfs(repo);
 }
 
 PackedStringArray GitRepository::get_branches() const {
 	PackedStringArray branches;
 	ERR_FAIL_NULL_V_MSG(repo, branches, "Repository is not open.");
 
-	git_branch_iterator *it = nullptr;
-	if (git_branch_iterator_new(&it, repo, GIT_BRANCH_LOCAL) < 0) {
+	BranchIteratorPtr it;
+	if (git_branch_iterator_new(it.out(), repo, GIT_BRANCH_LOCAL) < 0) {
 		return branches;
 	}
 
-	git_reference *ref = nullptr;
+	ReferencePtr ref;
 	git_branch_t type;
-	while (git_branch_next(&ref, &type, it) == 0) {
+	while (git_branch_next(ref.out(), &type, it) == 0) {
 		const char *name = nullptr;
 		if (git_branch_name(&name, ref) == 0) {
 			branches.push_back(String::utf8(name));
 		}
-		git_reference_free(ref);
 	}
-	git_branch_iterator_free(it);
 	return branches;
 }
 
@@ -274,21 +284,19 @@ PackedStringArray GitRepository::get_remote_branches() const {
 	PackedStringArray branches;
 	ERR_FAIL_NULL_V_MSG(repo, branches, "Repository is not open.");
 
-	git_branch_iterator *it = nullptr;
-	if (git_branch_iterator_new(&it, repo, GIT_BRANCH_REMOTE) < 0) {
+	BranchIteratorPtr it;
+	if (git_branch_iterator_new(it.out(), repo, GIT_BRANCH_REMOTE) < 0) {
 		return branches;
 	}
 
-	git_reference *ref = nullptr;
+	ReferencePtr ref;
 	git_branch_t type;
-	while (git_branch_next(&ref, &type, it) == 0) {
+	while (git_branch_next(ref.out(), &type, it) == 0) {
 		const char *name = nullptr;
 		if (git_reference_type(ref) == GIT_REFERENCE_DIRECT && git_branch_name(&name, ref) == 0) {
 			branches.push_back(String::utf8(name));
 		}
-		git_reference_free(ref);
 	}
-	git_branch_iterator_free(it);
 	return branches;
 }
 
@@ -322,12 +330,12 @@ Dictionary GitRepository::get_sync_status() const {
 	const String fetch_head = String::utf8(git_repository_commondir(repo)).path_join("FETCH_HEAD");
 	result["last_fetched"] = FileAccess::file_exists(fetch_head) ? (int64_t)FileAccess::get_modified_time(fetch_head) : (int64_t)0;
 
-	git_reference *head = nullptr;
-	if (git_repository_head(&head, repo) < 0) {
+	ReferencePtr head;
+	if (git_repository_head(head.out(), repo) < 0) {
 		return result;
 	}
-	git_reference *upstream = nullptr;
-	if (git_reference_is_branch(head) && git_branch_upstream(&upstream, head) == 0) {
+	ReferencePtr upstream;
+	if (git_reference_is_branch(head) && git_branch_upstream(upstream.out(), head) == 0) {
 		result["upstream"] = String::utf8(git_reference_shorthand(upstream));
 
 		const git_oid *local_oid = git_reference_target(head);
@@ -337,9 +345,7 @@ Dictionary GitRepository::get_sync_status() const {
 			result["ahead"] = (int64_t)ahead;
 			result["behind"] = (int64_t)behind;
 		}
-		git_reference_free(upstream);
 	}
-	git_reference_free(head);
 	return result;
 }
 
@@ -353,35 +359,31 @@ Array GitRepository::get_commits(int p_max_count) const {
 
 	HashSet<String> unpushed;
 	if (!get_remotes().is_empty()) {
-		git_revwalk *walk = nullptr;
-		if (git_revwalk_new(&walk, repo) == 0) {
-			if (git_revwalk_push_head(walk) == 0) {
-				git_revwalk_hide_glob(walk, "refs/remotes/*");
-				git_oid oid;
-				// Capped so a huge never-pushed branch can't stall the panel.
-				while (unpushed.size() < 1000 && git_revwalk_next(&oid, walk) == 0) {
-					unpushed.insert(String(git_oid_tostr_s(&oid)));
-				}
+		RevwalkPtr walk;
+		if (git_revwalk_new(walk.out(), repo) == 0 && git_revwalk_push_head(walk) == 0) {
+			git_revwalk_hide_glob(walk, "refs/remotes/*");
+			git_oid oid;
+			// Capped so a huge never-pushed branch can't stall the panel.
+			while (unpushed.size() < 1000 && git_revwalk_next(&oid, walk) == 0) {
+				unpushed.insert(String(git_oid_tostr_s(&oid)));
 			}
-			git_revwalk_free(walk);
 		}
 	}
 
-	git_revwalk *walk = nullptr;
-	if (git_revwalk_new(&walk, repo) < 0) {
+	RevwalkPtr walk;
+	if (git_revwalk_new(walk.out(), repo) < 0) {
 		return result;
 	}
 	git_revwalk_sorting(walk, GIT_SORT_TIME);
 	if (git_revwalk_push_head(walk) < 0) {
 		// No commits yet.
-		git_revwalk_free(walk);
 		return result;
 	}
 
 	git_oid oid;
 	while (result.size() < p_max_count && git_revwalk_next(&oid, walk) == 0) {
-		git_commit *commit = nullptr;
-		if (git_commit_lookup(&commit, repo, &oid) < 0) {
+		CommitPtr commit;
+		if (git_commit_lookup(commit.out(), repo, &oid) < 0) {
 			continue;
 		}
 
@@ -399,17 +401,17 @@ Array GitRepository::get_commits(int p_max_count) const {
 		item["time"] = (int64_t)git_commit_time(commit);
 		item["unpushed"] = unpushed.has(hash);
 		result.push_back(item);
-
-		git_commit_free(commit);
 	}
-
-	git_revwalk_free(walk);
 	return result;
 }
 
 Error GitRepository::stage(const String &p_path) {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
 
+	git_error_clear();
+	if (require_lfs(repo, "staging") != OK) {
+		return FAILED;
+	}
 	const CharString path = p_path.utf8();
 	unsigned int flags = 0;
 	int err = git_status_file(&flags, repo, path.get_data());
@@ -417,8 +419,8 @@ Error GitRepository::stage(const String &p_path) {
 		return to_error(err);
 	}
 
-	git_index *index = nullptr;
-	err = git_repository_index(&index, repo);
+	IndexPtr index;
+	err = git_repository_index(index.out(), repo);
 	if (err < 0) {
 		return to_error(err);
 	}
@@ -432,7 +434,6 @@ Error GitRepository::stage(const String &p_path) {
 	if (err >= 0) {
 		err = git_index_write(index);
 	}
-	git_index_free(index);
 	return to_error(err);
 }
 
@@ -440,20 +441,22 @@ Error GitRepository::unstage(const String &p_path) {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
 
 	// With no commits yet there's no HEAD; a null target just drops the path from the index.
-	git_object *head = nullptr;
-	git_revparse_single(&head, repo, "HEAD");
+	ObjectPtr head;
+	git_revparse_single(head.out(), repo, "HEAD");
 
 	SinglePathspec pathspec(p_path);
-	const int err = git_reset_default(repo, head, &pathspec.array);
-	git_object_free(head);
-	return to_error(err);
+	return to_error(git_reset_default(repo, head, &pathspec.array));
 }
 
 Error GitRepository::stage_all() {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
+	git_error_clear();
+	if (require_lfs(repo, "staging") != OK) {
+		return FAILED;
+	}
 
-	git_index *index = nullptr;
-	int err = git_repository_index(&index, repo);
+	IndexPtr index;
+	int err = git_repository_index(index.out(), repo);
 	if (err < 0) {
 		return to_error(err);
 	}
@@ -467,7 +470,6 @@ Error GitRepository::stage_all() {
 	if (err >= 0) {
 		err = git_index_write(index);
 	}
-	git_index_free(index);
 	return to_error(err);
 }
 
@@ -476,23 +478,20 @@ Error GitRepository::unstage_all() {
 
 	// Like `git reset`: the index goes back to HEAD, files on disk are untouched.
 	// (git_reset_default can't do "all paths"; it requires a non-empty pathspec.)
-	git_object *head = nullptr;
-	if (git_revparse_single(&head, repo, "HEAD^{commit}") == 0) {
-		const int err = git_reset(repo, head, GIT_RESET_MIXED, nullptr);
-		git_object_free(head);
-		return to_error(err);
+	ObjectPtr head;
+	if (git_revparse_single(head.out(), repo, "HEAD^{commit}") == 0) {
+		return to_error(git_reset(repo, head, GIT_RESET_MIXED, nullptr));
 	}
 
 	// No commits yet: everything staged is new, so unstaging all means an empty index.
-	git_index *index = nullptr;
-	int err = git_repository_index(&index, repo);
+	IndexPtr index;
+	int err = git_repository_index(index.out(), repo);
 	if (err >= 0) {
 		err = git_index_clear(index);
 	}
 	if (err >= 0) {
 		err = git_index_write(index);
 	}
-	git_index_free(index);
 	return to_error(err);
 }
 
@@ -523,8 +522,97 @@ Error GitRepository::discard(const String &p_path) {
 Error GitRepository::commit(const String &p_message) {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
 
+	git_error_clear();
+	if (require_lfs(repo, "committing") != OK) {
+		return FAILED;
+	}
+	if (commit_needs_git(repo, COMMIT_NEW)) {
+		return _commit_with_git(p_message, false);
+	}
 	git_oid oid;
 	return to_error(git_commit_create_from_stage(&oid, repo, p_message.utf8().get_data(), nullptr));
+}
+
+// Whether HEAD's commit is on any remote-tracking branch, i.e. already pushed (or fetched).
+bool GitRepository::is_head_pushed() const {
+	ERR_FAIL_NULL_V_MSG(repo, false, "Repository is not open.");
+	git_oid head;
+	if (git_reference_name_to_id(&head, repo, "HEAD") < 0) {
+		return false;
+	}
+	LocalVector<git_oid> remote_tips;
+	BranchIteratorPtr it;
+	if (git_branch_iterator_new(it.out(), repo, GIT_BRANCH_REMOTE) == 0) {
+		ReferencePtr ref;
+		git_branch_t type;
+		while (git_branch_next(ref.out(), &type, it) == 0) {
+			if (git_reference_type(ref) == GIT_REFERENCE_DIRECT) {
+				remote_tips.push_back(*git_reference_target(ref));
+			}
+		}
+	}
+	return !remote_tips.is_empty() && git_graph_reachable_from_any(repo, &head, remote_tips.ptr(), remote_tips.size()) == 1;
+}
+
+// Replaces the last commit with one that has p_message and what's staged now (which may be
+// nothing: then only the message changes). Refused once the commit is pushed: rewriting it
+// would leave teammates with a commit that no longer exists here.
+Error GitRepository::amend(const String &p_message) {
+	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
+	git_error_clear();
+	if (require_lfs(repo, "committing") != OK) {
+		return FAILED;
+	}
+	ReferencePtr head;
+	if (head_branch(head.out(), repo) < 0) {
+		return FAILED;
+	}
+	if (is_head_pushed()) {
+		return fail("The last commit is already pushed, so amending it would change history your teammates may have. Make a new commit instead.");
+	}
+	if (commit_needs_git(repo, COMMIT_AMEND)) {
+		return _commit_with_git(p_message, true);
+	}
+
+	CommitPtr last;
+	IndexPtr index;
+	git_oid tree_id;
+	TreePtr tree;
+	SignaturePtr committer;
+	int err = git_commit_lookup(last.out(), repo, git_reference_target(head));
+	if (err >= 0) {
+		err = git_repository_index(index.out(), repo);
+	}
+	if (err >= 0) {
+		err = git_index_write_tree(&tree_id, index);
+	}
+	if (err >= 0) {
+		err = git_tree_lookup(tree.out(), repo, &tree_id);
+	}
+	if (err >= 0) {
+		// Like `git commit --amend`: the original author stays, the committer is you, now.
+		err = git_signature_default(committer.out(), repo);
+	}
+	if (err >= 0) {
+		git_oid id;
+		err = git_commit_amend(&id, last, "HEAD", nullptr, committer, nullptr, p_message.utf8().get_data(), tree);
+	}
+	return to_error(err);
+}
+
+// Whether committing (or amending) goes through the git command line, because hooks would run
+// or commits get signed. That can take a while (a hook may run a linter), so the dock does it in
+// the background.
+bool GitRepository::commit_runs_git(bool p_amend) const {
+	ERR_FAIL_NULL_V_MSG(repo, false, "Repository is not open.");
+	return commit_needs_git(repo, p_amend ? COMMIT_AMEND : COMMIT_NEW);
+}
+
+Error GitRepository::_commit_with_git(const String &p_message, bool p_amend) {
+	begin_network_operation();
+	RemoteContext ctx;
+	ctx.progress = progress_callback;
+	return commit_with_git(repo, ctx, p_message, p_amend ? COMMIT_AMEND : COMMIT_NEW);
 }
 
 // Switches to a branch. Accepts a local branch ("feature") or a remote-tracking one
@@ -534,11 +622,11 @@ Error GitRepository::checkout_branch(const String &p_branch) {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
 	git_error_clear();
 
-	git_reference *ref = nullptr;
-	int err = git_branch_lookup(&ref, repo, p_branch.utf8().get_data(), GIT_BRANCH_LOCAL);
+	ReferencePtr ref;
+	int err = git_branch_lookup(ref.out(), repo, p_branch.utf8().get_data(), GIT_BRANCH_LOCAL);
 	if (err == GIT_ENOTFOUND) {
-		git_reference *remote_ref = nullptr;
-		if (git_branch_lookup(&remote_ref, repo, p_branch.utf8().get_data(), GIT_BRANCH_REMOTE) < 0) {
+		ReferencePtr remote_ref;
+		if (git_branch_lookup(remote_ref.out(), repo, p_branch.utf8().get_data(), GIT_BRANCH_REMOTE) < 0) {
 			return fail(vformat("There is no branch called \"%s\".", p_branch));
 		}
 		// "origin/feature" -> "feature".
@@ -546,30 +634,34 @@ Error GitRepository::checkout_branch(const String &p_branch) {
 		const String local_name = slash >= 0 ? p_branch.substr(slash + 1) : p_branch;
 
 		// A local branch with that name may already exist; use it rather than failing.
-		err = git_branch_lookup(&ref, repo, local_name.utf8().get_data(), GIT_BRANCH_LOCAL);
+		err = git_branch_lookup(ref.out(), repo, local_name.utf8().get_data(), GIT_BRANCH_LOCAL);
 		if (err == GIT_ENOTFOUND) {
-			git_commit *commit = nullptr;
-			err = git_commit_lookup(&commit, repo, git_reference_target(remote_ref));
+			CommitPtr commit;
+			err = git_commit_lookup(commit.out(), repo, git_reference_target(remote_ref));
 			if (err >= 0) {
-				err = git_branch_create(&ref, repo, local_name.utf8().get_data(), commit, 0);
-				git_commit_free(commit);
+				err = git_branch_create(ref.out(), repo, local_name.utf8().get_data(), commit, 0);
 			}
 			if (err >= 0) {
 				git_branch_set_upstream(ref, p_branch.utf8().get_data());
 			}
 		}
-		git_reference_free(remote_ref);
 	}
 	if (err < 0) {
 		return to_error(err);
 	}
 
-	git_object *target = nullptr;
-	err = git_reference_peel(&target, ref, GIT_OBJECT_COMMIT);
+	ObjectPtr target;
+	err = git_reference_peel(target.out(), ref, GIT_OBJECT_COMMIT);
+	if (err >= 0 && repo_uses_lfs(repo)) {
+		const Error lfs_err = _fetch_lfs_files(git_reference_name(ref), git_object_id(target));
+		if (lfs_err != OK) {
+			return lfs_err;
+		}
+	}
 	if (err >= 0) {
 		git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
 		opts.checkout_strategy = GIT_CHECKOUT_SAFE;
-		err = git_checkout_tree(repo, target, &opts);
+		err = checkout_all_or_nothing(repo, target, opts);
 		if (err == GIT_ECONFLICT) {
 			fail("Your local changes would be overwritten by switching branches. Commit or discard them first.");
 		}
@@ -577,9 +669,6 @@ Error GitRepository::checkout_branch(const String &p_branch) {
 	if (err >= 0) {
 		err = git_repository_set_head(repo, git_reference_name(ref));
 	}
-
-	git_object_free(target);
-	git_reference_free(ref);
 	return to_error(err);
 }
 
@@ -593,22 +682,19 @@ Error GitRepository::create_branch(const String &p_name) {
 		return fail(vformat("\"%s\" isn't a valid branch name.", p_name));
 	}
 
-	git_object *head = nullptr;
-	if (git_revparse_single(&head, repo, "HEAD^{commit}") < 0) {
+	ObjectPtr head;
+	if (git_revparse_single(head.out(), repo, "HEAD^{commit}") < 0) {
 		return fail("Make a first commit before creating branches.");
 	}
-	git_reference *ref = nullptr;
-	int err = git_branch_create(&ref, repo, p_name.utf8().get_data(), (git_commit *)head, 0);
-	git_object_free(head);
+	ReferencePtr ref;
+	const int err = git_branch_create(ref.out(), repo, p_name.utf8().get_data(), (git_commit *)head.get(), 0);
 	if (err == GIT_EEXISTS) {
 		return fail(vformat("A branch called \"%s\" already exists.", p_name));
 	}
 	if (err < 0) {
 		return to_error(err);
 	}
-	err = git_repository_set_head(repo, git_reference_name(ref));
-	git_reference_free(ref);
-	return to_error(err);
+	return to_error(git_repository_set_head(repo, git_reference_name(ref)));
 }
 
 String GitRepository::get_last_error() {

@@ -49,7 +49,7 @@ GitDock::GitDock() {
 	main_vb->add_child(repo_vb);
 	repo_ui = repo_vb;
 
-	// Branch picker, fetch, more.
+	// Branch picker, more.
 	HBoxContainer *toolbar = memnew(HBoxContainer);
 	repo_vb->add_child(toolbar);
 
@@ -61,12 +61,6 @@ GitDock::GitDock() {
 	branch_select->connect("item_selected", callable_mp(this, &GitDock::_on_branch_selected));
 	toolbar->add_child(branch_select);
 
-	fetch_button = memnew(Button);
-	fetch_button->set_theme_type_variation("FlatButton");
-	fetch_button->set_tooltip_text("Fetch: check the remote for new commits.");
-	fetch_button->connect("pressed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_FETCH));
-	toolbar->add_child(fetch_button);
-
 	more_menu = memnew(MenuButton);
 	more_menu->set_flat(true);
 	more_menu->set_tooltip_text("More actions");
@@ -76,8 +70,27 @@ GitDock::GitDock() {
 
 	_build_status_strip(repo_vb);
 
-	// Commit message, then all the actions in one row: Commit (wide, the main thing you do),
-	// then Pull / Push, labeled with how many commits each would move.
+	// Syncing with the remote, in one row sharing the width: Fetch, then Pull / Push labeled with
+	// how many commits each would move.
+	sync_row = memnew(HBoxContainer);
+	repo_vb->add_child(sync_row);
+
+	fetch_button = memnew(Button);
+	fetch_button->set_h_size_flags(SIZE_EXPAND_FILL);
+	fetch_button->connect("pressed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_FETCH));
+	sync_row->add_child(fetch_button);
+
+	pull_button = memnew(Button);
+	pull_button->set_h_size_flags(SIZE_EXPAND_FILL);
+	pull_button->connect("pressed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_PULL));
+	sync_row->add_child(pull_button);
+
+	push_button = memnew(Button);
+	push_button->set_h_size_flags(SIZE_EXPAND_FILL);
+	push_button->connect("pressed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_PUSH));
+	sync_row->add_child(push_button);
+
+	// The commit message, then Amend and Commit right under it.
 	commit_message = memnew(TextEdit);
 	commit_message->set_placeholder("Message (Ctrl+Enter to commit)");
 	commit_message->set_line_wrapping_mode(TextEdit::LINE_WRAPPING_BOUNDARY);
@@ -86,22 +99,19 @@ GitDock::GitDock() {
 	commit_message->connect("gui_input", callable_mp(this, &GitDock::_on_commit_message_input));
 	repo_vb->add_child(commit_message);
 
-	HBoxContainer *action_hb = memnew(HBoxContainer);
-	repo_vb->add_child(action_hb);
+	HBoxContainer *commit_row = memnew(HBoxContainer);
+	repo_vb->add_child(commit_row);
+
+	amend_check = memnew(CheckBox);
+	amend_check->set_text("Amend");
+	amend_check->connect("toggled", callable_mp(this, &GitDock::_on_amend_toggled));
+	commit_row->add_child(amend_check);
 
 	commit_button = memnew(Button);
 	commit_button->set_text("Commit");
 	commit_button->set_h_size_flags(SIZE_EXPAND_FILL);
 	commit_button->connect("pressed", callable_mp(this, &GitDock::_commit));
-	action_hb->add_child(commit_button);
-
-	pull_button = memnew(Button);
-	pull_button->connect("pressed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_PULL));
-	action_hb->add_child(pull_button);
-
-	push_button = memnew(Button);
-	push_button->connect("pressed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_PUSH));
-	action_hb->add_child(push_button);
+	commit_row->add_child(commit_button);
 
 	_build_lists(repo_vb);
 
@@ -396,8 +406,8 @@ void GitDock::_update_actions() {
 	const bool has_message = !commit_message->get_text().strip_edges().is_empty();
 	// A background fetch doesn't count as busy: it only updates remote-tracking refs.
 	const NetworkOp shown = _shown_network_op();
-	// A pull or push rewrites the repository from the worker thread; don't commit meanwhile.
-	const bool syncing = shown == NETWORK_PULL || shown == NETWORK_PUSH;
+	// A pull, push or switch rewrites the repository from the worker thread; don't commit meanwhile.
+	const bool syncing = shown == NETWORK_PULL || shown == NETWORK_PUSH || shown == NETWORK_SWITCH || shown == NETWORK_COMMIT;
 	const bool busy = shown != NETWORK_NONE;
 
 	// The worker rewrites the repository during a pull or push; switching branches or bulk
@@ -405,17 +415,50 @@ void GitDock::_update_actions() {
 	branch_select->set_disabled(syncing);
 	more_menu->set_disabled(syncing);
 
-	fetch_button->set_visible(has_remotes);
+	sync_row->set_visible(has_remotes);
 	fetch_button->set_disabled(busy);
-	fetch_button->set_tooltip_text(shown == NETWORK_FETCH ? String("Fetching...") : String("Fetch: check the remote for new commits, without changing your files."));
+	fetch_button->set_text(shown == NETWORK_FETCH ? String("Fetching...") : String("Fetch"));
+	fetch_button->set_tooltip_text("Fetch: check the remote for new commits, without changing your files.");
 
-	commit_button->set_disabled(syncing || staged_count == 0 || !has_message);
-	if (staged_count == 0) {
-		commit_button->set_tooltip_text("Stage some changes first.");
-	} else if (!has_message) {
-		commit_button->set_tooltip_text("Write a commit message first.");
+	// Amend: only while the last commit is yours alone. Once pushed, rewriting it would leave
+	// teammates with a commit that no longer exists here.
+	if (amend_check->is_pressed() && (!has_commits || last_commit_pushed)) {
+		amend_check->set_pressed(false); // E.g. just pushed. Puts the draft back.
+	}
+	const bool amending = amend_check->is_pressed();
+	amend_check->set_disabled(syncing || !has_commits || last_commit_pushed);
+	if (!has_commits) {
+		amend_check->set_tooltip_text("Nothing to amend yet: there are no commits.");
+	} else if (last_commit_pushed) {
+		amend_check->set_tooltip_text("The last commit is already pushed, so it can't be amended: that would change history your teammates may have.");
 	} else {
-		commit_button->set_tooltip_text(vformat("Commit %s to %s.", plural(staged_count, "staged file", "staged files"), branch));
+		amend_check->set_tooltip_text(vformat("Redo the last commit (%s) instead of making a new one: change its message, and add what's staged.", last_commit_id));
+	}
+
+	commit_message->set_editable(shown != NETWORK_COMMIT);
+	if (shown == NETWORK_COMMIT) {
+		commit_button->set_text(network_amend ? "Amending..." : "Committing...");
+	} else {
+		commit_button->set_text(amending ? "Amend" : "Commit");
+	}
+	if (amending) {
+		commit_button->set_disabled(syncing || !has_message);
+		if (!has_message) {
+			commit_button->set_tooltip_text("Write a commit message first.");
+		} else if (staged_count == 0) {
+			commit_button->set_tooltip_text(vformat("Replace commit %s with this message.", last_commit_id));
+		} else {
+			commit_button->set_tooltip_text(vformat("Replace commit %s with this message, adding %s.", last_commit_id, plural(staged_count, "staged file", "staged files")));
+		}
+	} else {
+		commit_button->set_disabled(syncing || staged_count == 0 || !has_message);
+		if (staged_count == 0) {
+			commit_button->set_tooltip_text("Stage some changes first.");
+		} else if (!has_message) {
+			commit_button->set_tooltip_text("Write a commit message first.");
+		} else {
+			commit_button->set_tooltip_text(vformat("Commit %s to %s.", plural(staged_count, "staged file", "staged files"), branch));
+		}
 	}
 
 	// Pull: only when the branch tracks a remote branch. The count is as of the last fetch;
@@ -544,6 +587,13 @@ void GitDock::_on_branch_selected(int p_index) {
 	if (String(target) == repo->get_current_branch()) {
 		return;
 	}
+	if (repo->uses_lfs()) {
+		// May download LFS files: in the background, with progress and Cancel.
+		network_branch = target;
+		_fill_branches(); // Shows the current branch until the switch is done.
+		_start_network(NETWORK_SWITCH);
+		return;
+	}
 	const Error err = repo->checkout_branch(target);
 	_report(err, "Switch branch");
 	if (err == OK) {
@@ -575,21 +625,58 @@ void GitDock::_on_commit_message_input(const Ref<InputEvent> &p_event) {
 	}
 }
 
+// Ticking Amend fills in the last commit's message to edit; unticking puts back what was
+// there before, unless the message was edited meanwhile.
+void GitDock::_on_amend_toggled(bool p_on) {
+	if (p_on) {
+		amend_saved_draft = commit_message->get_text();
+		commit_message->set_text(last_commit_message);
+		const int last_line = commit_message->get_line_count() - 1;
+		commit_message->set_caret_line(last_line);
+		commit_message->set_caret_column(commit_message->get_line(last_line).length());
+	} else if (commit_message->get_text() == last_commit_message) {
+		commit_message->set_text(amend_saved_draft);
+	}
+	_update_actions();
+}
+
 void GitDock::_commit() {
 	const String message = commit_message->get_text().strip_edges();
-	if (message.is_empty() || staged_count == 0) {
+	const bool amending = amend_check->is_pressed();
+	if (message.is_empty() || (staged_count == 0 && !amending)) {
 		return;
 	}
 	const int files = staged_count;
-	const Error err = repo->commit(message);
-	_report(err, "Commit");
+	const String old_id = last_commit_id;
+	if (repo->commit_runs_git(amending)) {
+		// Hooks or signing: git does it, which may take a while (a hook can run a linter).
+		network_commit_message = message;
+		network_amend = amending;
+		network_commit_files = files;
+		network_amended_id = old_id;
+		_start_network(NETWORK_COMMIT);
+		return;
+	}
+	const Error err = amending ? repo->amend(message) : repo->commit(message);
+	_report(err, amending ? "Amend" : "Commit");
 	if (err == OK) {
+		amend_check->set_pressed_no_signal(false);
+		amend_saved_draft = String();
 		commit_message->clear();
 	}
 	refresh();
 	if (err == OK) {
-		const Array latest = repo->get_commits(1);
-		const String id = latest.is_empty() ? String() : String(Dictionary(latest[0]).get("id", String()));
-		_set_status(STATUS_SUCCESS, vformat("Committed %s (%s)", id, plural(files, "file", "files")));
+		_report_commit(amending, files, old_id);
+	}
+}
+
+// After refresh(), so last_commit_id is the new commit.
+void GitDock::_report_commit(bool p_amended, int p_files, const String &p_old_id) {
+	if (!p_amended) {
+		_set_status(STATUS_SUCCESS, vformat("Committed %s (%s)", last_commit_id, plural(p_files, "file", "files")));
+	} else if (p_files > 0) {
+		_set_status(STATUS_SUCCESS, vformat("Amended %s, now %s (%s added)", p_old_id, last_commit_id, plural(p_files, "file", "files")));
+	} else {
+		_set_status(STATUS_SUCCESS, vformat("Amended %s, now %s", p_old_id, last_commit_id));
 	}
 }

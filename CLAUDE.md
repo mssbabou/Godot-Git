@@ -26,16 +26,17 @@ What the dock does today:
 
 - Branch picker: local branches, remote-tracking branches (picking `origin/x` creates and checks out a tracking branch), "New Branch…".
 - A status strip under the toolbar. It shows what's running, with real progress and Cancel, then keeps the last result, error or "last fetched" time.
-- ⟳ Fetch, and a ⋮ menu (stage/unstage/discard all, new branch, refresh, open repo folder).
-- Commit message box (Ctrl+Enter commits) with **Commit**, **↓ Pull N** and **↑ Push N / Publish** buttons in one row.
-- "Staged Changes" and "Changes" sections (Godot `FoldableContainer`s) with file counts and **+/− line totals** in the header, discard-all / stage-all / unstage-all header buttons, and per-file hover buttons (stage / unstage / discard). Both sections always show; when empty they show a plain dim label ("Nothing staged." / "No changes.").
+- A ⋮ menu next to the branch picker (stage/unstage/discard all, new branch, refresh, open repo folder).
+- A sync row, **⟳ Fetch**, **↓ Pull N** and **↑ Push N / Publish**, sharing the width (hidden without a remote).
+- Commit message box (Ctrl+Enter commits), then **☐ Amend** and **Commit**. Amend redoes the last commit (new message, plus whatever is staged). It's only enabled while that commit isn't on any remote-tracking branch, and ticking it fills in the last message.
+- "Staged Changes" and "Changes" sections (Godot `FoldableContainer`s) with file counts and **+/− line totals** in the header (each file's own +/− is in its tooltip), discard-all / stage-all / unstage-all header buttons, and per-file hover buttons (stage / unstage / discard). Both sections always show; when empty they show a plain dim label ("Nothing staged." / "No changes.").
 - Right-click menus on files (open, stage/unstage, discard, show in FileSystem / file manager, copy paths) and commits (copy hash / message).
 - History of the last 50 commits; commits not yet on any remote are highlighted with the accent color.
 - Double-click opens a file: in Godot if it's a scene/script/resource, otherwise in the external editor from Godot's settings, or VS Code.
 - Pull fast-forwards or creates a merge commit; uncommitted changes to other files stay put. It's refused up front (naming the files) if the new commits touch files you have uncommitted changes to, and conflicting merges are refused and fully undone. It never leaves anything in a stash.
 - Auto-fetch every few minutes, quietly, never opening a sign-in window (toggle in the ⋮ menu).
 
-Supported targets: Windows x86_64/arm64, Linux x86_64/arm64, macOS universal. All five build in CI. The backend test suite (including HTTPS fetches from GitHub) passes on Windows x86_64, Linux x86_64/arm64 and macOS in CI (first confirmed 2026-09-23). The dock UI has only been seen on **Windows x86_64**. (Windows arm64 has a test job since the next push; unconfirmed until it runs.) It's in real use on the maintainer's StorageWars project, a private GitHub repo over HTTPS.
+Supported targets: Windows x86_64/arm64, Linux x86_64/arm64, macOS universal. All five build in CI. The backend test suite (including HTTPS fetches from GitHub) passes on all five in CI (first confirmed 2026-09-23). The dock UI has been seen on **Windows x86_64** (here) and on an **Apple Silicon Mac** (a friend of the maintainer's, 2026-09-24: "worked perfectly fine"; no screenshots or details on how it was installed). It's in real use on the maintainer's StorageWars project, a private GitHub repo over HTTPS, and on this repo itself: commit `39a940b` was made from the panel (an early build, before the status strip).
 
 Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` on a CI zip):
 - **macOS 10.13 (Intel) / 11.0 (Apple Silicon)**, matching Godot 4.7. Set via `macos_deployment_target` in `SConstruct` and passed to libgit2's CMake. Without it the library requires the CI runner's macOS version (the first CI build required macOS 26).
@@ -48,11 +49,13 @@ Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` o
 | Path | What |
 |---|---|
 | `src/git/` | **Backend**, no editor dependencies. All git logic lives here. |
-| `src/git/git_repository.h` | `GitRepository` (RefCounted, exposed to GDScript): the libgit2 wrapper's whole API. |
+| `src/git/git_repository.h` | `GitRepository` (RefCounted): the libgit2 wrapper's whole API. Exposed to GDScript only so the test suite can drive the shipped library; deliberately not documented as a public API (decided 2026-09-24), so it can change freely. |
 | `src/git/git_repository.cpp` | Opening, reading state (status, line stats, branches, history), local changes (stage, discard, commit, checkout). |
 | `src/git/git_repository_remote.cpp` | Fetch, pull, push. `pull()` is split into `paths_blocking_pull` / `fast_forward` / `merge_and_commit` / `merge_with_autostash`. |
-| `src/git/git_remote_callbacks.{h,cpp}` | libgit2 remote callbacks: logins via `git credential fill`, progress reporting (`RemoteContext`, `report_progress`), cancel. |
-| `src/git/git_util.{h,cpp}` | Small libgit2 helpers shared by the above (`fail`, `to_error`, `head_branch`, `changed_paths`, `uncommitted_paths`, ...). |
+| `src/git/git_remote_callbacks.{h,cpp}` | libgit2 remote callbacks: logins via `git credential fill/approve/reject`, progress reporting (`RemoteContext`, `report_progress`), cancel. |
+| `src/git/git_cli.{h,cpp}` | Steps handed to the git CLI because libgit2 would skip hooks or signing: `commit_needs_git`, `has_hook`, `commit_with_git`, and `run_git_command` (runs git with merged output, live progress lines, Cancel). |
+| `src/git/git_lfs.{h,cpp}` | Git LFS: a libgit2 filter for `filter=lfs` backed by `git lfs filter-process`, plus `git lfs fetch`/`push` with progress. |
+| `src/git/git_util.{h,cpp}` | Small libgit2 helpers shared by the above (`Owned` pointers like `CommitPtr`, `fail`, `to_error`, `head_branch`, `changed_paths`, `uncommitted_paths`, ...). |
 | `src/editor/` | **Editor UI.** |
 | `src/editor/git_dock.h` | `GitDock` (EditorDock). Its private methods are grouped by the file that implements them. |
 | `src/editor/git_dock.cpp` | Building the dock, `refresh()`, toolbar and action row, local actions (stage, discard, commit, branches). |
@@ -117,8 +120,9 @@ Dev loop: edit C++ → `scons` → click back into the editor (hot reload). If s
 - Network (fetch / pull / push) uses `RemoteContext` callbacks:
   - **HTTPS credentials** come from git's own credential helper by running `git credential fill` (with `GIT_TERMINAL_PROMPT=0`). On this machine that's Git Credential Manager. If git isn't installed, HTTPS auth can't work.
   - **SSH** uses libgit2's `USE_SSH=exec` backend, i.e. the system `ssh` client (keys, agent, `~/.ssh/config`).
-  - The credential callback refuses a second attempt, so a rejected login fails instead of looping.
-  - `set_login_prompts_allowed(false)` (used for background fetches) runs `git -c credential.interactive=never credential fill`: Git Credential Manager then only uses saved logins. Other common helpers (osxkeychain, libsecret, store) never prompt anyway. A configured `askpass` program could still pop up; not handled.
+  - **Like the git CLI, the login is settled after each operation**: `finish_network_operation` runs `git credential approve` when it worked. That's what makes Git Credential Manager (GCM) save a login it just asked for. Without it, a sign-in through the panel was never saved (found 2026-09-24). When the server rejects a login, libgit2 asks the callback again. The callback then runs `git credential reject`, so the helper forgets the stale login, and asks once more. That's where GCM opens its sign-in window, so an expired token recovers without a terminal. A second rejection, or any rejection with prompts off, fails.
+  - Prompts allowed: `git -c credential.interactive=always credential fill`. **The `always` is required**: started from the editor, GCM has no console, concludes nobody can see a window ("user interactivity has been disabled"), and fails or hangs instead of prompting. This is also why the official godot-git-plugin can't do the browser sign-in; it never calls a credential helper at all.
+  - `set_login_prompts_allowed(false)` (used for background fetches) passes `credential.interactive=never`: GCM then only uses saved logins. Other common helpers (osxkeychain, libsecret, store) never prompt anyway. A configured `askpass` program could still pop up; not handled.
 - `pull()`:
   1. fetches the upstream's remote;
   2. **refuses up front** if the incoming commits (merge base → theirs) touch any path with uncommitted changes (staged, unstaged, or an untracked file the pull would add). The message names the files. Nothing is touched, and no stash is made;
@@ -127,9 +131,31 @@ Dev loop: edit C++ → `scons` → click back into the editor (hot reload). If s
 - `push()` pushes to the upstream, or **publishes** (pushes to `origin`, or the only remote, under the same name, then sets upstream) when there is none. Non-fast-forward (`GIT_ENONFASTFORWARD`, or a server "fetch first" rejection) is reported as "pull first".
 - `get_line_stats(staged)` diffs HEAD↔index or index↔workdir (untracked content included) and returns `{path: Vector2i(added, removed)}`; binary or >2 MB files are `(-1,-1)`.
 
+### Git LFS
+
+libgit2 has no LFS support. On its own it checks out the ~130-byte pointer files instead of the real files, reports a clean status, and commits whole files into git (verified 2026-09-24 before the fix: a pull turned PNGs into pointer text while the panel said "Pulled 1 commit"). `git_lfs.cpp` fixes this by using the real git-lfs, the way git does:
+- **A libgit2 filter named "lfs"** (registered in `register_types.cpp`, attribute `filter=lfs`) sends file contents through **`git lfs filter-process`**. That's git's long-running filter protocol (pkt-lines, `clean` = file→pointer, `smudge` = pointer→file). One process per `git_repository*`, started lazily and stopped in `GitRepository::close()`. Because it's a filter, checkout, pull, merge, stash, discard, staging and status all handle LFS files correctly without special cases.
+- **Downloads happen before checkout**: `pull()` and `checkout_branch()` run `git lfs fetch <remote> <commit>` first, with progress ("Downloading LFS files... 45% (9/20)"; `GIT_LFS_FORCE_PROGRESS=1`, since git-lfs is quiet without a terminal) and Cancel. The filter process runs with `credential.interactive=never`, so a download inside a checkout can never wait on a sign-in window. **`push()` runs `git lfs push` first**, so commits never reach the remote before their files.
+- **Without git-lfs installed**, the filter passes files through (libgit2's old behavior), and staging, committing, pulling, switching branches and pushing in an LFS repo refuse with an explanation (`require_lfs`). Fetch still works.
+- **The dock switches branches in the background** in LFS repos (`NETWORK_SWITCH`), because a switch may download files. Elsewhere it stays instant, on the main thread.
+- LFS files count as binary in the line stats (their diff would be of the pointer text).
+- Why the filter process is started through `cmd /c` / `sh -c` with `2>logfile`: Godot's `execute_with_pipe` gives stderr its own pipe. If nobody reads it, it fills up (a few KB) and git-lfs blocks forever, which would freeze the editor. The log (`.git/godot-git-lfs.log`) is also where error messages come from.
+- Limits: `.gitattributes` is only checked at the repo root (`repo_uses_lfs`). Each file is held in memory while filtered. Only tested against local remotes; **a real LFS server (GitHub) with a sign-in is untested** (StorageWars doesn't use LFS).
+
+### Hooks and commit signing
+
+libgit2 runs no hooks and never signs. Committing that way would silently skip a team's `pre-commit` linter or leave commits unsigned despite `commit.gpgsign`. So (`git_cli.cpp`):
+- **Commit, amend and pull's merge commit** go through `git commit --quiet -F <file>` (`--amend` for amend) when `commit.gpgsign` is on or one of `pre-commit`, `prepare-commit-msg`, `commit-msg`, `post-commit` (plus `post-rewrite` for amend) exists. Hooks come from `core.hooksPath` or `.git/hooks`. For the merge, libgit2's `git_merge` leaves `MERGE_HEAD`, so `git commit` makes a two-parent commit. If git refuses, the merge is undone like a conflicting one and the pull reports "Nothing was pulled".
+- **Push** goes through `git push --progress` when a `pre-push` hook exists (with the same `credential.interactive` setting as our own logins). "Pull first" is recognized from git's `[rejected] ... (fetch first / non-fast-forward)` output.
+- Otherwise libgit2 does it as before, so repositories without hooks or signing are unaffected.
+- A failure shows git's last lines, which is where the hook's own message is (e.g. "player.gd:1: error: use tabs").
+- **The dock commits in the background** when `commit_runs_git()` says so (`NETWORK_COMMIT`), because a hook can take a while. The strip shows the hook's output live, with Cancel. After a Cancel it only says "Commit canceled.", because a post-commit hook may already have run.
+- `run_git_command` merges stdout and stderr through `cmd /c ... 2>&1` / `sh -c`, for the same reason as the LFS filter: an unread stderr pipe blocks the process. git-lfs fetch/push use it too.
+- Not covered: `pre-merge-commit` (only `git merge` runs it; we commit merges with `git commit`), and `post-checkout`/`post-merge` after libgit2 checkouts. GPG signing needs a pinentry that can show a window (e.g. Gpg4win's); a terminal-only pinentry fails, since there's no terminal.
+
 ### GitDock (UI)
 
-- Layout, top to bottom: toolbar (branch `OptionButton`, fetch, ⋮ `MenuButton`) → commit `TextEdit` → action row (Commit, Pull, Push) → `ScrollContainer` holding three `FoldableContainer`s (Staged Changes, Changes, History).
+- Layout, top to bottom: toolbar (branch `OptionButton`, ⋮ `MenuButton`) → status strip → sync row (Fetch, Pull, Push; `SIZE_EXPAND_FILL` each) → commit `TextEdit` → commit row (Amend `CheckBox`, Commit) → `ScrollContainer` holding three `FoldableContainer`s (Staged Changes, Changes, History).
 - The file trees have **scrolling disabled** so they report their full height, and the outer `ScrollContainer` scrolls everything as one list. Sections are exactly as tall as their content.
 - File rows are **one cell** (`CELL_MODE_CUSTOM`). `_draw_file_row` paints the status letter, icon, name and dimmed folder. The cell's text is set to the file name with a transparent color, so row height, type-to-search and accessibility still work.
 - Hover buttons: `_set_hovered` adds stage/unstage/discard buttons to the row under the mouse and clears them from the previous one (tracked by instance id, reset on every refresh). Only rows whose metadata is a `String` path count as file rows.
@@ -143,10 +169,10 @@ Dev loop: edit C++ → `scons` → click back into the editor (hot reload). If s
   - after every action.
 
   There is no other polling.
-- Network ops run on a `Thread` (`_network_worker`) and report back with `call_deferred` to `_network_done`. `_finish_network_thread` joins on `EXIT_TREE`. Commit, the branch picker and the ⋮ menu are disabled while a pull or push runs; the worker is rewriting the repo.
+- Network ops run on a `Thread` (`_network_worker`) and report back with `call_deferred` to `_network_done`. `_finish_network_thread` joins on `EXIT_TREE`. Commit, Amend, the branch picker and the ⋮ menu are disabled while a pull, push or LFS branch switch runs; the worker is rewriting the repo.
 - **Auto-fetch** (`_on_auto_fetch_timer`): checks 10 s after opening, then every minute, and fetches when `last_fetched` (FETCH_HEAD's age, so CLI fetches count) is 5+ minutes old. After a failed attempt it also waits 5 minutes. Per-project setting in the ⋮ menu (`EditorSettings` project metadata `godot_git/auto_fetch`, default on). It runs **quietly** (`network_quiet`): no strip, buttons stay enabled, and no sign-in windows (`set_login_prompts_allowed(false)`). Pressing Fetch during it just shows it. Pressing Pull/Push queues the op (`queued_op`), shown as busy with "Waiting for a background fetch...". A failure shows one warning, cleared by the next success. `_shown_network_op()` is what the buttons reflect.
 - **Status strip** (`_set_status` / `_update_status` / `_update_status_style`), under the toolbar. Every result and error goes here. It's one wrapping `RichTextLabel` (never trimmed; selectable so errors can be copied), an icon, a Cancel/Dismiss button, and a thin progress bar while busy. Kinds: idle ("Last fetched 3h ago", from `last_fetched` in the sync status), busy, success ("· just now", kept current by a 30 s timer), neutral (canceled), warning and error (tinted background, stay until dismissed or replaced). Results never time out. Toasts are only used when the dock is hidden behind another tab, so an outcome is never missed.
-- Progress: the worker's `GitRepository` gets `set_progress_callback(callable_mp(dock, &_network_progress))`. The backend throttles to ~10 updates/s and uses `call_deferred`, so the dock is only touched on the main thread. Cancel calls the static `GitRepository::cancel_network()`, which sets an atomic flag the libgit2 callbacks check (returning `GIT_EUSER`) and kills a pending `git credential fill`. The op then fails with `ERR_SKIP`.
+- Progress: the worker's `GitRepository` gets `set_progress_callback(callable_mp(dock, &_network_progress))`. The backend throttles to ~10 updates/s and uses `call_deferred`, so the dock is only touched on the main thread. Cancel calls the static `GitRepository::cancel_network()`, which sets an atomic flag the libgit2 callbacks check (returning `GIT_EUSER`) and kills the child process being waited on (`git credential fill`, `git lfs fetch/push`; tracked with `track_process`). On Windows that's `taskkill /T`, because git's own children (Git Credential Manager's window, git-lfs) outlive their parent otherwise. The op then fails with `ERR_SKIP`.
 
 ---
 
@@ -160,7 +186,7 @@ Dev loop: edit C++ → `scons` → click back into the editor (hot reload). If s
   - `src/git/` never includes editor classes; `src/editor/` talks to git only through `GitRepository`.
   - Internal helpers live in `namespace godot_git`; file-local ones in an anonymous namespace.
   - A class may span several `.cpp` files when it has clear areas (the dock does: lists, status, network). Split along those seams, not by line count. Keep the header's method list grouped by file.
-  - Libgit2 cleanup is manual (`git_*_free`): prefer small functions with one exit path, or early returns that free what they took, over one long function. That's what made the old `pull()` hard to follow.
+  - Hold libgit2 objects in the `Owned` aliases from `git_util.h` (`ReferencePtr head; git_repository_head(head.out(), repo);`), which free them on every return. Don't call `git_*_free` by hand; the only exceptions are the repository itself (`GitRepository::close`) and `head_branch`'s out-param. Add an alias when you need a new type. `git_buf` goes through `buf_to_string` or `git_buf_dispose`.
 - **Formatting**: run clang-format (the repo's `.clang-format`, from godot-cpp) on changed C++ files. On this machine it's at `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Tools\Llvm\x64\bin\clang-format.exe`.
 - **Commits**: the maintainer commits and pushes themselves. Don't commit, create repos, or push unless explicitly asked. Leaving work staged has been the norm.
 
@@ -168,7 +194,7 @@ Dev loop: edit C++ → `scons` → click back into the editor (hot reload). If s
 
 ## Testing
 
-1. **Backend tests: `project/tests/`, in the repo and in CI.** `run_tests.gd` (a `SceneTree` script) runs the suites `test_local.gd`, `test_sync.gd`, `test_pull_safety.gd` and `test_online.gd` (the last only with `-- --online`). Each suite extends `test_case.gd`, which builds throwaway repos with the real git CLI (a bare "remote" plus "mine" and "theirs" clones via `make_shared()`). Checks are made against what git itself says. Run:
+1. **Backend tests: `project/tests/`, in the repo and in CI.** `run_tests.gd` (a `SceneTree` script) runs the suites `test_local.gd`, `test_sync.gd`, `test_pull_safety.gd`, `test_checkout_safety.gd` (Windows only), `test_amend.gd`, `test_hooks.gd` (real hooks, and SSH signing with a throwaway key), `test_credentials.gd`, `test_lfs.gd` (skipped without git-lfs; CI installs it) and `test_online.gd` (the last only with `-- --online`). Each suite extends `test_case.gd`, which builds throwaway repos with the real git CLI (a bare "remote" plus "mine" and "theirs" clones via `make_shared()`). Checks are made against what git itself says. Run:
    `godot --headless --path project -s res://tests/run_tests.gd [-- --online] [-- <suite>]`. Exit code 1 on failure; scratch repos go to the OS temp folder and are kept (path printed) when something fails. CI runs them on Windows, Linux x86_64/arm64 and macOS against each freshly built library. It first opens the project with `-e --quit-after 300` so the extension gets registered; see gotcha about `--import`. **Every bug from real use gets a test here.** The suite has already caught one on its first run: the push "pull first" message never showed for the common unfetched case.
 2. **UI tests in a real (headless) editor.** Not in the repo yet; these run from the session scratchpad. Copy the addon into a throwaway project and add a test-only `EditorPlugin` (`addons/ui_driver/`) enabled in `project.godot` that finds dock controls (`find_children` on `EditorInterface.get_base_control()`) and presses them (`button.pressed.emit()`, `popup.id_pressed.emit(id)`), then prints results. Run with `--headless -e --path <project> --quit-after <frames>` and **redirect stdout**. Gotchas:
    - PowerShell 5's `Set-Content -Encoding utf8` writes a **BOM**, and Godot then silently ignores `plugin.cfg`. Write files with `[IO.File]::WriteAllText(path, text, (New-Object Text.UTF8Encoding $false))`.
@@ -209,6 +235,8 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 22. **Hot reload can crash the editor inside the unloaded old library** (seen once, in the maintainer's open dev editor, while rebuilding). `callable_mp` connections and deferred calls hold raw function pointers into the old DLL. Dev-only: release zips have `reloadable = false`. If it gets annoying, restart the editor rather than relying on hot reload for big changes.
 23. **Project Settings saves `project.godot` without any signal**: `ProjectSettings::save()` bypasses `EditorFileSystem`, and `settings_changed` fires *before* the delayed save. The dock watches the file's modified time instead.
 24. `OS.execute("cmd", ["/c", "rmdir", "/s", "/q", path])` silently does nothing: Godot quotes each argument separately. Pass cmd one string: `["/c", "rd /s /q \"path\""]`.
+25. **`OS.execute` drops empty arguments and mangles embedded quotes** on Windows: `git config credential.helper ""` became a read, and `"$1"` inside an argument lost its quotes. The test suite writes such config lines into `.git/config` directly.
+26. **`FileAccess.get_buffer()` on a pipe drops a partial last chunk** when the process exits. Reading `git upload-pack` output that way lost its final `0000`. Read binary pipe output byte by byte (`get_8` until `get_error() != OK`); line-based reads (`get_line`) are fine for newline-terminated text.
 
 ## libgit2 gotchas
 
@@ -223,17 +251,18 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 9. **Progress callbacks are the only place to cancel.** Returning `< 0` aborts with `GIT_EUSER`, but a socket blocked mid-read won't call back until data arrives. WinHTTP's own timeouts bound that on Windows. `transfer_progress` also fires for local (`file://`) remotes, which the tests rely on.
 10. **A rejected non-fast-forward push has two different messages** in 1.9.7: "cannot push non-fastforwardable reference" (you fetched, and diverged) and "...contains commits that are not present locally" (you haven't fetched). Both return `GIT_ENONFASTFORWARD`; match on the code, never the text.
 11. The last fetch time is the mtime of `FETCH_HEAD` in `git_repository_commondir` (not `_path`, which differs in linked worktrees). The git CLI updates it too, so fetches from a terminal count.
-12. The libgit2 CMake options live in `tools/libgit2.py`. HTTPS backend per platform: WinHTTP (Windows), SecureTransport (macOS), OpenSSL loaded at runtime (Linux, so no hard libssl dependency). zlib, regex and the http parser are bundled.
+12. **Checkouts aren't atomic.** `git_checkout_tree` (and `git_merge`'s checkout) change files one by one and stop at the first they can't change. On Windows that's any file another program has open (Godot importing it, an antivirus scan). They don't undo what they already did, and HEAD doesn't move, so the tree is left half-switched and full of fake changes. Always go through `checkout_all_or_nothing` / `CheckoutGuard` (`git_util.h`): it records the planned and completed paths (the notify callback misses removals; the progress callback catches them), puts them back from HEAD's tree on failure, and retries twice, 500 ms apart, because such locks are usually brief.
+13. The libgit2 CMake options live in `tools/libgit2.py`. HTTPS backend per platform: WinHTTP (Windows), SecureTransport (macOS), OpenSSL loaded at runtime (Linux, so no hard libssl dependency). zlib, regex and the http parser are bundled.
 
 ---
 
 ## Design decisions (and why)
 
-- **Own dock rather than `EditorVCSInterface`.** Godot's built-in VCS panels are fixed and limited (no real history or branch UI). The official godot-git-plugin already fills that role, so an own dock is the only way to make something better.
+- **Own dock rather than `EditorVCSInterface`.** Godot's built-in VCS panels are fixed and limited (no real history or branch UI). The official godot-git-plugin already fills that role, so an own dock is the only way to make something better. We also don't implement the interface alongside the dock (decided 2026-09-24): it only feeds Godot's own VCS panels, so it would add a second, weaker UI for the same repo. That UI can't show our progress, cancel or refusals. The engine also takes one VCS plugin per project, so it would compete with the official one. The official plugin is short (~1,050 lines) because Godot's `version_control_editor_plugin.cpp` (~1,600 lines) draws its UI, and because its git logic is thin: conflicts are left in the files, progress just gets `print()`ed, and logins are a typed username and password.
 - **Editor-only, shipped as `addons/godot_git/`.** It's a dev tool and must not end up in games. The standard addon layout means installing is "unzip into your project".
 - **Honesty over cleverness.** Only show actions that can actually be performed. Pull and Push disappear without a remote, Push is disabled with nothing to send, and tooltips say exactly what a button will do. We briefly had one context-sensitive "do the next thing" button; the maintainer preferred **separate Commit / Pull / Push buttons**, labeled with counts ("↓ Pull 2", "↑ Push 1").
 - **Native look.** `FoldableContainer` sections, editor theme icons/colors, Tree button styles for header buttons, Title Case. Avoid inventing styles.
-- **Calm lists.** Status letter on the left in a fixed column, neutral file names, dimmed folder after the name, action buttons only on hover, line counts only as section totals. Each of these came from an earlier version looking cluttered.
+- **Calm lists.** Status letter on the left in a fixed column, neutral file names, dimmed folder after the name, action buttons only on hover, line counts as section totals on screen and per file only in the tooltip. Each of these came from an earlier version looking cluttered.
 - **Opening files never surprises.** Godot opens what Godot can (scenes, scripts, resources, which respect Godot's own "use external editor" setting). Everything else goes to the external editor configured in Godot, else VS Code, else a toast explaining how to set one. We never hand files to random OS apps or the file manager.
 - **Pull safety.** A pull either completes with your uncommitted work exactly where it was, or refuses and changes nothing. Unrelated uncommitted edits are carried through a merge (internally with a stash that's always restored), which makes pull usable in real Godot projects where the editor constantly rewrites `project.godot` and scenes. Edits to files the pull touches make it refuse up front. A conflicting merge is always fully undone; the panel doesn't resolve conflicts yet. `test_pull_safety.gd` covers all of this.
 - **Network on a worker thread** so the editor never freezes on slow remotes or credential prompts.
@@ -259,8 +288,19 @@ It has been verified end to end in a real editor (fetch, pull, merge, commit, co
 
 ### Unproven or untested
 
-- **The dock on Linux and macOS, and anything on Windows ARM.** CI proves the Linux (x86_64, arm64) and macOS libraries load in the official Godot 4.7.2 and pass the backend suite, HTTPS included. Nobody has looked at the dock UI there (fonts, scaling, file manager and VS Code paths). Windows arm64 got a test job after the first CI run; check it passed. macOS builds aren't signed; loading worked in CI (downloaded with curl, so no quarantine flag), but a browser-downloaded zip will likely hit Gatekeeper.
-- **Push over HTTPS/SSH to a real server.** Authenticated HTTPS *fetch/pull* from a private GitHub repo works (verified on StorageWars through Git Credential Manager). Push uses the same credential path but hasn't been exercised. SSH is untested.
+- **The dock on Linux and Windows ARM, and in depth on macOS.** CI proves all five libraries load in the official Godot 4.7.2 and pass the backend suite, HTTPS included. On macOS, a friend of the maintainer's used the dock on Apple Silicon without problems; nobody has looked closely at fonts, scaling, the file manager or VS Code paths there, or at an Intel Mac. The dock hasn't been seen on Linux or Windows ARM at all. macOS: see "macOS signing and Gatekeeper" below.
+- **macOS signing and Gatekeeper** (investigated 2026-09-23). The library has no Developer ID signature: the arm64 slice is ad-hoc linker-signed (flags 0x20002, which Apple Silicon requires and the linker adds automatically), and the x86_64 slice is unsigned. Whether it loads depends only on the `com.apple.quarantine` flag:
+  - **Asset Library install inside Godot: no flag, loads.** It downloads with `HTTPRequest` and unzips with minizip + `FileAccess` (`editor/asset_library/`). The Godot editor isn't sandboxed and has no `LSFileQuarantineEnabled`, and it has `com.apple.security.cs.disable-library-validation`, so a non-Godot-signed library is allowed. CI's macOS test (curl download, no flag, arm64 runner) is the same condition, and it loads and passes.
+  - **git clone of a project with the addon committed: no flag, loads.**
+  - **Browser-downloaded zip: flagged, likely blocked** ("Apple cannot check it for malicious software"). Widely reported for GDExtensions, not tested here. The workaround is `xattr -dr com.apple.quarantine addons/godot_git` or System Settings > Privacy & Security > Allow Anyway. It could be verified in CI by setting the flag on the macOS runner (check `spctl --status` first; runners may have Gatekeeper off, which would make the test meaningless).
+  - **Consequence:** a Developer ID ($99/year) plus notarization is only needed for a smooth browser-zip install. It is **not** a blocker for an Asset Library listing.
+- **SSH remotes** are untested with a real login (no SSH keys on the dev machine). Findings from probing (2026-09-23), not fixed yet:
+  1. On Windows the panel runs `C:\Windows\System32\OpenSSH\ssh.exe` (first `ssh` on PATH), while the git CLI uses Git for Windows' own `usr\bin\ssh.exe`. Different key agents, so "works in git, fails in the panel" is possible. That contradicts the README's "if `git fetch` works in a terminal it works here". Fix: when `GIT_SSH_COMMAND`/`GIT_SSH`/`core.sshCommand` are unset, point `GIT_SSH` at git's ssh.
+  2. libgit2's exec transport doesn't capture ssh's stderr (`capture_err = 0` in `ssh_exec.c`), so every SSH failure reads "could not read refs from remote repository". Fix idea: `ssh -E <logfile>` via `GIT_SSH_COMMAND`, then show ssh's real reason with a hint (`ssh -T git@host`).
+  3. ssh can't prompt (no terminal). On Windows it fails. On Linux/macOS, an editor started from a terminal could leave ssh waiting there on a passphrase or host-key question, hanging a background fetch. Fix: `-o BatchMode=yes` at least for quiet fetches.
+  4. Cancel only takes effect once ssh gives up connecting (seen: ~9 s extra against a dead address; HTTPS connects behave the same).
+  5. No console window appeared for ssh when the editor was launched without a console (checked via the process's console), even though libgit2 doesn't pass `CREATE_NO_WINDOW`.
+  CI could test real SSH: the Linux runner can start `sshd` with a throwaway key and serve a bare repo. Authenticated HTTPS works both ways through Git Credential Manager: fetch/pull on StorageWars (private), and commit + push on this repo (`39a940b`, from an early build; the push path has since gained progress, cancel and the "pull first" message, all covered by the local tests).
 - **Light editor theme** was never looked at. Everything uses theme colors, so it should be fine.
 - **RTL layouts**: `_draw_file_row` assumes left-to-right.
 
@@ -269,7 +309,7 @@ It has been verified end to end in a real editor (fetch, pull, merge, commit, co
 Roughly in order of value, after status and feedback. Per philosophy point 1, don't expose any of these half-done; a feature appears in the UI when it fully works.
 - **Diff viewer.** The biggest gap. Selecting a file should show its diff, probably in a bottom-panel dock or a split. libgit2 patches are already computed for line stats.
 - **Conflict resolution.** Today conflicting pulls are refused. A minimal version: let the merge happen, list conflicted files with "take mine / take theirs / open in editor", and commit when resolved.
-- Amend last commit, stash UI, branch delete/rename, tags, blame, per-hunk staging.
+- Stash UI, branch delete/rename, tags, blame, per-hunk staging.
 - **Choosing the repository.** Today it's always the one containing the project (searching up from `res://`), which covers the common case: a project at its repo's root (~80% per the maintainer), and a project in a subfolder of a repo. Not covered:
   - a project that isn't in a repo at all (the dock just says so: offer "Initialize repository" or "Choose folder...");
   - a project whose repo is somewhere unexpected;
@@ -295,6 +335,8 @@ Roughly in order of value, after status and feedback. Per philosophy point 1, do
 ### Bugs found in real use (and fixed)
 
 Worth remembering, because each came from a path the tests didn't cover:
+- **A branch switch that failed halfway left the tree half-switched** (maintainer, playground project, 2026-09-24): `boss.png` was in use, so the switch failed after deleting `notes.txt`, the `.uid` files and several `.import` files. HEAD stayed on `main`, so they all showed as deleted changes, and the next pull was refused because of them. Pull's fast-forward and merge had the same flaw. Fixed with `checkout_all_or_nothing`; `test_checkout_safety.gd` reproduces it on Windows by holding a file open with `FileAccess`.
+- **Signing in from the panel never worked; only logins already saved by the git CLI did.** GCM refused to show its window when started by Godot (see `credential.interactive=always`), and even a successful sign-in wasn't saved because we never sent `approve`. The maintainer had a login saved from the CLI, so it went unnoticed until they tried the official plugin's sign-in. Verified on GitHub by signing out, signing in through the panel, and fetching again with prompts off. `test_credentials.gd` covers approve/reject with a fake helper and a local HTTP server.
 - **Pull from a private repo hung forever, pinning one core.** The login read looped on `eof_reached()`, which Godot pipes never report. Tests had only fetched a public repo, which needs no login. Reproduced with the old build, fixed, and verified against the private repo.
 - **"Unstage all" failed** with a libgit2 assertion (empty pathspec). Only single-file unstage had been tested.
 - **The "No changes." placeholder acted like a file** (hover highlight, stage/discard buttons). Placeholder rows were real tree rows, plus the `"<null>"` metadata gotcha.
@@ -315,8 +357,17 @@ Two tiers: small **stepping stones** that make the base solid, then the **big fe
    - Saving inside Godot refreshes the panel. It already did via `filesystem_changed`, and `project.godot` is now watched too.
    - Auto-fetch.
    - Pull refuses up front instead of ever stranding edits in a stash.
-4. **Run the Mac and Linux builds on real machines, then tag `v0.1.0`.** CI now runs the backend tests on those platforms (a real check that the libraries load and work), but the dock UI still hasn't been seen on them. A stable base to come back to.
-5. Later: a performance pass on `refresh()` for big repos, and an Asset Library listing once macOS signing is sorted (needs an Apple Developer account; otherwise Gatekeeper blocks the library).
+4. **Run the Linux build on a real machine, then tag `v0.1.0`.** CI runs the backend tests on every platform (a real check that the libraries load and work). The dock has been used on an Apple Silicon Mac (a friend's quick check, 2026-09-24), but not yet seen on Linux. A stable base to come back to.
+5. **Asset Library listing** after `v0.1.0`. macOS signing is *not* a blocker (see "macOS signing and Gatekeeper"). The source repo has no binaries, so the listing needs a custom download URL pointing at the release zip (or a binaries branch). Check whether Godot's newer Asset Store or the classic Asset Library is current, and their rules, at that time. The README needs a macOS note for browser-downloaded zips (`xattr -dr com.apple.quarantine addons/godot_git`).
+6. Later: a performance pass on `refresh()` for big repos.
+7. ~~Name for the dock tab.~~ **Decided 2026-09-24: it stays "Git".** The maintainer tried "Version Control" and found it too long for a small tab (it also clashes with Godot's own Version Control panel). The planned main-screen tab (diff/history) still needs its own name, not "Git" too; candidates "Review" / "Diff". The maintainer finds pun names pointless. Keep `set_layout_key("GodotGit")` unchanged if anything is ever renamed, or users lose their saved dock position.
+
+### Next up (agreed 2026-09-24, in this order)
+
+1. ~~Git LFS.~~ **Done** (2026-09-24), see "Git LFS" under Architecture. Still open: a real LFS server with a sign-in, and a project with thousands of LFS files (speed).
+2. ~~Commit hooks and signing.~~ **Done** (2026-09-24), see "Hooks and commit signing" under Architecture. GPG signing with a real key and pinentry is untested (the tests sign with SSH keys).
+3. **SSH fixes**: see "SSH remotes" under Unproven or untested.
+4. ~~New action layout plus Amend.~~ **Done** (2026-09-24), pulled forward so the maintainer can use it while the rest is built. Checked on screen at normal and narrowest (~190 px) dock widths.
 
 ### Big features (in order)
 
@@ -335,7 +386,7 @@ Two tiers: small **stepping stones** that make the base solid, then the **big fe
 
 **3. Conflict resolution.** Let a pull stop at conflicts instead of refusing. List conflicted files with "keep mine / take theirs / open in editor", show them in the diff view, and finish the merge when all are resolved (or abort cleanly). This removes the last "use git in a terminal" message.
 
-**4. Stash and branch management.** A stash list with restore/drop, and branch delete/rename. Amend last commit and tags fit here too.
+**4. Stash and branch management.** A stash list with restore/drop, and branch delete/rename. Tags fit here too.
 
 ## Advice
 

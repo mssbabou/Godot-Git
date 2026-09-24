@@ -1,6 +1,7 @@
 #pragma once
 
 #include <godot_cpp/classes/button.hpp>
+#include <godot_cpp/classes/check_box.hpp>
 #include <godot_cpp/classes/confirmation_dialog.hpp>
 #include <godot_cpp/classes/editor_dock.hpp>
 #include <godot_cpp/classes/foldable_container.hpp>
@@ -65,6 +66,8 @@ class GitDock : public EditorDock {
 		NETWORK_FETCH,
 		NETWORK_PULL,
 		NETWORK_PUSH,
+		NETWORK_SWITCH, // Switching branches in a repository with LFS files, which may download them.
+		NETWORK_COMMIT, // Committing through git, because hooks run or commits get signed.
 	};
 
 	// What the status strip is showing.
@@ -99,7 +102,6 @@ class GitDock : public EditorDock {
 	uint64_t project_file_time = 0;
 
 	OptionButton *branch_select = nullptr;
-	Button *fetch_button = nullptr;
 	MenuButton *more_menu = nullptr;
 
 	// Status strip under the toolbar: what the panel is doing, or what it last did.
@@ -115,10 +117,18 @@ class GitDock : public EditorDock {
 	int64_t status_time = 0;
 	bool status_cancellable = false;
 
-	TextEdit *commit_message = nullptr;
-	Button *commit_button = nullptr;
+	// Sync row (Fetch, Pull, Push; hidden without a remote), then the message, then Amend + Commit.
+	HBoxContainer *sync_row = nullptr;
+	Button *fetch_button = nullptr;
 	Button *pull_button = nullptr;
 	Button *push_button = nullptr;
+	TextEdit *commit_message = nullptr;
+	CheckBox *amend_check = nullptr;
+	Button *commit_button = nullptr;
+	String amend_saved_draft; // What was in the message box before ticking Amend filled it in.
+	String last_commit_id;
+	String last_commit_message;
+	bool last_commit_pushed = false;
 
 	FilePane staged_pane;
 	FilePane changes_pane;
@@ -146,6 +156,11 @@ class GitDock : public EditorDock {
 	NetworkOp network_op = NETWORK_NONE;
 	int network_ahead = 0; // Commits a push is sending, counted when it starts.
 	bool network_publish = false;
+	String network_branch; // The branch a NETWORK_SWITCH switches to.
+	String network_commit_message; // What a NETWORK_COMMIT commits, and how.
+	bool network_amend = false;
+	int network_commit_files = 0;
+	String network_amended_id;
 	// A background (automatic) fetch runs quietly: no strip, no disabled buttons, no login windows.
 	// If you press Pull or Push meanwhile, it's queued and shown as waiting.
 	bool network_quiet = false;
@@ -173,7 +188,9 @@ class GitDock : public EditorDock {
 	void _on_branch_selected(int p_index);
 	void _on_branch_dialog_confirmed();
 	void _on_commit_message_input(const Ref<InputEvent> &p_event);
+	void _on_amend_toggled(bool p_on);
 	void _commit();
+	void _report_commit(bool p_amended, int p_files, const String &p_old_id);
 
 	// git_dock_lists.cpp: the Staged Changes / Changes / History sections.
 	void _build_lists(Control *p_parent);
@@ -209,7 +226,7 @@ class GitDock : public EditorDock {
 	String _network_description(int p_op) const;
 	bool _is_auto_fetch_enabled() const;
 	void _on_auto_fetch_timer();
-	void _network_worker(int p_op, const String &p_workdir, bool p_quiet);
+	void _network_worker(int p_op, const String &p_workdir, bool p_quiet, const String &p_text, bool p_amend);
 	void _network_progress(const String &p_step, double p_fraction, bool p_cancellable);
 	void _network_done(int p_op, int p_err, const String &p_message, const String &p_upstream, const String &p_notice, const Dictionary &p_pull_result);
 	void _finish_network_thread();

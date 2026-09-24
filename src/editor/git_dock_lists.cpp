@@ -179,7 +179,14 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status, const Dic
 		item->set_custom_draw_callback(COLUMN_NAME, draw_row);
 		item->set_text(COLUMN_NAME, path.get_file());
 		item->set_custom_color(COLUMN_NAME, Color(0, 0, 0, 0));
-		item->set_tooltip_text(COLUMN_NAME, vformat("%s\n%s", path, status_name(state)));
+		// The row itself stays calm (totals are in the header); the tooltip has this file's counts.
+		String lines;
+		if (stats.x < 0) {
+			lines = "binary or too large to count lines";
+		} else if (stats.x > 0 || stats.y > 0) {
+			lines = vformat("+%d %s%d", stats.x, minus(), stats.y);
+		}
+		item->set_tooltip_text(COLUMN_NAME, lines.is_empty() ? vformat("%s\n%s", path, status_name(state)) : vformat(String::utf8("%s\n%s · %s"), path, status_name(state), lines));
 	}
 
 	tree->set_visible(files > 0);
@@ -302,6 +309,11 @@ void GitDock::_fill_history() {
 	const Array commits = repo->get_commits(50);
 	const Color dim = _dim_color();
 	has_commits = !commits.is_empty();
+	// For Amend. "unpushed" means on no remote-tracking branch; without remotes it's never set.
+	const Dictionary last = commits.is_empty() ? Dictionary() : Dictionary(commits[0]);
+	last_commit_id = last.get("id", String());
+	last_commit_message = last.get("message", String());
+	last_commit_pushed = has_commits && bool(sync_status.get("has_remotes", false)) && !bool(last.get("unpushed", false));
 
 	history_tree->set_visible(!commits.is_empty());
 	history_empty->get_parent_control()->set_visible(commits.is_empty());

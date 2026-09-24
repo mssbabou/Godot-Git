@@ -9,6 +9,7 @@
 
 #include "editor/git_dock.h"
 #include "editor/git_editor_plugin.h"
+#include "git/git_lfs.h"
 #include "git/git_repository.h"
 
 using namespace godot;
@@ -16,6 +17,7 @@ using namespace godot;
 void initialize_godot_git_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
 		git_libgit2_init();
+		godot_git::register_lfs_filter();
 		GDREGISTER_CLASS(GitRepository);
 	}
 
@@ -32,6 +34,7 @@ void uninitialize_godot_git_module(ModuleInitializationLevel p_level) {
 	}
 
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
+		godot_git::shutdown_lfs();
 		git_libgit2_shutdown();
 	}
 }

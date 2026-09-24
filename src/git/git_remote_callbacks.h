@@ -16,6 +16,9 @@ namespace godot_git {
 struct RemoteContext {
 	String workdir;
 	int credential_attempts = 0;
+	// The login the credential helper gave us, exactly as it described it ("username=...\n"
+	// lines), so it can be handed back to confirm or reject it. Empty if none was used.
+	String credential;
 	String push_rejection;
 	Callable progress;
 	String last_step;
@@ -42,8 +45,16 @@ void begin_network_operation();
 // waiting on a login window.
 void cancel_network_operation();
 
-// The Error for a libgit2 network result. An operation stopped by cancel_network_operation()
-// is ERR_SKIP with "Canceled. Nothing was changed." (libgit2 only says GIT_EUSER).
-Error remote_error(int p_err);
+// The child process the current network operation waits on (0: none), so Cancel can end it,
+// along with any processes it started.
+void track_process(int64_t p_pid);
+
+bool is_cancel_requested();
+
+// Call when a libgit2 network call returns: tells the credential helper whether its login
+// worked (so it saves a new one), and turns the result into an Error. An operation stopped by
+// cancel_network_operation() is ERR_SKIP with "Canceled. Nothing was changed." (libgit2 only
+// says GIT_EUSER).
+Error finish_network_operation(RemoteContext &p_ctx, int p_err);
 
 } // namespace godot_git

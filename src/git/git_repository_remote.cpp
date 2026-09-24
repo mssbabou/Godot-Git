@@ -6,14 +6,16 @@
 #include <git2.h>
 #include <git2/sys/errors.h>
 
+#include "git/git_cli.h"
+#include "git/git_lfs.h"
 #include "git/git_remote_callbacks.h"
 #include "git/git_util.h"
 
 using namespace godot_git;
 
 Error GitRepository::_fetch_remote(const String &p_remote) {
-	git_remote *remote = nullptr;
-	int err = git_remote_lookup(&remote, repo, p_remote.utf8().get_data());
+	RemotePtr remote;
+	int err = git_remote_lookup(remote.out(), repo, p_remote.utf8().get_data());
 	if (err < 0) {
 		return to_error(err);
 	}
@@ -26,9 +28,27 @@ Error GitRepository::_fetch_remote(const String &p_remote) {
 	set_remote_callbacks(opts.callbacks, ctx);
 
 	report_progress(&ctx, "Connecting...", String(), -1);
-	err = git_remote_fetch(remote, nullptr, &opts, "fetch");
-	git_remote_free(remote);
-	return remote_error(err);
+	return finish_network_operation(ctx, git_remote_fetch(remote, nullptr, &opts, "fetch"));
+}
+
+// Before checking out p_commit on branch p_refname in a repository with LFS files: downloads the
+// files it needs from the branch's remote, with progress and Cancel, so the checkout itself
+// doesn't have to. Without a remote, the files must already be here.
+Error GitRepository::_fetch_lfs_files(const char *p_refname, const git_oid *p_commit) {
+	begin_network_operation();
+	if (require_lfs(repo, "switching branches") != OK) {
+		return FAILED;
+	}
+	git_buf remote_name = GIT_BUF_INIT;
+	if (git_branch_upstream_remote(&remote_name, repo, p_refname) < 0) {
+		git_buf_dispose(&remote_name);
+		return OK;
+	}
+	RemoteContext ctx;
+	ctx.workdir = get_workdir();
+	ctx.login_prompts_allowed = login_prompts_allowed;
+	ctx.progress = progress_callback;
+	return lfs_fetch(repo, ctx, buf_to_string(remote_name), String(git_oid_tostr_s(p_commit)));
 }
 
 // Fetches the current branch's remote, or every remote if the branch has no upstream.
@@ -42,12 +62,10 @@ Error GitRepository::fetch() {
 		return fail("This repository has no remote.");
 	}
 
-	git_reference *head = nullptr;
-	if (git_repository_head(&head, repo) == 0) {
+	ReferencePtr head;
+	if (git_repository_head(head.out(), repo) == 0) {
 		git_buf remote_name = GIT_BUF_INIT;
-		const int err = git_branch_upstream_remote(&remote_name, repo, git_reference_name(head));
-		git_reference_free(head);
-		if (err == 0) {
+		if (git_branch_upstream_remote(&remote_name, repo, git_reference_name(head)) == 0) {
 			return _fetch_remote(buf_to_string(remote_name));
 		}
 		git_buf_dispose(&remote_name);
@@ -84,25 +102,22 @@ PackedStringArray paths_blocking_pull(git_repository *p_repo, const git_oid *p_h
 
 Error fast_forward(git_repository *p_repo, git_reference *p_head, const git_annotated_commit *p_theirs, RemoteContext &p_ctx) {
 	const git_oid *target_oid = git_annotated_commit_id(p_theirs);
-	git_object *target = nullptr;
-	int err = git_object_lookup(&target, p_repo, target_oid, GIT_OBJECT_COMMIT);
+	ObjectPtr target;
+	int err = git_object_lookup(target.out(), p_repo, target_oid, GIT_OBJECT_COMMIT);
 	if (err >= 0) {
 		git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
 		opts.checkout_strategy = GIT_CHECKOUT_SAFE;
 		opts.progress_cb = checkout_progress_cb;
 		opts.progress_payload = &p_ctx;
-		err = git_checkout_tree(p_repo, target, &opts);
+		err = checkout_all_or_nothing(p_repo, target, opts);
 		if (err == GIT_ECONFLICT) {
-			git_object_free(target);
 			return fail("Your local changes would be overwritten by the pull. Commit or discard them first.");
 		}
 	}
 	if (err >= 0) {
-		git_reference *moved = nullptr;
-		err = git_reference_set_target(&moved, p_head, target_oid, "pull: fast-forward");
-		git_reference_free(moved);
+		ReferencePtr moved;
+		err = git_reference_set_target(moved.out(), p_head, target_oid, "pull: fast-forward");
 	}
-	git_object_free(target);
 	return to_error(err);
 }
 
@@ -115,57 +130,72 @@ Error merge_and_commit(git_repository *p_repo, git_reference *p_head, git_refere
 	checkout_opts.checkout_strategy = GIT_CHECKOUT_SAFE | GIT_CHECKOUT_ALLOW_CONFLICTS;
 	checkout_opts.progress_cb = checkout_progress_cb;
 	checkout_opts.progress_payload = &p_ctx;
+	CheckoutGuard guard; // git_merge's checkout can stop partway too (a file in use).
+	guard.attach(checkout_opts);
 	int err = git_merge(p_repo, &p_theirs, 1, &merge_opts, &checkout_opts);
 	if (err < 0) {
-		// git_merge itself refused (e.g. it would overwrite an untracked file); nothing changed.
+		// Either git_merge refused up front (e.g. it would overwrite an untracked file) or its
+		// checkout stopped partway: put back whatever it changed.
+		const String error = last_git_error();
+		ObjectPtr head_tree;
+		git_revparse_single(head_tree.out(), p_repo, "HEAD^{tree}");
+		const PackedStringArray not_restored = guard.restore(p_repo, (const git_tree *)head_tree.get());
 		git_repository_state_cleanup(p_repo);
-		return to_error(err);
+		return explain_checkout_failure(p_repo, error, not_restored);
 	}
 
-	git_index *index = nullptr;
-	err = git_repository_index(&index, p_repo);
+	IndexPtr index;
+	err = git_repository_index(index.out(), p_repo);
 	if (err >= 0 && git_index_has_conflicts(index)) {
-		git_index_free(index);
-		git_object *head_commit = nullptr;
-		git_revparse_single(&head_commit, p_repo, "HEAD");
+		ObjectPtr head_commit;
+		git_revparse_single(head_commit.out(), p_repo, "HEAD");
 		git_reset(p_repo, head_commit, GIT_RESET_HARD, nullptr);
-		git_object_free(head_commit);
 		git_repository_state_cleanup(p_repo);
 		return fail("Pulling would cause merge conflicts, so nothing was changed. Resolving conflicts isn't supported in the panel yet; use git in a terminal for this one.");
 	}
 
+	const String message = vformat("Merge remote-tracking branch '%s'", String::utf8(git_reference_shorthand(p_upstream)));
+	if (err >= 0 && commit_needs_git(p_repo, COMMIT_MERGE)) {
+		// git sees the merge state git_merge left (MERGE_HEAD) and makes it a merge commit, running
+		// the hooks and signing it. If they refuse, the merge is undone like a conflicting one.
+		const Error commit_err = commit_with_git(p_repo, p_ctx, message, COMMIT_MERGE);
+		if (commit_err != OK) {
+			const String reason = GitRepository::get_last_error();
+			ObjectPtr head_commit;
+			git_revparse_single(head_commit.out(), p_repo, "HEAD");
+			git_reset(p_repo, head_commit, GIT_RESET_HARD, nullptr);
+			git_repository_state_cleanup(p_repo);
+			return fail(vformat("Nothing was pulled: the merge commit didn't go through, so the merge was undone. %s", reason));
+		}
+		git_repository_state_cleanup(p_repo);
+		return OK;
+	}
+
 	git_oid tree_oid, commit_oid;
-	git_tree *tree = nullptr;
-	git_signature *signature = nullptr;
-	git_commit *ours = nullptr;
-	git_commit *their_commit = nullptr;
+	TreePtr tree;
+	SignaturePtr signature;
+	CommitPtr ours;
+	CommitPtr their_commit;
 	if (err >= 0) {
 		err = git_index_write_tree(&tree_oid, index);
 	}
 	if (err >= 0) {
-		err = git_tree_lookup(&tree, p_repo, &tree_oid);
+		err = git_tree_lookup(tree.out(), p_repo, &tree_oid);
 	}
 	if (err >= 0) {
-		err = git_signature_default(&signature, p_repo);
+		err = git_signature_default(signature.out(), p_repo);
 	}
 	if (err >= 0) {
-		err = git_commit_lookup(&ours, p_repo, git_reference_target(p_head));
+		err = git_commit_lookup(ours.out(), p_repo, git_reference_target(p_head));
 	}
 	if (err >= 0) {
-		err = git_commit_lookup(&their_commit, p_repo, git_annotated_commit_id(p_theirs));
+		err = git_commit_lookup(their_commit.out(), p_repo, git_annotated_commit_id(p_theirs));
 	}
 	if (err >= 0) {
 		const git_commit *parents[2] = { ours, their_commit };
-		const String message = vformat("Merge remote-tracking branch '%s'", String::utf8(git_reference_shorthand(p_upstream)));
 		err = git_commit_create(&commit_oid, p_repo, "HEAD", signature, signature, nullptr, message.utf8().get_data(), tree, 2, parents);
 	}
 	git_repository_state_cleanup(p_repo);
-
-	git_commit_free(their_commit);
-	git_commit_free(ours);
-	git_signature_free(signature);
-	git_tree_free(tree);
-	git_index_free(index);
 	return to_error(err);
 }
 
@@ -176,20 +206,17 @@ Error merge_and_commit(git_repository *p_repo, git_reference *p_head, git_refere
 Error merge_with_autostash(git_repository *p_repo, git_reference *p_head, git_reference *p_upstream, const git_annotated_commit *p_theirs, RemoteContext &p_ctx, String &r_notice) {
 	git_status_options status_opts = GIT_STATUS_OPTIONS_INIT;
 	status_opts.flags = 0; // Tracked files only; untracked files are left where they are.
-	git_status_list *status = nullptr;
-	const bool dirty = git_status_list_new(&status, p_repo, &status_opts) == 0 && git_status_list_entrycount(status) > 0;
-	git_status_list_free(status);
-	if (!dirty) {
+	StatusListPtr status;
+	if (git_status_list_new(status.out(), p_repo, &status_opts) != 0 || git_status_list_entrycount(status) == 0) {
 		return merge_and_commit(p_repo, p_head, p_upstream, p_theirs, p_ctx);
 	}
 
 	git_oid stash_id;
-	git_signature *stasher = nullptr;
-	int err = git_signature_default(&stasher, p_repo);
+	SignaturePtr stasher;
+	int err = git_signature_default(stasher.out(), p_repo);
 	if (err >= 0) {
 		err = git_stash_save(&stash_id, p_repo, stasher, "godot-git: your changes, set aside while pulling", GIT_STASH_DEFAULT);
 	}
-	git_signature_free(stasher);
 	if (err < 0) {
 		return to_error(err);
 	}
@@ -239,34 +266,33 @@ Error GitRepository::pull() {
 	pulled_commits = 0;
 	pull_merged = false;
 
-	git_reference *head = nullptr;
-	if (head_branch(&head, repo) < 0) {
+	ReferencePtr head;
+	if (head_branch(head.out(), repo) < 0) {
 		return FAILED;
 	}
 
 	git_buf remote_buf = GIT_BUF_INIT;
 	if (git_branch_upstream_remote(&remote_buf, repo, git_reference_name(head)) < 0) {
 		git_buf_dispose(&remote_buf);
-		git_reference_free(head);
 		return fail("This branch isn't tracking a remote branch yet. Push it first.");
 	}
-	const Error fetch_err = _fetch_remote(buf_to_string(remote_buf));
+	const String remote_name = buf_to_string(remote_buf);
+	const Error fetch_err = _fetch_remote(remote_name);
 	if (fetch_err != OK) {
-		git_reference_free(head);
 		return fetch_err;
 	}
 
-	git_reference *upstream = nullptr;
-	if (git_branch_upstream(&upstream, head) < 0) {
-		git_reference_free(head);
+	ReferencePtr upstream;
+	if (git_branch_upstream(upstream.out(), head) < 0) {
 		return fail("The upstream branch doesn't exist on the remote anymore.");
 	}
-	git_annotated_commit *theirs = nullptr;
+	AnnotatedCommitPtr theirs;
 	git_merge_analysis_t analysis = GIT_MERGE_ANALYSIS_NONE;
 	git_merge_preference_t preference = GIT_MERGE_PREFERENCE_NONE;
-	int err = git_annotated_commit_from_ref(&theirs, repo, upstream);
+	int err = git_annotated_commit_from_ref(theirs.out(), repo, upstream);
 	if (err >= 0) {
-		err = git_merge_analysis(&analysis, &preference, repo, (const git_annotated_commit **)&theirs, 1);
+		const git_annotated_commit *heads[] = { theirs };
+		err = git_merge_analysis(&analysis, &preference, repo, heads, 1);
 	}
 
 	// From here on everything is local: progress only, no more canceling.
@@ -288,7 +314,15 @@ Error GitRepository::pull() {
 		result = fail(vformat("Nothing was pulled: the new commits change %s, which you have uncommitted changes to. Commit or discard your changes to %s first, then pull again.",
 				String(", ").join(blocking.slice(0, 3)) + (blocking.size() > 3 ? vformat(" and %d more", blocking.size() - 3) : String()),
 				blocking.size() == 1 ? String("it") : String("them")));
-	} else {
+	} else if (repo_uses_lfs(repo)) {
+		// The new commits' LFS files, downloaded before any file changes (see _fetch_lfs_files).
+		RemoteContext lfs_ctx;
+		lfs_ctx.workdir = get_workdir();
+		lfs_ctx.login_prompts_allowed = login_prompts_allowed;
+		lfs_ctx.progress = progress_callback;
+		result = lfs_fetch(repo, lfs_ctx, remote_name, String(git_oid_tostr_s(git_annotated_commit_id(theirs))));
+	}
+	if (err >= 0 && !(analysis & GIT_MERGE_ANALYSIS_UP_TO_DATE) && blocking.is_empty() && result == OK) {
 		size_t ahead = 0, behind = 0;
 		if (git_graph_ahead_behind(&ahead, &behind, repo, head_oid, git_annotated_commit_id(theirs)) == 0) {
 			pulled_commits = (int)behind;
@@ -304,10 +338,6 @@ Error GitRepository::pull() {
 			pull_merged = false;
 		}
 	}
-
-	git_annotated_commit_free(theirs);
-	git_reference_free(upstream);
-	git_reference_free(head);
 	return result;
 }
 
@@ -318,8 +348,8 @@ Error GitRepository::push() {
 	git_error_clear();
 	begin_network_operation();
 
-	git_reference *head = nullptr;
-	if (head_branch(&head, repo) < 0) {
+	ReferencePtr head;
+	if (head_branch(head.out(), repo) < 0) {
 		return FAILED;
 	}
 	const String local_ref = String::utf8(git_reference_name(head));
@@ -341,7 +371,6 @@ Error GitRepository::push() {
 	if (remote_name.is_empty() || remote_ref.is_empty()) {
 		const PackedStringArray remotes = get_remotes();
 		if (remotes.is_empty()) {
-			git_reference_free(head);
 			return fail("This repository has no remote to push to.");
 		}
 		remote_name = remotes.has("origin") ? String("origin") : remotes[0];
@@ -349,26 +378,40 @@ Error GitRepository::push() {
 		publish = true;
 	}
 
-	git_remote *remote = nullptr;
-	int err = git_remote_lookup(&remote, repo, remote_name.utf8().get_data());
-	if (err < 0) {
-		git_reference_free(head);
-		return to_error(err);
-	}
-
 	RemoteContext ctx;
 	ctx.workdir = get_workdir();
 	ctx.login_prompts_allowed = login_prompts_allowed;
 	ctx.progress = progress_callback;
+
+	// LFS files first: pushed commits must never point at files the remote doesn't have.
+	const Error lfs_err = lfs_push(repo, ctx, remote_name, local_ref);
+	if (lfs_err != OK) {
+		return lfs_err;
+	}
+
+	const String refspec_text = vformat("%s:%s", local_ref, remote_ref);
+	if (has_hook(repo, "pre-push")) {
+		// libgit2 doesn't run hooks; git does.
+		const Error result = _push_with_git(remote_name, refspec_text);
+		if (result == OK && publish) {
+			git_branch_set_upstream(head, vformat("%s/%s", remote_name, branch).utf8().get_data());
+		}
+		return result;
+	}
+
+	RemotePtr remote;
+	int err = git_remote_lookup(remote.out(), repo, remote_name.utf8().get_data());
+	if (err < 0) {
+		return to_error(err);
+	}
 	git_push_options opts = GIT_PUSH_OPTIONS_INIT;
 	set_remote_callbacks(opts.callbacks, ctx);
 
 	report_progress(&ctx, "Connecting...", String(), -1);
-	SinglePathspec refspec(vformat("%s:%s", local_ref, remote_ref));
+	SinglePathspec refspec(refspec_text);
 	err = git_remote_push(remote, &refspec.array, &opts);
-	git_remote_free(remote);
 
-	Error result = remote_error(err);
+	Error result = finish_network_operation(ctx, err);
 	if (result == ERR_SKIP) {
 		// Canceled.
 	} else if (err == GIT_ENONFASTFORWARD) {
@@ -382,9 +425,37 @@ Error GitRepository::push() {
 	} else if (err >= 0 && publish) {
 		git_branch_set_upstream(head, vformat("%s/%s", remote_name, branch).utf8().get_data());
 	}
-
-	git_reference_free(head);
 	return result;
+}
+
+// `git push`, for repositories with a pre-push hook. git asks for logins itself, the same way.
+Error GitRepository::_push_with_git(const String &p_remote, const String &p_refspec) {
+	RemoteContext ctx;
+	ctx.progress = progress_callback;
+	PackedStringArray args;
+	args.push_back("-c");
+	args.push_back(vformat("credential.interactive=%s", login_prompts_allowed ? "always" : "never"));
+	args.push_back("push");
+	args.push_back("--progress");
+	args.push_back(p_remote);
+	args.push_back(p_refspec);
+	String output;
+	int exit_code = 0;
+	const Error err = run_git_command(repo, ctx, args, "Pushing...", output, exit_code);
+	if (err == ERR_SKIP) {
+		git_error_set_str(GIT_ERROR_NET, "Canceled. Nothing was changed.");
+		return ERR_SKIP;
+	}
+	if (err != OK) {
+		return err;
+	}
+	if (exit_code == 0) {
+		return OK;
+	}
+	if (output.contains("[rejected]") && (output.contains("fetch first") || output.contains("non-fast-forward"))) {
+		return fail("The remote has commits you don't have yet. Pull first, then push.");
+	}
+	return fail(vformat("Git didn't push (a pre-push hook may have stopped it):\n%s", output_tail(output, 8)));
 }
 
 // A warning from the last operation that still succeeded (e.g. a pull whose local changes had

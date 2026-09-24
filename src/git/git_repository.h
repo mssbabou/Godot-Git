@@ -7,6 +7,7 @@
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 
+struct git_oid;
 struct git_repository;
 
 using namespace godot;
@@ -28,6 +29,9 @@ class GitRepository : public RefCounted {
 
 	void close();
 	Error _fetch_remote(const String &p_remote);
+	Error _fetch_lfs_files(const char *p_refname, const git_oid *p_commit);
+	Error _commit_with_git(const String &p_message, bool p_amend);
+	Error _push_with_git(const String &p_remote, const String &p_refspec);
 
 protected:
 	static void _bind_methods();
@@ -45,6 +49,7 @@ public:
 	Array get_status() const;
 	Dictionary get_line_stats(bool p_staged) const;
 	Array get_commits(int p_max_count) const;
+	bool uses_lfs() const;
 
 	Error stage(const String &p_path);
 	Error unstage(const String &p_path);
@@ -52,6 +57,9 @@ public:
 	Error unstage_all();
 	Error discard(const String &p_path);
 	Error commit(const String &p_message);
+	Error amend(const String &p_message);
+	bool commit_runs_git(bool p_amend) const;
+	bool is_head_pushed() const;
 	Error checkout_branch(const String &p_branch);
 	Error create_branch(const String &p_name);
 

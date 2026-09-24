@@ -56,7 +56,8 @@ void GitDock::_run_network(NetworkOp p_op, bool p_quiet) {
 	}
 
 	network_thread.instantiate();
-	network_thread->start(callable_mp(this, &GitDock::_network_worker).bind(p_op, repo->get_workdir(), p_quiet));
+	const String text = p_op == NETWORK_COMMIT ? network_commit_message : network_branch;
+	network_thread->start(callable_mp(this, &GitDock::_network_worker).bind(p_op, repo->get_workdir(), p_quiet, text, network_amend));
 }
 
 // The operation the buttons should reflect: a background fetch doesn't count, a queued one does.
@@ -99,12 +100,16 @@ String GitDock::_network_description(int p_op) const {
 			return vformat("Pulling from %s", upstream);
 		case NETWORK_PUSH:
 			return network_publish ? vformat("Publishing %s", branch) : vformat("Pushing to %s", upstream);
+		case NETWORK_SWITCH:
+			return vformat("Switching to %s", network_branch);
+		case NETWORK_COMMIT:
+			return network_amend ? String("Amending the last commit") : String("Committing");
 	}
 	return String();
 }
 
 // Runs on the worker thread with its own repository handle; reports back via call_deferred.
-void GitDock::_network_worker(int p_op, const String &p_workdir, bool p_quiet) {
+void GitDock::_network_worker(int p_op, const String &p_workdir, bool p_quiet, const String &p_text, bool p_amend) {
 	Ref<GitRepository> worker_repo;
 	worker_repo.instantiate();
 	worker_repo->set_progress_callback(callable_mp(this, &GitDock::_network_progress));
@@ -121,6 +126,12 @@ void GitDock::_network_worker(int p_op, const String &p_workdir, bool p_quiet) {
 				break;
 			case NETWORK_PUSH:
 				err = worker_repo->push();
+				break;
+			case NETWORK_SWITCH:
+				err = worker_repo->checkout_branch(p_text);
+				break;
+			case NETWORK_COMMIT:
+				err = p_amend ? worker_repo->amend(p_text) : worker_repo->commit(p_text);
 				break;
 		}
 	}
@@ -147,8 +158,8 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	const bool quiet = network_quiet;
 	network_quiet = false;
 
-	// A pull can change files on disk. Refresh first: the result below uses the new counts.
-	if (p_op == NETWORK_PULL && p_err == OK) {
+	// A pull or switch can change files on disk. Refresh first: the result below uses the new counts.
+	if ((p_op == NETWORK_PULL || p_op == NETWORK_SWITCH) && p_err == OK) {
 		EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 	}
 	refresh();
@@ -174,7 +185,12 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		return;
 	}
 
-	static const char *names[] = { "", "Fetch", "Pull", "Push" };
+	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit" };
+	if (p_err == ERR_SKIP && p_op == NETWORK_COMMIT) {
+		// A post-commit hook may have been running: don't claim nothing happened. History shows it.
+		_set_status(STATUS_NEUTRAL, "Commit canceled.");
+		return;
+	}
 	if (p_err == ERR_SKIP) {
 		_set_status(STATUS_NEUTRAL, vformat("%s canceled. Nothing was changed.", names[p_op]));
 		return;
@@ -216,6 +232,16 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			} else {
 				_set_status(STATUS_SUCCESS, vformat("Pushed %s to %s", plural(network_ahead, "commit", "commits"), p_upstream));
 			}
+		} break;
+		case NETWORK_SWITCH: {
+			_set_status(STATUS_SUCCESS, vformat("Switched to %s", repo->get_current_branch()));
+		} break;
+		case NETWORK_COMMIT: {
+			amend_check->set_pressed_no_signal(false);
+			amend_saved_draft = String();
+			commit_message->clear();
+			_update_actions();
+			_report_commit(network_amend, network_commit_files, network_amended_id);
 		} break;
 	}
 }

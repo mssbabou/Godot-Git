@@ -4,16 +4,21 @@ A Git panel for the Godot 4.7 editor, built as a GDExtension (C++, [godot-cpp](h
 
 It adds a **Git** dock next to the Inspector:
 
-- Branch picker with local and remote branches (picking a remote one checks it out as a tracking branch) and *New Branch…*; ⟳ fetches
-- Under the commit message: *Commit*, plus *Pull* (↓ commits to get) and *Push* (↑ commits to send, or *Publish* for a new branch). Pull and Push only appear when the repository has a remote.
-- Staged Changes / Changes sections with +/− line totals; hover a file for stage/unstage/discard, right-click for more
+- Branch picker with local and remote branches (picking a remote one checks it out as a tracking branch) and *New Branch…*
+- *Fetch*, *Pull* (↓ commits to get) and *Push* (↑ commits to send, or *Publish* for a new branch) in one row above the commit message, when the repository has a remote
+- *Commit* under the message, with *Amend* to redo the last commit (new message, or add what you forgot to stage) as long as it isn't pushed yet
+- Staged Changes / Changes sections with +/− line totals (per file in the tooltip); hover a file for stage/unstage/discard, right-click for more
 - Recent History (unpushed commits highlighted); stage/unstage/discard all, new branch and more in the ⋮ menu
 - A status line under the branch picker: what's running (with progress and Cancel), then the last result or error, which stays until the next one
 - Automatic fetching every few minutes in the background (never opens a sign-in window; can be turned off in the ⋮ menu)
 
 Network operations run in the background. Pull fast-forwards, or makes a merge commit when both sides have new commits. Your uncommitted changes to other files are kept as they are. If the new commits change a file you have uncommitted changes to, the pull is refused up front and names the files, so nothing is changed and nothing ends up in a stash; commit or discard those changes, then pull. If the merge itself would conflict, nothing changes and the panel says so (resolving conflicts in the panel isn't supported yet).
 
-Authentication: HTTPS remotes use git's own credential helper (e.g. Git Credential Manager), so if `git fetch` works in a terminal it works here. SSH remotes use the system `ssh` client with your keys/agent.
+Authentication: HTTPS remotes use git's own credential helper (e.g. Git Credential Manager), so if `git fetch` works in a terminal it works here. With Git Credential Manager you can also sign in from the panel: the first fetch, pull or push opens its sign-in window (e.g. "Sign in with your browser" for GitHub), and the login is saved for next time. SSH remotes use the system `ssh` client with your keys/agent.
+
+Hooks and signing: if your repository has commit or push hooks (e.g. a `pre-commit` linter) or signs commits (`commit.gpgsign`), the panel commits and pushes through git itself, so they run exactly as in a terminal, and a hook's message shows in the panel when it stops something.
+
+Git LFS: projects that store files with [Git LFS](https://git-lfs.com) work as with the git command line (checkout, pull, commit and push all go through the real `git-lfs`). Git LFS must be installed; without it the panel refuses the actions that would damage LFS files.
 
 ## Install (users)
 
@@ -29,7 +34,7 @@ Supported: Windows (x86_64, arm64), Linux (x86_64, arm64), macOS (universal).
 
 | Path | What |
 |---|---|
-| `src/git/` | `GitRepository`, the libgit2 wrapper (usable from GDScript) |
+| `src/git/` | `GitRepository`, the libgit2 wrapper |
 | `src/editor/` | The Git dock and the editor plugin that adds it |
 | `project/` | Godot project used to develop and test the plugin |
 | `project/addons/godot_git/` | The plugin itself: this folder is what gets shipped |
@@ -70,7 +75,7 @@ Dev loop: edit C++ → run `scons` → click back into the editor. Hot reload is
 
 ## Tests
 
-`project/tests/` holds headless tests for `GitRepository`. They build throwaway repositories with the git CLI and check the results against what git says. Build first, open `project/` in the editor once (so the extension is registered), then:
+`project/tests/` holds headless tests for `GitRepository`. They build throwaway repositories with the git CLI and check the results against what git says. (`GitRepository` is exposed to GDScript only for these tests; it isn't a stable API and may change.) Build first, open `project/` in the editor once (so the extension is registered), then:
 
 ```bash
 godot --headless --path project -s res://tests/run_tests.gd                 # local tests only
@@ -89,35 +94,6 @@ The exit code is 1 if anything failed.
 3. Packages everything into one `godot_git` zip, downloadable from the workflow run's *Artifacts*.
 
 To release: create a GitHub release (e.g. tag `v0.1.0`). The same workflow runs and attaches `godot_git-v0.1.0.zip` to the release.
-
-## GDScript API
-
-```gdscript
-var repo := GitRepository.new()
-repo.open("res://")            # also accepts absolute paths; searches parent folders
-repo.get_workdir()
-repo.get_current_branch()
-repo.get_branches()            # local branch names
-repo.get_remote_branches()     # ["origin/master", ...]
-repo.get_remotes()
-repo.get_sync_status()         # { branch, upstream, ahead, behind, has_remotes, last_fetched }
-repo.get_status()              # [{ path, index, worktree }, ...]
-repo.get_line_stats(staged)    # { path: Vector2i(added, removed) }, binary = (-1, -1)
-repo.get_commits(50)           # [{ id, hash, summary, message, author, time, unpushed }, ...]
-repo.stage(path) / repo.unstage(path) / repo.stage_all() / repo.unstage_all()
-repo.discard(path)             # can't be undone
-repo.commit(message)           # uses user.name / user.email from git config
-repo.checkout_branch(name)     # local, or "origin/x" to create a tracking branch
-repo.create_branch(name)       # from HEAD, and switches to it
-repo.fetch() / repo.pull() / repo.push()   # blocking; the dock runs them on a thread
-repo.get_pull_result()         # { commits, merged } for the last pull
-repo.get_notice()              # a warning from an operation that still succeeded, or ""
-repo.set_progress_callback(func(step: String, fraction: float, cancellable: bool): ...)
-repo.set_login_prompts_allowed(false)   # only use saved logins (for background work)
-GitRepository.cancel_network()  # from any thread; the running op returns ERR_SKIP
-GitRepository.get_last_error()
-GitRepository.get_libgit2_version()
-```
 
 ## License
 

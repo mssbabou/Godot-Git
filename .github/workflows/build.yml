@@ -123,6 +123,19 @@ jobs:
         shell: bash
         run: '"$GODOT" --headless -e --path project --quit-after 300'
 
+      # test_lfs.gd skips itself without git-lfs; in CI it must run everywhere.
+      - name: Install Git LFS
+        shell: bash
+        run: |
+          if ! git lfs version; then
+            if [ "$RUNNER_OS" = Linux ]; then
+              sudo apt-get update && sudo apt-get install -y git-lfs
+            elif [ "$RUNNER_OS" = macOS ]; then
+              brew install git-lfs
+            fi
+            git lfs version
+          fi
+
       - name: Run tests
         shell: bash
         run: '"$GODOT" --headless --path project -s res://tests/run_tests.gd -- --online'
