@@ -262,6 +262,8 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 
 30. **Godot unloads an extension whose `.gdextension` disappears mid-session** (`EditorFileSystem::_scan_extensions` → `GDExtensionManager::ensure_extensions_loaded`, checked in 4.7.1). It does so whether or not it's `reloadable`, and it happens on every platform, e.g. when switching to a branch without the addon. Two things then pointed into the unmapped library and crashed the editor. First, the dock was `queue_free`d, so it was freed after the unload (now `memdelete`d in `_exit_tree`). Second, godot-cpp's instance bindings on engine objects (EditorFileSystem, theme icons, ...) keep free callbacks into the library, and Godot only clears those for reloadable extensions on *reload*. So at unload, if our `.gdextension` is gone, `register_types.cpp` pins the library (`RTLD_NODELETE` / `GET_MODULE_HANDLE_EX_FLAG_PIN`). When the addon comes back in the same session, the OS returns that same pinned copy, and godot-cpp can't initialize twice (its statics and `library` pointer are stale). So a retired copy loads as an empty extension and warns "restart the editor". The dock asks before switching to a branch without the addon (`_addon_removed_by`). Tested with a headless driver that moves the addon folder away and back.
 
+31. **No `std::filesystem`**: macOS only has it from 10.15, and we target 10.13 (Intel). It builds on Linux and Windows and then fails in CI's macOS job. Use Godot's `String` path helpers and `FileAccess`/`DirAccess`.
+
 ## libgit2 gotchas
 
 1. **`git_error_last()` is never null** since 1.8. "No error" has `klass == GIT_ERROR_NONE`, and `get_last_error()` filters that out.

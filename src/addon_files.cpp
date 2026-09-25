@@ -7,40 +7,44 @@
 #include <dlfcn.h>
 #endif
 
-#include <system_error>
+#include <godot_cpp/classes/file_access.hpp>
+
+using namespace godot;
 
 namespace godot_git {
 
 namespace {
 
-std::filesystem::path own_library_path() {
+// Not std::filesystem: macOS only has it from 10.15, and we support 10.13.
+String own_library_path() {
 #ifdef _WIN32
 	HMODULE module = nullptr;
 	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&own_library_path), &module);
 	wchar_t path[MAX_PATH * 4];
-	DWORD length = GetModuleFileNameW(module, path, sizeof(path) / sizeof(path[0]));
-	return std::filesystem::path(std::wstring(path, length));
+	const DWORD length = GetModuleFileNameW(module, path, sizeof(path) / sizeof(path[0]));
+	return String::utf16(reinterpret_cast<const char16_t *>(path), length).replace("\\", "/");
 #else
 	Dl_info info = {};
 	dladdr(reinterpret_cast<void *>(&own_library_path), &info);
-	return info.dli_fname ? std::filesystem::path(info.dli_fname) : std::filesystem::path();
+	return info.dli_fname ? String::utf8(info.dli_fname) : String();
 #endif
 }
 
 } // namespace
 
-std::filesystem::path addon_manifest_path() {
-	std::error_code ec;
-	for (std::filesystem::path dir = own_library_path().parent_path(); !dir.empty() && dir != dir.parent_path(); dir = dir.parent_path()) {
-		const std::filesystem::path manifest = dir / "godot_git.gdextension";
-		if (std::filesystem::exists(manifest, ec)) {
+String addon_manifest_path() {
+	String dir = own_library_path().get_base_dir();
+	while (!dir.is_empty() && dir != dir.get_base_dir()) {
+		const String manifest = dir.path_join("godot_git.gdextension");
+		if (FileAccess::file_exists(manifest)) {
 			return manifest;
 		}
-		if (dir.filename() == "addons") {
+		if (dir.get_file() == "addons") {
 			break;
 		}
+		dir = dir.get_base_dir();
 	}
-	return std::filesystem::path();
+	return String();
 }
 
 void keep_library_loaded() {
@@ -48,7 +52,7 @@ void keep_library_loaded() {
 	HMODULE module = nullptr;
 	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, reinterpret_cast<LPCWSTR>(&own_library_path), &module);
 #else
-	dlopen(own_library_path().c_str(), RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE);
+	dlopen(own_library_path().utf8().get_data(), RTLD_NOW | RTLD_NOLOAD | RTLD_NODELETE);
 #endif
 }
 

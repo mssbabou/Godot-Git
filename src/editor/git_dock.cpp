@@ -715,11 +715,11 @@ void GitDock::_on_branch_selected(int p_index) {
 // The addon's folder ("addons/godot_git") if switching to p_branch would delete it: it's
 // committed on the current branch but missing on p_branch. Empty otherwise.
 String GitDock::_addon_removed_by(const String &p_branch) const {
-	const std::filesystem::path manifest = godot_git::addon_manifest_path();
-	if (manifest.empty()) {
+	const String manifest = godot_git::addon_manifest_path();
+	if (manifest.is_empty()) {
 		return String();
 	}
-	const String absolute = String::utf8(manifest.generic_u8string().c_str()).simplify_path();
+	const String absolute = manifest.simplify_path();
 	const String workdir = repo->get_workdir().simplify_path().trim_suffix("/") + "/";
 	if (!absolute.begins_with(workdir)) {
 		return String();

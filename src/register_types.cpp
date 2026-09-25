@@ -26,7 +26,7 @@ bool retired = false;
 // calls them when it frees those objects later, so an unmapped library crashes the editor.
 // Keeping it mapped leaves those callbacks harmless. Only then, so hot reload keeps working.
 void keep_loaded_if_addon_removed() {
-	if (godot_git::addon_manifest_path().empty()) {
+	if (godot_git::addon_manifest_path().is_empty()) {
 		godot_git::keep_library_loaded();
 		retired = true;
 	}
