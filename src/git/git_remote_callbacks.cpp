@@ -59,9 +59,6 @@ String percent(uint64_t p_current, uint64_t p_total) {
 // input, the way the git CLI talks to its credential helper (e.g. Git Credential Manager,
 // osxkeychain), and returns what it printed. p_interactive sets credential.interactive.
 String run_git_credential(const String &p_workdir, const String &p_action, const String &p_input, const String &p_interactive = String()) {
-	// Never let git fall back to a terminal prompt; there is no terminal. GUI helpers still work.
-	OS::get_singleton()->set_environment("GIT_TERMINAL_PROMPT", "0");
-
 	PackedStringArray args;
 	args.push_back("-C");
 	args.push_back(p_workdir);
@@ -71,7 +68,12 @@ String run_git_credential(const String &p_workdir, const String &p_action, const
 	}
 	args.push_back("credential");
 	args.push_back(p_action);
-	Dictionary process = OS::get_singleton()->execute_with_pipe(git_program(), args, true);
+	Dictionary process;
+	{
+		// Never let git fall back to a terminal prompt; there is no terminal. GUI helpers still work.
+		const ScopedEnvironment environment({ { "GIT_TERMINAL_PROMPT", "0" } });
+		process = OS::get_singleton()->execute_with_pipe(git_program(), args, true);
+	}
 	Ref<FileAccess> io = process.get("stdio", Variant());
 	if (io.is_null()) {
 		return String();
@@ -97,6 +99,22 @@ String run_git_credential(const String &p_workdir, const String &p_action, const
 	track_process(0);
 	wait_for_exit_code(pid); // Reaps it.
 	return output;
+}
+
+// Whether git has a credential helper for p_url. Without one there's nowhere to get a login from,
+// and signing in once in a terminal doesn't help either: nothing would save it. Common on macOS
+// and Linux, where git comes without Git Credential Manager.
+bool has_credential_helper(const String &p_workdir, const String &p_url) {
+	PackedStringArray args;
+	args.push_back("-C");
+	args.push_back(p_workdir);
+	args.push_back("config");
+	args.push_back("--get-urlmatch");
+	args.push_back("credential.helper");
+	args.push_back(p_url);
+	Array output;
+	// The last value wins; an empty one clears the helpers before it.
+	return OS::get_singleton()->execute(git_program(), args, output) == 0 && !output.is_empty() && !String(output[0]).strip_edges().is_empty();
 }
 
 // Asks the credential helper for a login and keeps its answer in the context. With prompts
@@ -173,7 +191,11 @@ int credentials_cb(git_credential **r_out, const char *p_url, const char *p_user
 		return git_credential_default_new(r_out);
 	}
 
-	git_error_set_str(GIT_ERROR_NET, ctx->login_prompts_allowed ? "Signing in didn't finish. If no sign-in window appeared, git has no credential helper that can ask for a login; sign in once with git in a terminal (e.g. `git fetch`), then retry." : "No saved login for this remote yet. Press Fetch to sign in.");
+	if (!has_credential_helper(ctx->workdir, String::utf8(p_url))) {
+		git_error_set_str(GIT_ERROR_NET, "This remote needs a login, but git has no credential helper to get one from. Set one up, then retry: for GitHub, run `gh auth login` in a terminal; for any host, install Git Credential Manager (github.com/git-ecosystem/git-credential-manager).");
+	} else {
+		git_error_set_str(GIT_ERROR_NET, ctx->login_prompts_allowed ? "Signing in didn't finish: no login was given. Press Fetch to try again." : "No saved login for this remote yet. Press Fetch to sign in.");
+	}
 	return GIT_EAUTH;
 }
 

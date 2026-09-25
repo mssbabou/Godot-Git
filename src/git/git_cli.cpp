@@ -162,8 +162,6 @@ Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const Packed
 	if (missing != OK) {
 		return missing;
 	}
-	// No terminal to ask anything in.
-	OS::get_singleton()->set_environment("GIT_TERMINAL_PROMPT", "0");
 	const char *workdir_path = git_repository_workdir(p_repo);
 	const String workdir = workdir_path ? String::utf8(workdir_path) : String();
 
@@ -193,8 +191,13 @@ Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const Packed
 
 	report_progress(&p_ctx, p_step, String(), -1);
 	OS *os = OS::get_singleton();
-	// Non-blocking: see the loop below.
-	Dictionary process = os->execute_with_pipe(program, args, false);
+	Dictionary process;
+	{
+		// No terminal to ask anything in.
+		const ScopedEnvironment environment({ { "GIT_TERMINAL_PROMPT", "0" } });
+		// Non-blocking: see the loop below.
+		process = os->execute_with_pipe(program, args, false);
+	}
 	Ref<FileAccess> io = process.get("stdio", Variant());
 	if (io.is_null()) {
 		return fail("Couldn't start git.");

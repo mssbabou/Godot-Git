@@ -127,7 +127,12 @@ public:
 			args.push_back(workdir);
 			args.push_back(log_path);
 		}
-		Dictionary process = OS::get_singleton()->execute_with_pipe(program, args, true);
+		Dictionary process;
+		{
+			// Nor a terminal prompt, from the terminal the editor may have been started from.
+			const ScopedEnvironment environment({ { "GIT_TERMINAL_PROMPT", "0" } });
+			process = OS::get_singleton()->execute_with_pipe(program, args, true);
+		}
 		io = process.get("stdio", Variant());
 		if (io.is_null()) {
 			return fail("Couldn't start git-lfs.");
@@ -276,8 +281,6 @@ git_filter lfs_filter;
 // Runs `git lfs <p_command> <p_args>` in the repository, showing its progress lines ("Downloading
 // LFS objects: 45% (9/20), 12 MB") in the status strip. Cancellable.
 Error run_lfs_command(git_repository *p_repo, RemoteContext &p_ctx, const String &p_command, const PackedStringArray &p_args, const String &p_step) {
-	// git-lfs only prints progress for a terminal unless told to.
-	OS::get_singleton()->set_environment("GIT_LFS_FORCE_PROGRESS", "1");
 	PackedStringArray args;
 	args.push_back("-c");
 	args.push_back(vformat("credential.interactive=%s", p_ctx.login_prompts_allowed ? "always" : "never"));
@@ -286,7 +289,12 @@ Error run_lfs_command(git_repository *p_repo, RemoteContext &p_ctx, const String
 	args.append_array(p_args);
 	String output;
 	int exit_code = 0;
-	const Error err = run_git_command(p_repo, p_ctx, args, p_step, output, exit_code);
+	Error err;
+	{
+		// git-lfs only prints progress for a terminal unless told to.
+		const ScopedEnvironment environment({ { "GIT_LFS_FORCE_PROGRESS", "1" } });
+		err = run_git_command(p_repo, p_ctx, args, p_step, output, exit_code);
+	}
 	if (err == ERR_SKIP) {
 		git_error_set_str(GIT_ERROR_NET, "Canceled. Nothing was changed.");
 	}

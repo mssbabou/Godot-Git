@@ -194,6 +194,29 @@ int wait_for_exit_code(int64_t p_pid) {
 	return os->get_process_exit_code(p_pid);
 }
 
+ScopedEnvironment::ScopedEnvironment(std::initializer_list<std::pair<const char *, const char *>> p_variables) {
+	OS *os = OS::get_singleton();
+	for (const std::pair<const char *, const char *> &variable : p_variables) {
+		Saved entry;
+		entry.name = variable.first;
+		entry.existed = os->has_environment(entry.name);
+		entry.value = entry.existed ? os->get_environment(entry.name) : String();
+		saved.push_back(entry);
+		os->set_environment(entry.name, variable.second);
+	}
+}
+
+ScopedEnvironment::~ScopedEnvironment() {
+	OS *os = OS::get_singleton();
+	for (const Saved &entry : saved) {
+		if (entry.existed) {
+			os->set_environment(entry.name, entry.value);
+		} else {
+			os->unset_environment(entry.name);
+		}
+	}
+}
+
 String last_git_error(int *r_class) {
 	const git_error *err = git_error_last();
 	const bool real = err && err->klass != GIT_ERROR_NONE && err->message;

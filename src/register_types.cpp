@@ -71,6 +71,11 @@ void uninitialize_godot_git_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
 		godot_git::shutdown_lfs();
 		git_libgit2_shutdown();
+		// godot-cpp frees its bindings on engine singletons (Time, OS, ...) only in its CORE step,
+		// which it skips after a hot reload (Godot then initializes only SCENE and up). Godot frees
+		// those singletons after unloading us, so a binding left behind crashed the editor on quit.
+		// Harmless when the CORE step does run: a freed binding leaves the list it works from.
+		ClassDB::deinitialize(GDEXTENSION_INITIALIZATION_CORE);
 		keep_loaded_if_addon_removed();
 	}
 }

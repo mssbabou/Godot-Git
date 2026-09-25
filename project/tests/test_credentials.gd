@@ -47,6 +47,7 @@ func run() -> void:
 	_stale_login_without_prompts()
 	_rejected_twice()
 	_no_login()
+	_no_helper()
 	_no_git()
 
 	_stop = true
@@ -97,6 +98,22 @@ func _no_login() -> void:
 	check("fetch without any login fails", r.fetch() != OK)
 	check("explains it", not GitRepository.get_last_error().is_empty(), GitRepository.get_last_error())
 	check("nothing saved", not _log(repo).has("store"), _log(repo))
+	check("doesn't claim there's no helper", not GitRepository.get_last_error().contains("no credential helper"), GitRepository.get_last_error())
+
+
+# No credential helper at all (common on macOS and Linux): say how to set one up. Signing in
+# once in a terminal wouldn't help, since nothing would save that login.
+func _no_helper() -> void:
+	var repo := _clone_with_helper("no-helper", RIGHT, RIGHT)
+	var config := FileAccess.open(repo.path_join(".git/config"), FileAccess.READ_WRITE)
+	config.seek_end()
+	config.store_string("[credential]\n\thelper =\n")
+	config.close()
+	var r := open(repo)
+	check("fetch without a helper fails", r.fetch() != OK)
+	var message := GitRepository.get_last_error()
+	check("says there's no helper, and how to get one", message.contains("no credential helper") and message.contains("gh auth login") and message.contains("Git Credential Manager"), message)
+	check("helper not asked", _log(repo).is_empty(), _log(repo))
 
 
 # Without git there's no credential helper to ask: say so, instead of blaming the helper.

@@ -4,8 +4,12 @@
 
 #include <git2.h>
 
+#include <initializer_list>
+#include <utility>
+
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/templates/hash_set.hpp>
+#include <godot_cpp/templates/local_vector.hpp>
 #include <godot_cpp/variant/char_string.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/string.hpp>
@@ -112,6 +116,24 @@ Error explain_checkout_failure(git_repository *p_repo, const String &p_error, co
 // OS::get_process_exit_code() returns -1 until then (read too early, a git that succeeded looked
 // like it failed; seen on CI's Linux arm64 runner).
 int wait_for_exit_code(int64_t p_pid);
+
+// Sets environment variables while alive, then puts the old values back. Scope it around
+// starting a process: a child copies the environment when it starts, and Godot can't pass an
+// environment to one process. Left set, they'd leak into games started from the editor.
+class ScopedEnvironment {
+	struct Saved {
+		String name;
+		bool existed = false;
+		String value;
+	};
+	LocalVector<Saved> saved;
+
+public:
+	ScopedEnvironment(std::initializer_list<std::pair<const char *, const char *>> p_variables);
+	~ScopedEnvironment();
+	ScopedEnvironment(const ScopedEnvironment &) = delete;
+	ScopedEnvironment &operator=(const ScopedEnvironment &) = delete;
+};
 
 // libgit2's current error message and class, before something else overwrites them.
 String last_git_error(int *r_class = nullptr);
