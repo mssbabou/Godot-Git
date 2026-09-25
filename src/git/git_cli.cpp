@@ -6,13 +6,21 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/os.hpp>
 
+#include <atomic>
+#include <mutex>
 #include <string>
 
+#include "git/git_lfs.h"
 #include "git/git_util.h"
 
 namespace godot_git {
 
 namespace {
+
+// Not a String: no String may exist before the GDExtension interface does (CLAUDE.md gotcha 3).
+std::mutex git_program_lock;
+std::string git_program_name = "git";
+std::atomic<int> git_state{ -1 }; // -1 unknown, 0 missing, 1 installed.
 
 String hooks_dir(git_repository *p_repo) {
 	ConfigPtr config;
@@ -52,24 +60,108 @@ double progress_fraction(const String &p_line) {
 
 } // namespace
 
+String git_program() {
+	std::lock_guard<std::mutex> guard(git_program_lock);
+	return String::utf8(git_program_name.c_str());
+}
+
+void set_git_program(const String &p_program) {
+	{
+		std::lock_guard<std::mutex> guard(git_program_lock);
+		git_program_name = p_program.utf8().get_data();
+	}
+	check_git();
+}
+
+bool git_installed() {
+	return git_state < 0 ? check_git() : git_state == 1;
+}
+
+namespace {
+
+// Whether p_program can be found the way starting it would: on the PATH, or as a path. Running
+// a program that isn't there makes Godot print an error to the editor's Output, every time.
+bool on_path(const String &p_program) {
+	OS *os = OS::get_singleton();
+	const bool windows = os->get_name() == "Windows";
+	PackedStringArray names;
+	names.push_back(p_program);
+	if (windows && p_program.get_extension().is_empty()) {
+		for (const String &extension : os->get_environment("PATHEXT").split(";", false)) {
+			names.push_back(p_program + extension.to_lower());
+		}
+	}
+	PackedStringArray dirs;
+	if (p_program.contains("/") || p_program.contains("\\")) {
+		dirs.push_back(String());
+	} else {
+		dirs = os->get_environment("PATH").split(windows ? ";" : ":", false);
+	}
+	for (const String &dir : dirs) {
+		for (const String &name : names) {
+			if (FileAccess::file_exists(dir.is_empty() ? name : dir.trim_suffix("\\").path_join(name))) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+} // namespace
+
+bool check_git() {
+	if (!on_path(git_program())) {
+		git_state = 0;
+		forget_lfs_check();
+		return false;
+	}
+	PackedStringArray args;
+	args.push_back("--version");
+	Array output;
+	const int code = OS::get_singleton()->execute(git_program(), args, output);
+	git_state = (code == 0 && !output.is_empty() && String(output[0]).begins_with("git version")) ? 1 : 0;
+	forget_lfs_check();
+	return git_state == 1;
+}
+
+Error require_git(const String &p_what) {
+	// Checked again: it may have been installed since.
+	if (git_installed() || check_git()) {
+		return OK;
+	}
+	return fail(vformat("%s Git isn't installed (or isn't on the PATH). Install it from git-scm.com, then try again.", p_what));
+}
+
 bool has_hook(git_repository *p_repo, const char *p_name) {
 	const String dir = hooks_dir(p_repo);
 	return !dir.is_empty() && FileAccess::file_exists(dir.path_join(p_name));
 }
 
-bool commit_needs_git(git_repository *p_repo, CommitKind p_kind) {
+String commit_git_reason(git_repository *p_repo, CommitKind p_kind) {
 	if (signs_commits(p_repo)) {
-		return true;
+		return "this repository signs its commits (commit.gpgsign)";
 	}
 	for (const char *hook : { "pre-commit", "prepare-commit-msg", "commit-msg", "post-commit" }) {
 		if (has_hook(p_repo, hook)) {
-			return true;
+			return vformat("this repository has a %s hook", hook);
 		}
 	}
-	return p_kind == COMMIT_AMEND && has_hook(p_repo, "post-rewrite");
+	if (p_kind == COMMIT_AMEND && has_hook(p_repo, "post-rewrite")) {
+		return "this repository has a post-rewrite hook";
+	}
+	return String();
+}
+
+bool commit_needs_git(git_repository *p_repo, CommitKind p_kind) {
+	return !commit_git_reason(p_repo, p_kind).is_empty();
 }
 
 Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const PackedStringArray &p_args, const String &p_step, String &r_output, int &r_exit_code) {
+	// Callers say what needed git; this is the backstop.
+	const Error missing = require_git("This needs git.");
+	if (missing != OK) {
+		return missing;
+	}
 	// No terminal to ask anything in.
 	OS::get_singleton()->set_environment("GIT_TERMINAL_PROMPT", "0");
 	const char *workdir_path = git_repository_workdir(p_repo);
@@ -82,7 +174,7 @@ Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const Packed
 	if (OS::get_singleton()->get_name() == "Windows") {
 		// cmd gets one string (Godot quotes each argument; see CLAUDE.md gotcha 24).
 		// Forward slashes: a quoted path ending in a backslash would read as an escaped quote.
-		String command = vformat("git -C \"%s\"", workdir);
+		String command = vformat("%s -C \"%s\"", git_program(), workdir);
 		for (const String &arg : p_args) {
 			command += vformat(" \"%s\"", arg);
 		}
@@ -92,7 +184,7 @@ Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const Packed
 	} else {
 		program = "sh";
 		args.push_back("-c");
-		args.push_back("exec git \"$@\" 2>&1");
+		args.push_back(vformat("exec %s \"$@\" 2>&1", git_program()));
 		args.push_back("sh");
 		args.push_back("-C");
 		args.push_back(workdir);
@@ -224,6 +316,10 @@ String output_tail(const String &p_output, int p_count) {
 }
 
 Error commit_with_git(git_repository *p_repo, RemoteContext &p_ctx, const String &p_message, CommitKind p_kind) {
+	const Error missing = require_git(vformat("Committing needs git here: %s.", commit_git_reason(p_repo, p_kind)));
+	if (missing != OK) {
+		return missing;
+	}
 	// The message goes through a file: exact, whatever it contains.
 	const String message_path = String::utf8(git_repository_path(p_repo)).path_join("GODOT_GIT_COMMIT_MSG");
 	{

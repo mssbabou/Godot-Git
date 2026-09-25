@@ -11,6 +11,7 @@
 
 #include <atomic>
 
+#include "git/git_cli.h"
 #include "git/git_util.h"
 
 namespace godot_git {
@@ -70,7 +71,7 @@ String run_git_credential(const String &p_workdir, const String &p_action, const
 	}
 	args.push_back("credential");
 	args.push_back(p_action);
-	Dictionary process = OS::get_singleton()->execute_with_pipe("git", args, true);
+	Dictionary process = OS::get_singleton()->execute_with_pipe(git_program(), args, true);
 	Ref<FileAccess> io = process.get("stdio", Variant());
 	if (io.is_null()) {
 		return String();
@@ -153,6 +154,9 @@ int credentials_cb(git_credential **r_out, const char *p_url, const char *p_user
 	}
 
 	if (p_allowed_types & GIT_CREDENTIAL_USERPASS_PLAINTEXT) {
+		if (require_git("This remote needs a login, and logins come from git's credential helper.") != OK) {
+			return GIT_EAUTH;
+		}
 		// The helper may open a sign-in window or a browser tab; say so, or it looks like a hang.
 		report_progress(ctx, "Signing in...", "(check for a sign-in window or browser tab)", -1);
 		const String hint = p_username_from_url ? String::utf8(p_username_from_url) : String();

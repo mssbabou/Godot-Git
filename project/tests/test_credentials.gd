@@ -47,6 +47,7 @@ func run() -> void:
 	_stale_login_without_prompts()
 	_rejected_twice()
 	_no_login()
+	_no_git()
 
 	_stop = true
 	_thread.wait_to_finish()
@@ -96,6 +97,18 @@ func _no_login() -> void:
 	check("fetch without any login fails", r.fetch() != OK)
 	check("explains it", not GitRepository.get_last_error().is_empty(), GitRepository.get_last_error())
 	check("nothing saved", not _log(repo).has("store"), _log(repo))
+
+
+# Without git there's no credential helper to ask: say so, instead of blaming the helper.
+func _no_git() -> void:
+	var repo := _clone_with_helper("no-git", RIGHT, RIGHT)
+	var r := open(repo)
+	GitRepository.set_git_program("git-not-installed-for-tests")
+	check("fetch needing a login fails without git", r.fetch() != OK)
+	var message := GitRepository.get_last_error()
+	check("says logins need git", message.contains("credential helper") and message.contains("git-scm.com"), message)
+	GitRepository.set_git_program("git")
+	check("works again with git", r.fetch() == OK, GitRepository.get_last_error())
 
 
 ## A clone of the test remote, fetched over HTTP from the local server, with a fake credential

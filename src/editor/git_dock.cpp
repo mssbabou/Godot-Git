@@ -37,12 +37,7 @@ GitDock::GitDock() {
 	VBoxContainer *main_vb = memnew(VBoxContainer);
 	add_child(main_vb);
 
-	no_repo_label = memnew(Label);
-	no_repo_label->set_text("This project isn't inside a git repository.");
-	no_repo_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
-	no_repo_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	no_repo_label->hide();
-	main_vb->add_child(no_repo_label);
+	_build_setup(main_vb);
 
 	VBoxContainer *repo_vb = memnew(VBoxContainer);
 	repo_vb->set_v_size_flags(SIZE_EXPAND_FILL);
@@ -165,6 +160,7 @@ void GitDock::_notification(int p_what) {
 			EditorFileSystem *fs = EditorInterface::get_singleton()->get_resource_filesystem();
 			fs->connect("filesystem_changed", callable_mp(this, &GitDock::refresh));
 			_update_status_style(); // Needs the commit box's theme, which isn't final at THEME_CHANGED.
+			_check_git();
 			refresh();
 			auto_fetch_timer->start(10.0); // First check soon after opening, then every minute.
 		} break;
@@ -172,6 +168,9 @@ void GitDock::_notification(int p_what) {
 		case NOTIFICATION_APPLICATION_FOCUS_IN: {
 			// Pick up changes made outside the editor (terminal, other git tools).
 			if (is_node_ready()) {
+				if (git_missing) {
+					_check_git(); // Maybe installed meanwhile.
+				}
 				refresh();
 			}
 		} break;
@@ -185,6 +184,7 @@ void GitDock::_notification(int p_what) {
 }
 
 void GitDock::_update_icons() {
+	no_repo_hint->add_theme_color_override("font_color", _dim_color());
 	fetch_button->set_button_icon(get_theme_icon("Reload", "EditorIcons"));
 	more_menu->set_button_icon(get_theme_icon("GuiTabMenuHl", "EditorIcons"));
 	pull_button->set_button_icon(get_theme_icon("MoveDown", "EditorIcons"));
@@ -274,6 +274,12 @@ void GitDock::_build_more_menu() {
 	more->add_separator();
 	if (has_commits) {
 		more->add_icon_item(get_theme_icon("VcsBranches", "EditorIcons"), "New Branch...", MORE_NEW_BRANCH);
+	}
+	if (!sync_status.get("has_remotes", false)) {
+		more->add_icon_item(get_theme_icon("Add", "EditorIcons"), "Add Remote...", MORE_ADD_REMOTE);
+		more->set_item_tooltip(more->get_item_count() - 1, "Connect this repository to one on GitHub, GitLab or another host, so you can push and pull.");
+	}
+	if (more->get_item_count() > 0 && !more->is_item_separator(more->get_item_count() - 1)) {
 		more->add_separator();
 	}
 	if (sync_status.get("has_remotes", false)) {
@@ -322,15 +328,22 @@ void GitDock::refresh() {
 	}
 	if (!repo->is_open() && repo->open("res://") != OK) {
 		repo_ui->hide();
-		no_repo_label->show();
+		no_repo_ui->show();
 		set_title("Git");
 		return;
 	}
-	no_repo_label->hide();
+	no_repo_ui->hide();
 	repo_ui->show();
 
 	project_file_time = FileAccess::get_modified_time("res://project.godot");
 	sync_status = repo->get_sync_status();
+	git_needs = git_missing ? repo->get_git_needs() : Dictionary();
+	if (git_missing && git_warning.is_empty()) {
+		git_warning = _git_missing_warning();
+		if (!git_warning.is_empty()) {
+			_set_status(STATUS_WARNING, git_warning);
+		}
+	}
 	_fill_branches();
 
 	const Array status = repo->get_status();
@@ -350,6 +363,79 @@ void GitDock::_check_project_file() {
 	if (repo.is_valid() && repo->is_open() && FileAccess::get_modified_time("res://project.godot") != project_file_time) {
 		refresh();
 	}
+}
+
+// Checked when the dock opens and, while git is missing, whenever the editor gets focus back:
+// the user may have just installed it. Not on every refresh (see check_git() in git_cli.h).
+void GitDock::_check_git() {
+	git_missing = !GitRepository::check_git_installed();
+	if (!git_missing && !git_warning.is_empty()) {
+		if (status_kind == STATUS_WARNING && status_text == git_warning) {
+			_set_status(STATUS_IDLE, String());
+		}
+		git_warning = String();
+	}
+}
+
+static String join_list(const PackedStringArray &p_items) {
+	if (p_items.size() <= 1) {
+		return p_items.is_empty() ? String() : p_items[0];
+	}
+	return vformat("%s and %s", String(", ").join(p_items.slice(0, -1)), p_items[p_items.size() - 1]);
+}
+
+// "Git isn't installed, so these won't work:" and a list, naming what this repository needs git
+// for. Empty if nothing: a repository without hooks, LFS or remotes that need git works without it.
+String GitDock::_git_missing_warning() const {
+	PackedStringArray items;
+	const String commit_reason = git_needs.get("commit", String());
+	if (!commit_reason.is_empty()) {
+		items.push_back(vformat("Commit (%s)", commit_reason));
+	}
+	const PackedStringArray ssh = git_needs.get("ssh_remotes", PackedStringArray());
+	if (!ssh.is_empty()) {
+		items.push_back(vformat("Fetch, Pull and Push with %s (SSH)", join_list(ssh)));
+	}
+	if (git_needs.get("pre_push", false)) {
+		items.push_back("Push (this repository has a pre-push hook)");
+	}
+	if (git_needs.get("lfs", false)) {
+		items.push_back("Pull, Push and staging, for files stored with Git LFS");
+	}
+	const PackedStringArray https = git_needs.get("https_remotes", PackedStringArray());
+	if (!https.is_empty()) {
+		items.push_back(vformat("Signing in to %s (for private repositories)", join_list(https)));
+	}
+	if (items.is_empty()) {
+		return String();
+	}
+	String text = "Git isn't installed (or isn't on the PATH), so these won't work:";
+	for (const String &item : items) {
+		text += String::utf8("\n• ") + item;
+	}
+	return text + String("\nInstall it from git-scm.com, then come back to the editor.");
+}
+
+// Why p_op (NETWORK_FETCH / PULL / PUSH) can't work without git, or "" if it can (or git is
+// installed). Commit is handled in _update_actions.
+String GitDock::_needs_git(int p_op) const {
+	if (!git_missing) {
+		return String();
+	}
+	String remote = String(sync_status.get("upstream", String())).get_slice("/", 0);
+	if (remote.is_empty()) {
+		const PackedStringArray remotes = repo->get_remotes();
+		remote = remotes.has("origin") || remotes.is_empty() ? String("origin") : remotes[0];
+	}
+	String reason;
+	if (PackedStringArray(git_needs.get("ssh_remotes", PackedStringArray())).has(remote)) {
+		reason = vformat("%s is an SSH remote, and SSH goes through git.", remote);
+	} else if (p_op != NETWORK_FETCH && git_needs.get("lfs", false)) {
+		reason = "This project stores files with Git LFS, which needs git.";
+	} else if (p_op == NETWORK_PUSH && git_needs.get("pre_push", false)) {
+		reason = "This repository has a pre-push hook, which only git can run.";
+	}
+	return reason.is_empty() ? reason : vformat("%s Git isn't installed (or isn't on the PATH); install it from git-scm.com.", reason);
 }
 
 void GitDock::_fill_branches() {
@@ -416,9 +502,10 @@ void GitDock::_update_actions() {
 	more_menu->set_disabled(syncing);
 
 	sync_row->set_visible(has_remotes);
-	fetch_button->set_disabled(busy);
+	const String fetch_needs_git = _needs_git(NETWORK_FETCH);
+	fetch_button->set_disabled(busy || !fetch_needs_git.is_empty());
 	fetch_button->set_text(shown == NETWORK_FETCH ? String("Fetching...") : String("Fetch"));
-	fetch_button->set_tooltip_text("Fetch: check the remote for new commits, without changing your files.");
+	fetch_button->set_tooltip_text(fetch_needs_git.is_empty() ? String("Fetch: check the remote for new commits, without changing your files.") : fetch_needs_git);
 
 	// Amend: only while the last commit is yours alone. Once pushed, rewriting it would leave
 	// teammates with a commit that no longer exists here.
@@ -460,15 +547,26 @@ void GitDock::_update_actions() {
 			commit_button->set_tooltip_text(vformat("Commit %s to %s.", plural(staged_count, "staged file", "staged files"), branch));
 		}
 	}
+	if (git_missing && shown != NETWORK_COMMIT && repo->commit_runs_git(amending)) {
+		// Committing with libgit2 instead would silently skip the hook or the signature.
+		const String reason = git_needs.get("commit", String());
+		commit_button->set_disabled(true);
+		commit_button->set_tooltip_text(vformat("Committing needs git here: %s. Git isn't installed (or isn't on the PATH); install it from git-scm.com.", reason.is_empty() ? String("this repository has a post-rewrite hook") : reason));
+	}
 
 	// Pull: only when the branch tracks a remote branch. The count is as of the last fetch;
 	// pulling always fetches first, so it stays enabled at 0.
 	pull_button->set_visible(has_remotes && !upstream.is_empty());
-	pull_button->set_disabled(busy);
+	const String pull_needs_git = _needs_git(NETWORK_PULL);
+	pull_button->set_disabled(busy || !pull_needs_git.is_empty());
 	pull_button->set_text(shown == NETWORK_PULL ? String("Pulling...") : (behind > 0 ? vformat("Pull %d", behind) : String("Pull")));
-	pull_button->set_tooltip_text(behind > 0
-					? vformat("Pull: get %s from %s.", plural(behind, "new commit", "new commits"), upstream)
-					: vformat("Pull from %s. Nothing new as of the last fetch.", upstream));
+	if (!pull_needs_git.is_empty()) {
+		pull_button->set_tooltip_text(pull_needs_git);
+	} else {
+		pull_button->set_tooltip_text(behind > 0
+						? vformat("Pull: get %s from %s.", plural(behind, "new commit", "new commits"), upstream)
+						: vformat("Pull from %s. Nothing new as of the last fetch.", upstream));
+	}
 
 	// Push: publishes the branch first time, then sends new commits. Disabled with nothing to send.
 	push_button->set_visible(has_remotes && has_commits);
@@ -480,6 +578,11 @@ void GitDock::_update_actions() {
 		push_button->set_text(shown == NETWORK_PUSH ? String("Pushing...") : (ahead > 0 ? vformat("Push %d", ahead) : String("Push")));
 		push_button->set_tooltip_text(ahead > 0 ? vformat("Push: send %s to %s.", plural(ahead, "commit", "commits"), upstream) : vformat("Nothing to push; %s has all your commits.", upstream));
 		push_button->set_disabled(busy || ahead == 0);
+	}
+	const String push_needs_git = _needs_git(NETWORK_PUSH);
+	if (!push_needs_git.is_empty()) {
+		push_button->set_disabled(true);
+		push_button->set_tooltip_text(push_needs_git);
 	}
 }
 
@@ -514,6 +617,9 @@ void GitDock::_on_more_menu_id(int p_id) {
 			}
 			auto_fetch_failed = false;
 			last_auto_fetch_attempt = 0;
+		} break;
+		case MORE_ADD_REMOTE: {
+			_show_remote_dialog();
 		} break;
 		case MORE_OPEN_FOLDER: {
 			OS::get_singleton()->shell_show_in_file_manager(repo->get_workdir(), true);
@@ -645,6 +751,9 @@ void GitDock::_commit() {
 	const bool amending = amend_check->is_pressed();
 	if (message.is_empty() || (staged_count == 0 && !amending)) {
 		return;
+	}
+	if (_ask_identity(NETWORK_COMMIT)) {
+		return; // Commits once the name and email are saved.
 	}
 	const int files = staged_count;
 	const String old_id = last_commit_id;

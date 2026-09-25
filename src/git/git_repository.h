@@ -51,6 +51,7 @@ public:
 	Dictionary get_line_stats(bool p_staged) const;
 	Array get_commits(int p_max_count) const;
 	bool uses_lfs() const;
+	Dictionary get_git_needs() const;
 
 	Error stage(const String &p_path);
 	Error unstage(const String &p_path);
@@ -63,6 +64,9 @@ public:
 	bool is_head_pushed() const;
 	Error checkout_branch(const String &p_branch);
 	Error create_branch(const String &p_name);
+	Error add_remote(const String &p_name, const String &p_url);
+	Dictionary get_identity() const;
+	Error set_identity(const String &p_name, const String &p_email, bool p_global);
 
 	Error fetch();
 	Error pull();
@@ -72,7 +76,13 @@ public:
 	void set_progress_callback(const Callable &p_callback);
 	void set_login_prompts_allowed(bool p_allowed);
 
+	static Error init_repository(const String &p_path, const String &p_project_path);
+	static void set_config_home(const String &p_path);
+
 	static void cancel_network();
+	static bool is_git_installed();
+	static bool check_git_installed();
+	static void set_git_program(const String &p_program);
 	static String get_last_error();
 	static String get_libgit2_version();
 

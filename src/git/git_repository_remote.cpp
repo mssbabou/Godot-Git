@@ -20,6 +20,9 @@ Error GitRepository::_fetch_remote(const String &p_remote) {
 		return to_error(err);
 	}
 	if (git_remote_url(remote) && is_ssh_url(String::utf8(git_remote_url(remote)))) {
+		if (require_git(vformat("%s is an SSH remote, and SSH goes through git.", p_remote)) != OK) {
+			return FAILED;
+		}
 		return _fetch_with_git(p_remote);
 	}
 
@@ -334,7 +337,10 @@ Error GitRepository::pull() {
 			result = fast_forward(repo, head, theirs, ctx);
 		} else {
 			pull_merged = true;
-			result = merge_with_autostash(repo, head, upstream, theirs, ctx, notice);
+			result = require_identity(repo, "Nothing was pulled: your branch and the remote's have both moved on, so pulling makes a merge commit.");
+			if (result == OK) {
+				result = merge_with_autostash(repo, head, upstream, theirs, ctx, notice);
+			}
 		}
 		if (result != OK) {
 			pulled_commits = 0;
@@ -402,6 +408,12 @@ Error GitRepository::push() {
 		}
 	}
 	const bool ssh = is_ssh_url(push_url);
+	if (ssh && require_git(vformat("%s is an SSH remote, and SSH goes through git.", remote_name)) != OK) {
+		return FAILED;
+	}
+	if (!ssh && has_hook(repo, "pre-push") && require_git("Pushing needs git here: this repository has a pre-push hook.") != OK) {
+		return FAILED;
+	}
 	if (ssh || has_hook(repo, "pre-push")) {
 		// libgit2 runs no hooks, and handles SSH badly (see is_ssh_url); git does both.
 		const Error result = _push_with_git(remote_name, refspec_text, ssh);

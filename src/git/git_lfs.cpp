@@ -111,7 +111,7 @@ public:
 		log_path = String::utf8(git_repository_path(p_repo)).path_join("godot-git-lfs.log");
 		// A download from inside a checkout must never open a sign-in window: nobody is there
 		// to see it. Files are fetched beforehand (lfs_fetch), with sign-in if allowed.
-		const String git = "git -c credential.interactive=never lfs filter-process";
+		const String git = vformat("%s -c credential.interactive=never lfs filter-process", git_program());
 		PackedStringArray args;
 		String program;
 		if (is_windows()) {
@@ -327,13 +327,21 @@ void release_lfs(git_repository *p_repo) {
 	}
 }
 
+void forget_lfs_check() {
+	lfs_state = -1;
+}
+
 bool lfs_installed() {
 	if (lfs_state < 0) {
+		if (!git_installed()) {
+			lfs_state = 0;
+			return false;
+		}
 		PackedStringArray args;
 		args.push_back("lfs");
 		args.push_back("version");
 		Array output;
-		const int code = OS::get_singleton()->execute("git", args, output);
+		const int code = OS::get_singleton()->execute(git_program(), args, output);
 		lfs_state = (code == 0 && !output.is_empty() && String(output[0]).begins_with("git-lfs/")) ? 1 : 0;
 	}
 	return lfs_state == 1;
@@ -347,6 +355,9 @@ bool repo_uses_lfs(git_repository *p_repo) {
 
 Error require_lfs(git_repository *p_repo, const String &p_action) {
 	if (repo_uses_lfs(p_repo) && !lfs_installed()) {
+		if (!git_installed()) {
+			return require_git(vformat("This project stores some files with Git LFS, which needs git and git-lfs, so %s would damage them.", p_action));
+		}
 		return fail(vformat("This project stores some files with Git LFS, which isn't installed, so %s would damage them. Install Git LFS (git-lfs.com), then restart the editor.", p_action));
 	}
 	return OK;

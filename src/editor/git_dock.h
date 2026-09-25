@@ -59,6 +59,7 @@ class GitDock : public EditorDock {
 		MORE_NEW_BRANCH,
 		MORE_OPEN_FOLDER,
 		MORE_AUTO_FETCH,
+		MORE_ADD_REMOTE,
 	};
 
 	enum NetworkOp {
@@ -136,7 +137,8 @@ class GitDock : public EditorDock {
 	Tree *history_tree = nullptr;
 	Label *history_empty = nullptr;
 
-	Label *no_repo_label = nullptr;
+	Control *no_repo_ui = nullptr; // "Not a git repository yet", with Initialize Repository.
+	Label *no_repo_hint = nullptr;
 	Control *repo_ui = nullptr;
 
 	PopupMenu *context_menu = nullptr;
@@ -145,6 +147,24 @@ class GitDock : public EditorDock {
 	PackedStringArray pending_discard;
 	ConfirmationDialog *branch_dialog = nullptr;
 	LineEdit *branch_name_edit = nullptr;
+
+	// Setting a repository up: Initialize, Add Remote, and the name and email commits need.
+	ConfirmationDialog *init_dialog = nullptr;
+	Label *init_question = nullptr;
+	CheckBox *init_here = nullptr;
+	CheckBox *init_parent = nullptr;
+	Control *init_parent_box = nullptr; // The "folder above" choice, hidden when that's no place for a repo.
+	MarginContainer *init_here_indent = nullptr;
+	MarginContainer *init_parent_indent = nullptr;
+	Label *init_here_path = nullptr;
+	Label *init_parent_path = nullptr;
+	ConfirmationDialog *remote_dialog = nullptr;
+	LineEdit *remote_url_edit = nullptr;
+	ConfirmationDialog *identity_dialog = nullptr;
+	LineEdit *identity_name_edit = nullptr;
+	LineEdit *identity_email_edit = nullptr;
+	CheckBox *identity_local_check = nullptr;
+	NetworkOp identity_then = NETWORK_NONE; // What to do once saved: NETWORK_COMMIT or NETWORK_PULL.
 
 	Dictionary sync_status;
 	int staged_count = 0;
@@ -166,6 +186,12 @@ class GitDock : public EditorDock {
 	bool network_quiet = false;
 	NetworkOp queued_op = NETWORK_NONE;
 
+	// Git itself (the program) runs hooks, signing, LFS, SSH and logins. Without it the rest works
+	// on libgit2, and what won't work is disabled with the reason, plus one warning that lists it.
+	bool git_missing = false;
+	Dictionary git_needs; // GitRepository::get_git_needs(), while git is missing.
+	String git_warning; // The warning shown once (so it can be cleared once git is installed).
+
 	Timer *auto_fetch_timer = nullptr;
 	int64_t last_auto_fetch_attempt = 0;
 	bool auto_fetch_failed = false; // The failure is shown once, not every few minutes.
@@ -177,6 +203,9 @@ class GitDock : public EditorDock {
 	void _build_more_menu();
 	void _on_more_menu_id(int p_id);
 	void _check_project_file();
+	void _check_git();
+	String _git_missing_warning() const;
+	String _needs_git(int p_op) const;
 	String _to_res_path(const String &p_path) const;
 	Ref<Texture2D> _file_icon(const String &p_path) const;
 	Color _status_color(const String &p_state) const;
@@ -218,6 +247,17 @@ class GitDock : public EditorDock {
 	void _update_status();
 	void _update_status_style();
 	void _on_status_button();
+
+	// git_dock_setup.cpp: setting a repository up (Initialize, Add Remote, name and email).
+	void _build_setup(Control *p_parent);
+	void _show_init_dialog();
+	void _on_init_confirmed();
+	void _show_remote_dialog();
+	void _on_remote_url_changed(const String &p_text);
+	void _on_remote_confirmed();
+	bool _ask_identity(NetworkOp p_then);
+	void _on_identity_changed(const String &p_text);
+	void _on_identity_confirmed();
 
 	// git_dock_network.cpp: fetch / pull / push on a worker thread, and auto-fetch.
 	void _start_network(int p_op);

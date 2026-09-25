@@ -23,6 +23,14 @@ Error fail(const String &p_message) {
 	return FAILED;
 }
 
+Error require_identity(git_repository *p_repo, const String &p_what) {
+	SignaturePtr signature;
+	if (git_signature_default(signature.out(), p_repo) == 0) {
+		return OK;
+	}
+	return fail(vformat("%s Every commit records who made it, and git doesn't know your name and email yet. Set them by pressing Commit in the Git panel, or in a terminal with `git config --global user.name \"Your Name\"` and `git config --global user.email you@example.com`.", p_what));
+}
+
 String buf_to_string(git_buf &p_buf) {
 	const String result = p_buf.ptr ? String::utf8(p_buf.ptr) : String();
 	git_buf_dispose(&p_buf);

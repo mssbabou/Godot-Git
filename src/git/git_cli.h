@@ -22,10 +22,28 @@ enum CommitKind {
 	COMMIT_MERGE,
 };
 
+// The git program to run: "git", found on the PATH. The tests point it at a program that doesn't
+// exist, to see what the panel does on a machine without git. No spaces (it goes into a cmd line
+// unquoted).
+String git_program();
+void set_git_program(const String &p_program);
+
+// Whether git runs on this machine. Checked once and remembered; check_git() checks again (e.g.
+// after the user installed it). Not called on every refresh: on a Mac without the developer
+// tools, /usr/bin/git is a stub that offers to install them in a window each time it runs.
+bool git_installed();
+bool check_git();
+
+// FAILED if git isn't installed, with p_what ("Pushing to an SSH remote needs git.") followed by
+// how to get it. OK otherwise.
+Error require_git(const String &p_what);
+
 // Whether the repository has the hook p_name (core.hooksPath, or .git/hooks).
 bool has_hook(git_repository *p_repo, const char *p_name);
 
-// Whether making this kind of commit needs git itself: signing is on, or a hook would run.
+// Why making this kind of commit needs git itself ("this repository has a pre-commit hook"), or
+// "" when libgit2 can make it.
+String commit_git_reason(git_repository *p_repo, CommitKind p_kind);
 bool commit_needs_git(git_repository *p_repo, CommitKind p_kind);
 
 // Runs `git <p_args>` in the repository and waits for it. Each line it prints is shown as

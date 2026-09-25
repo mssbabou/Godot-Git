@@ -17,6 +17,10 @@ void GitDock::_start_network(int p_op) {
 	if (!repo->is_open() || queued_op != NETWORK_NONE) {
 		return;
 	}
+	// With commits of your own, a pull may have to merge, which makes a commit.
+	if (p_op == NETWORK_PULL && (int)sync_status.get("ahead", 0) > 0 && _ask_identity(NETWORK_PULL)) {
+		return;
+	}
 	if (network_op == NETWORK_NONE) {
 		_run_network((NetworkOp)p_op, false);
 		return;
@@ -82,7 +86,7 @@ void GitDock::_on_auto_fetch_timer() {
 	}
 	const int64_t now = (int64_t)Time::get_singleton()->get_unix_time_from_system();
 	const int64_t last = MAX((int64_t)sync_status.get("last_fetched", 0), last_auto_fetch_attempt);
-	if (now - last < 5 * 60) {
+	if (now - last < 5 * 60 || !_needs_git(NETWORK_FETCH).is_empty()) {
 		return;
 	}
 	last_auto_fetch_attempt = now;

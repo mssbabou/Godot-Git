@@ -28,6 +28,7 @@ What the dock does today:
 - A status strip under the toolbar. It shows what's running, with real progress and Cancel, then keeps the last result, error or "last fetched" time.
 - A ⋮ menu next to the branch picker (stage/unstage/discard all, new branch, refresh, open repo folder).
 - A sync row, **⟳ Fetch**, **↓ Pull N** and **↑ Push N / Publish**, sharing the width (hidden without a remote).
+- Setting a repository up: **Initialize Repository...** when the project isn't in one (in the project folder or the folder above it), **Add Remote...** in the ⋮ menu while there's no remote, and a **name and email** dialog the first time a commit (or a merging pull) needs them.
 - Commit message box (Ctrl+Enter commits), then **☐ Amend** and **Commit**. Amend redoes the last commit (new message, plus whatever is staged). It's only enabled while that commit isn't on any remote-tracking branch, and ticking it fills in the last message.
 - "Staged Changes" and "Changes" sections (Godot `FoldableContainer`s) with file counts and **+/− line totals** in the header (each file's own +/− is in its tooltip), discard-all / stage-all / unstage-all header buttons, and per-file hover buttons (stage / unstage / discard). Both sections always show; when empty they show a plain dim label ("Nothing staged." / "No changes.").
 - Right-click menus on files (open, stage/unstage, discard, show in FileSystem / file manager, copy paths) and commits (copy hash / message).
@@ -62,6 +63,7 @@ Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` o
 | `src/editor/git_dock_lists.cpp` | Staged Changes / Changes / History: row drawing, header alignment, hover buttons, clicks, context menu. |
 | `src/editor/git_dock_status.cpp` | The status strip. |
 | `src/editor/git_dock_network.cpp` | Fetch / pull / push on a worker thread, auto-fetch. |
+| `src/editor/git_dock_setup.cpp` | Setting a repository up: the empty state with Initialize Repository, Add Remote, the name and email dialog. |
 | `src/editor/file_opener.{h,cpp}` | `open_file()`: in Godot if it can edit the file, else the configured external editor or VS Code. |
 | `src/editor/ui_text.{h,cpp}` | Wording helpers: `plural`, `time_ago`, `status_letter`, ... |
 | `src/editor/git_editor_plugin.{h,cpp}` | `GitEditorPlugin`: adds/removes the dock. |
@@ -115,7 +117,7 @@ Dev loop: edit C++ → `scons` → click back into the editor (hot reload). If s
 
 - Wraps one `git_repository*`. **Not thread-safe**: one instance per thread. The dock keeps one on the main thread and opens a fresh one on the worker thread for network ops.
 - Paths in and out are **relative to the repo workdir** (not `res://`). `open()` accepts `res://` and searches parent folders like the git CLI, so a Godot project inside a larger repo works (this repo's own `project/` is exactly that case).
-- **Which repository.** The dock always opens the repository containing `res://`. The maintainer's estimate: ~80% of the time the Godot project sits at the root of its git repo, so this is a safe default. Being able to pick a different repository (or find one elsewhere) is useful but not paramount. See Missing features.
+- **Which repository.** The dock always opens the repository containing `res://`, searching parent folders. That covers a project at its repo's root (~80% per the maintainer) and a project in a subfolder of its repo (`MegaGame/godot-project/`, which the maintainer considers common; this repo is laid out that way). **Picking a different repository was dropped** (decided 2026-09-25): no setting, no picker. A project that isn't in a repo at all is handled separately (see Missing features: "Initialize Repository").
 - Errors: methods return Godot `Error`. The human-readable reason is `GitRepository::get_last_error()` (libgit2's thread-local last error). Custom messages are set with the file-local `fail()` helper (`git_error_set_str`). `get_notice()` carries a warning from an operation that *succeeded* (only the pull's stash safety net, which shouldn't trigger anymore). `get_pull_result()` says how many commits the last pull brought in and whether it merged. A canceled network op returns `ERR_SKIP`.
 - Network (fetch / pull / push) uses `RemoteContext` callbacks:
   - **HTTPS credentials** come from git's own credential helper by running `git credential fill` (with `GIT_TERMINAL_PROMPT=0`). On this machine that's Git Credential Manager. If git isn't installed, HTTPS auth can't work.
@@ -152,6 +154,13 @@ libgit2 runs no hooks and never signs. Committing that way would silently skip a
 - **The dock commits in the background** when `commit_runs_git()` says so (`NETWORK_COMMIT`), because a hook can take a while. The strip shows the hook's output live, with Cancel. After a Cancel it only says "Commit canceled.", because a post-commit hook may already have run.
 - `run_git_command` merges stdout and stderr through `cmd /c ... 2>&1` / `sh -c`, for the same reason as the LFS filter: an unread stderr pipe blocks the process. git-lfs fetch/push use it too.
 - Not covered: `pre-merge-commit` (only `git merge` runs it; we commit merges with `git commit`), and `post-checkout`/`post-merge` after libgit2 checkouts. GPG signing needs a pinentry that can show a window (e.g. Gpg4win's); a terminal-only pinentry fails, since there's no terminal.
+
+### Without git installed
+
+The git program is needed for logins, LFS, hooks, signing and SSH; everything else runs on libgit2. `git_installed()` (`git_cli.cpp`) checks once: it first looks for git on the PATH itself, because starting a missing program makes Godot print a red error to the editor's Output every time, then runs `git --version`. It's **not** checked on every refresh: on a Mac without the developer tools, `/usr/bin/git` is a stub that pops up an install offer each time it runs. The dock checks on READY and, while git is missing, on every focus-in (so installing it needs no restart).
+- Each place that needs git refuses with a message saying why and pointing to git-scm.com (`require_git`): commit/amend/merge commit with hooks or signing (never silently skipping the hook), fetch/push with an SSH remote, push with a pre-push hook, logins (credential helper), LFS (`require_lfs`). `run_git_command` has a generic backstop.
+- The dock shows one warning listing what won't work in *this* repository (`GitRepository::get_git_needs`), and disables Commit / Fetch / Pull / Push with the reason in the tooltip when they can't work. A repository without hooks, LFS, SSH or HTTPS remotes gets no warning at all. Auto-fetch skips a remote it can't reach.
+- Seen on screen 2026-09-25 (editor started with git removed from PATH).
 
 ### SSH remotes
 
@@ -202,7 +211,7 @@ libgit2 runs ssh itself (`USE_SSH=exec`), but badly for us. On Windows it ignore
 
 ## Testing
 
-1. **Backend tests: `project/tests/`, in the repo and in CI.** `run_tests.gd` (a `SceneTree` script) runs the suites `test_local.gd`, `test_sync.gd`, `test_pull_safety.gd`, `test_checkout_safety.gd` (Windows only), `test_amend.gd`, `test_hooks.gd` (real hooks, and SSH signing with a throwaway key), `test_credentials.gd`, `test_ssh.gd` (fake ssh), `test_lfs.gd` (skipped without git-lfs; CI installs it) and `test_online.gd` (the last only with `-- --online`). Each suite extends `test_case.gd`, which builds throwaway repos with the real git CLI (a bare "remote" plus "mine" and "theirs" clones via `make_shared()`). Checks are made against what git itself says. Run:
+1. **Backend tests: `project/tests/`, in the repo and in CI.** `run_tests.gd` (a `SceneTree` script) runs the suites `test_local.gd`, `test_sync.gd`, `test_pull_safety.gd`, `test_checkout_safety.gd` (Windows only), `test_amend.gd`, `test_hooks.gd` (real hooks, and SSH signing with a throwaway key), `test_credentials.gd`, `test_ssh.gd` (fake ssh), `test_lfs.gd` (skipped without git-lfs; CI installs it), `test_no_git.gd` (points the extension at a git that doesn't exist via `GitRepository.set_git_program`), `test_setup.gd` (init, add remote, name and email, against an empty global config via `GitRepository.set_config_home`) and `test_online.gd` (the last only with `-- --online`). Each suite extends `test_case.gd`, which builds throwaway repos with the real git CLI (a bare "remote" plus "mine" and "theirs" clones via `make_shared()`). Checks are made against what git itself says. Run:
    `godot --headless --path project -s res://tests/run_tests.gd [-- --online] [-- <suite>]`. Exit code 1 on failure; scratch repos go to the OS temp folder and are kept (path printed) when something fails. CI runs them on Windows, Linux x86_64/arm64 and macOS against each freshly built library. It first opens the project with `-e --quit-after 300` so the extension gets registered; see gotcha about `--import`. **Every bug from real use gets a test here.** The suite has already caught one on its first run: the push "pull first" message never showed for the common unfetched case.
 2. **UI tests in a real (headless) editor.** Not in the repo yet; these run from the session scratchpad. Copy the addon into a throwaway project and add a test-only `EditorPlugin` (`addons/ui_driver/`) enabled in `project.godot` that finds dock controls (`find_children` on `EditorInterface.get_base_control()`) and presses them (`button.pressed.emit()`, `popup.id_pressed.emit(id)`), then prints results. Run with `--headless -e --path <project> --quit-after <frames>` and **redirect stdout**. Gotchas:
    - PowerShell 5's `Set-Content -Encoding utf8` writes a **BOM**, and Godot then silently ignores `plugin.cfg`. Write files with `[IO.File]::WriteAllText(path, text, (New-Object Text.UTF8Encoding $false))`.
@@ -210,6 +219,7 @@ libgit2 runs ssh itself (`USE_SSH=exec`), but badly for us. On Windows it ignore
    - `--quit-after` counts frames, not seconds. Give network tests a generous number (e.g. 6000).
    - Tree **button clicks can't be injected**: Tree re-checks the real OS cursor before accepting a button press. Emit `tree.button_clicked` directly to test the handler.
    - Injected hover works headless but gets overridden in a GUI editor by the real cursor.
+   - For screenshots of dialogs, start the editor with `--single-window` (otherwise popups are separate OS windows that `PrintWindow` on the main window misses), and trigger the driver with `get_tree().create_timer(...)`, not a frame count: an unfocused editor only draws ~10 frames a second.
 3. **Visual checks.** Screenshot the editor window with Win32 `PrintWindow` (works when occluded, but restore it if minimized), then crop the dock. **Never** simulate the OS mouse or keyboard: it acts on whatever window is on top of the user's desktop.
 4. **Demo scenarios** must be designed so the git CLI agrees with them. A demo where "teammate" and "me" edit **adjacent lines** conflicts in git too. That once made pull look broken when it was behaving correctly.
 
@@ -246,6 +256,8 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 25. **`OS.execute` drops empty arguments and mangles embedded quotes** on Windows: `git config credential.helper ""` became a read, and `"$1"` inside an argument lost its quotes. The test suite writes such config lines into `.git/config` directly.
 26. **`FileAccess.get_buffer()` on a pipe drops a partial last chunk** when the process exits. Reading `git upload-pack` output that way lost its final `0000`. Read binary pipe output byte by byte (`get_8` until `get_error() != OK`); line-based reads (`get_line`) are fine for newline-terminated text.
 27. **`OS::get_process_exit_code()` returns -1 while the process is still running**, and a process's pipes close a moment before it has fully exited. Reading the code right after the pipe closes lost that race on CI's Linux arm64 runner: a `git push` that succeeded was reported as failed. Use `wait_for_exit_code()` (`git_util.h`).
+28. **Wrapping `Label`s in a dialog need a minimum width** (`custom_minimum_size.x`). A wrapping label measures its height at its minimum width; at 0 that's one word per line, and the dialog opens as tall as the screen. `make_label` in `git_dock_setup.cpp` takes the width.
+29. **libgit2 on Windows finds the global config through `HOMEDRIVE`+`HOMEPATH` as well as `HOME`/`USERPROFILE`.** To start an editor "without a git identity" for a screenshot, override all four (or the real `~/.gitconfig` is found). The tests use `GitRepository.set_config_home` instead.
 
 ## libgit2 gotchas
 
@@ -272,6 +284,8 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 - **Honesty over cleverness.** Only show actions that can actually be performed. Pull and Push disappear without a remote, Push is disabled with nothing to send, and tooltips say exactly what a button will do. We briefly had one context-sensitive "do the next thing" button; the maintainer preferred **separate Commit / Pull / Push buttons**, labeled with counts ("↓ Pull 2", "↑ Push 1").
 - **Native look.** `FoldableContainer` sections, editor theme icons/colors, Tree button styles for header buttons, Title Case. Avoid inventing styles.
 - **Calm lists.** Status letter on the left in a fixed column, neutral file names, dimmed folder after the name, action buttons only on hover, line counts as section totals on screen and per file only in the tooltip. Each of these came from an earlier version looking cluttered.
+- **The panel does git operations; it doesn't set up accounts or hosting** (decided 2026-09-25). It can initialize a repository, add a remote by URL and set your name and email, because it can do each of those completely. It doesn't create repositories on GitHub/GitLab, run an OAuth flow, store tokens or generate SSH keys: every host differs (we'd do one well and the rest half-way), it would be a security surface inside a game editor plugin, and it would split logins from the git CLI's. Logins come from git's credential helper (Git Credential Manager does the browser sign-in), SSH from the user's own ssh setup. What the panel owes the user is a clear message when a login is missing: on macOS/Linux git often has no helper that can *ask* for one (osxkeychain, libsecret only store), so that message should name Git Credential Manager, `gh auth login`, or signing in once with `git fetch` in a terminal. Not done yet; check it on the Linux machine.
+- **Setting up asks only when needed.** Initialize offers the project folder, or the folder above it when that's a sensible place (not a drive root, the home folder, or Desktop/Documents/Downloads/OneDrive, which would sweep up everything else in them), and lists what else that folder holds. Both are found by the panel's upward search, so there's nothing to configure. The first branch follows `init.defaultBranch` like `git init` does (Git for Windows' installer usually sets it to `master`), else `main`. Name and email are asked for at the first commit (and before a pull while you have unpushed commits, since that may merge), saved globally unless "Only for this repository" is ticked; the backend refuses commits without them with a readable message instead of libgit2's "config value 'user.name' was not found".
 - **Opening files never surprises.** Godot opens what Godot can (scenes, scripts, resources, which respect Godot's own "use external editor" setting). Everything else goes to the external editor configured in Godot, else VS Code, else a toast explaining how to set one. We never hand files to random OS apps or the file manager.
 - **Pull safety.** A pull either completes with your uncommitted work exactly where it was, or refuses and changes nothing. Unrelated uncommitted edits are carried through a merge (internally with a stash that's always restored), which makes pull usable in real Godot projects where the editor constantly rewrites `project.godot` and scenes. Edits to files the pull touches make it refuse up front. A conflicting merge is always fully undone; the panel doesn't resolve conflicts yet. `test_pull_safety.gd` covers all of this.
 - **Network on a worker thread** so the editor never freezes on slow remotes or credential prompts.
@@ -321,12 +335,7 @@ Roughly in order of value, after status and feedback. Per philosophy point 1, do
 - **Diff viewer.** The biggest gap. Selecting a file should show its diff, probably in a bottom-panel dock or a split. libgit2 patches are already computed for line stats.
 - **Conflict resolution.** Today conflicting pulls are refused. A minimal version: let the merge happen, list conflicted files with "take mine / take theirs / open in editor", and commit when resolved.
 - Stash UI, branch delete/rename, tags, blame, per-hunk staging.
-- **Choosing the repository.** Today it's always the one containing the project (searching up from `res://`), which covers the common case: a project at its repo's root (~80% per the maintainer), and a project in a subfolder of a repo. Not covered:
-  - a project that isn't in a repo at all (the dock just says so: offer "Initialize repository" or "Choose folder...");
-  - a project whose repo is somewhere unexpected;
-  - wanting a nested repo or submodule instead.
-
-  A per-project override (stored in `EditorSettings` project metadata) plus a picker would do. Nice to have, not a priority.
+- **Managing remotes after the first one** (rename, change URL, remove). Add Remote only appears while there are none; the rest is rare and done in a terminal.
 - **UI tests in the repo.** The backend has a suite; the dock is only checked with scratch UI drivers and screenshots.
 - Localization: strings are hardcoded English (Godot uses `TTR`; extensions have no equivalent wired up here).
 
@@ -424,12 +433,12 @@ A long session: RAII cleanup, sign-in from the panel, Git LFS, the new action la
 
 **Things I'd think about**
 - **What locked `boss.png`?** Unknown: Godot importing it, the thumbnail generator, or antivirus. Background operations (LFS switch, commit with hooks) now let the editor keep scanning while files change. Checkouts survive it now, but pausing or deferring Godot's filesystem scan during our own operations might avoid the lock in the first place (`EditorFileSystem` has no pause API; worth a look).
-- **The git CLI is now required** for sign-in, LFS, hooks, signing and SSH. Without git on PATH those fail with generic errors. The panel should check once (`git --version`) and say plainly what won't work, per principle 1.
+- **macOS PATH**: Godot started from Finder/Dock gets a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`). `/usr/bin/git` works if the developer tools are installed, but a Homebrew `git-lfs` (`/opt/homebrew/bin`) won't be found, so LFS repos would refuse ("Git LFS isn't installed") even though it is. Unverified; check on a Mac before an LFS user hits it.
 - **Two commit paths** (libgit2 without hooks or signing, git with them) can drift apart. If they ever do, "always commit through git" is simpler and costs a process start (~50–100 ms).
 - **Process-wide environment variables** (`GIT_TERMINAL_PROMPT`, `GIT_LFS_FORCE_PROGRESS`) are set on the editor process and so leak into games started from the editor. Harmless as far as known; passing them per command would be cleaner.
 - **Hooks not run**: `pre-merge-commit` (we commit merges with `git commit`), and `post-checkout`/`post-merge` after libgit2 checkouts. git-lfs installs `post-checkout`/`post-merge` for file locking, which the panel doesn't support either.
 - **LFS limits**: only the root `.gitattributes` is checked, each file is held in memory while filtered, and there's no LFS locking.
-- **The test suite keeps growing** (223 checks, a few minutes on Windows). Fine for now; split slow suites if it starts to hurt.
+- **The test suite keeps growing** (296 checks, a few minutes on Windows). Fine for now; split slow suites if it starts to hurt.
 - **Asset Library**: check whether the official plugin is listed there for 4.x before writing our description.
 
 **Next**: `v0.1.0` (look at the dock on Linux, then tag), the Asset Library listing, then the diff viewer (Big features 1).

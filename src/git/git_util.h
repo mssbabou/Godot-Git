@@ -20,6 +20,11 @@ Error to_error(int p_git_error);
 // Sets the message GitRepository::get_last_error() returns, for failures libgit2 doesn't describe well.
 Error fail(const String &p_message);
 
+// FAILED if git doesn't know the user's name and email (user.name, user.email), which every
+// commit records; p_what says what couldn't be done ("Nothing was pulled: ..."). OK otherwise.
+// libgit2's own error ("config value 'user.name' was not found") means nothing to most people.
+Error require_identity(git_repository *p_repo, const String &p_what);
+
 // A git_buf's contents as a String; frees the buffer.
 String buf_to_string(git_buf &p_buf);
 

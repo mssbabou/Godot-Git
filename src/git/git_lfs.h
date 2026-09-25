@@ -25,8 +25,9 @@ void shutdown_lfs();
 // Stops p_repo's git-lfs filter process, if it has one. Call before freeing the repository.
 void release_lfs(git_repository *p_repo);
 
-// Whether git-lfs works on this machine. Checked once.
+// Whether git-lfs works on this machine. Checked once, and again after check_git().
 bool lfs_installed();
+void forget_lfs_check();
 
 // Whether the repository's .gitattributes sends files through Git LFS.
 bool repo_uses_lfs(git_repository *p_repo);
