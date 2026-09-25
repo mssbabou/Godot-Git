@@ -80,6 +80,7 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_line_stats", "staged"), &GitRepository::get_line_stats);
 	ClassDB::bind_method(D_METHOD("get_commits", "max_count"), &GitRepository::get_commits, DEFVAL(50));
 	ClassDB::bind_method(D_METHOD("uses_lfs"), &GitRepository::uses_lfs);
+	ClassDB::bind_method(D_METHOD("has_file_at", "revision", "path"), &GitRepository::has_file_at);
 	ClassDB::bind_method(D_METHOD("get_git_needs"), &GitRepository::get_git_needs);
 
 	ClassDB::bind_method(D_METHOD("stage", "path"), &GitRepository::stage);
@@ -266,6 +267,13 @@ Dictionary GitRepository::get_line_stats(bool p_staged) const {
 bool GitRepository::uses_lfs() const {
 	ERR_FAIL_NULL_V_MSG(repo, false, "Repository is not open.");
 	return repo_uses_lfs(repo);
+}
+
+// Whether a commit ("HEAD", "feature", "origin/feature") contains a file.
+bool GitRepository::has_file_at(const String &p_revision, const String &p_path) const {
+	ERR_FAIL_NULL_V_MSG(repo, false, "Repository is not open.");
+	ObjectPtr blob;
+	return git_revparse_single(blob.out(), repo, vformat("%s:%s", p_revision, p_path).utf8().get_data()) == 0;
 }
 
 // What in this repository only works through the git program (see git_cli.h), so the dock can

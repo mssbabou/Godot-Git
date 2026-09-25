@@ -16,6 +16,7 @@
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/core/math.hpp>
 
+#include "addon_files.h"
 #include "editor/file_opener.h"
 #include "editor/ui_text.h"
 
@@ -120,6 +121,12 @@ GitDock::GitDock() {
 	discard_confirm->set_ok_button_text("Discard");
 	discard_confirm->connect("confirmed", callable_mp(this, &GitDock::_on_discard_confirmed));
 	add_child(discard_confirm);
+
+	switch_confirm = memnew(ConfirmationDialog);
+	switch_confirm->set_title("Switch Branch");
+	switch_confirm->set_ok_button_text("Switch Anyway");
+	switch_confirm->connect("confirmed", callable_mp(this, &GitDock::_switch_branch).bind(String()));
+	add_child(switch_confirm);
 
 	branch_dialog = memnew(ConfirmationDialog);
 	branch_dialog->set_title("New Branch");
@@ -691,6 +698,44 @@ void GitDock::_on_branch_selected(int p_index) {
 		return;
 	}
 	if (String(target) == repo->get_current_branch()) {
+		return;
+	}
+	const String addon = _addon_removed_by(target);
+	if (!addon.is_empty()) {
+		// Godot unloads an addon whose files disappear, so the panel would close mid-switch.
+		pending_switch = target;
+		_fill_branches(); // Shows the current branch unless the switch goes ahead.
+		switch_confirm->set_text(vformat("\"%s\" doesn't include this Git panel (%s).\nSwitching removes it from the project, so the panel closes.\nSwitch back and restart the editor to get it back.", String(target), addon));
+		switch_confirm->popup_centered();
+		return;
+	}
+	_switch_branch(target);
+}
+
+// The addon's folder ("addons/godot_git") if switching to p_branch would delete it: it's
+// committed on the current branch but missing on p_branch. Empty otherwise.
+String GitDock::_addon_removed_by(const String &p_branch) const {
+	const std::filesystem::path manifest = godot_git::addon_manifest_path();
+	if (manifest.empty()) {
+		return String();
+	}
+	const String absolute = String::utf8(manifest.generic_u8string().c_str()).simplify_path();
+	const String workdir = repo->get_workdir().simplify_path().trim_suffix("/") + "/";
+	if (!absolute.begins_with(workdir)) {
+		return String();
+	}
+	const String path = absolute.substr(workdir.length());
+	if (!repo->has_file_at("HEAD", path) || repo->has_file_at(p_branch, path)) {
+		return String();
+	}
+	return path.get_base_dir();
+}
+
+// p_branch is empty when it comes from the switch confirmation.
+void GitDock::_switch_branch(const String &p_branch) {
+	const String target = p_branch.is_empty() ? pending_switch : p_branch;
+	pending_switch = String();
+	if (target.is_empty() || !repo.is_valid()) {
 		return;
 	}
 	if (repo->uses_lfs()) {

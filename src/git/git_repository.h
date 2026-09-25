@@ -51,6 +51,7 @@ public:
 	Dictionary get_line_stats(bool p_staged) const;
 	Array get_commits(int p_max_count) const;
 	bool uses_lfs() const;
+	bool has_file_at(const String &p_revision, const String &p_path) const;
 	Dictionary get_git_needs() const;
 
 	Error stage(const String &p_path);

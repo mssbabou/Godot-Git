@@ -37,7 +37,7 @@ What the dock does today:
 - Pull fast-forwards or creates a merge commit; uncommitted changes to other files stay put. It's refused up front (naming the files) if the new commits touch files you have uncommitted changes to, and conflicting merges are refused and fully undone. It never leaves anything in a stash.
 - Auto-fetch every few minutes, quietly, never opening a sign-in window (toggle in the ⋮ menu).
 
-Supported targets: Windows x86_64/arm64, Linux x86_64/arm64, macOS universal. All five build in CI. The backend test suite (including HTTPS fetches from GitHub) passes on all five in CI (first confirmed 2026-09-23). The dock UI has been seen on **Windows x86_64** (here) and on an **Apple Silicon Mac** (a friend of the maintainer's, 2026-09-24: "worked perfectly fine"; no screenshots or details on how it was installed). It's in real use on the maintainer's StorageWars project, a private GitHub repo over HTTPS, and on this repo itself: commit `39a940b` was made from the panel (an early build, before the status strip).
+Supported targets: Windows x86_64/arm64, Linux x86_64/arm64, macOS universal. All five build in CI. The backend test suite (including HTTPS fetches from GitHub) passes on all five in CI (first confirmed 2026-09-23). The dock UI has been seen on **Windows x86_64** (the original dev machine), on **Linux x86_64** (the maintainer's Arch/KDE Wayland machine with Godot 4.7.1, 2026-09-25: "feels and looks good", dialogs and buttons fine, pull and fetch work on StorageWars through `gh`'s credential helper) and on an **Apple Silicon Mac** (a friend of the maintainer's, 2026-09-24: "worked perfectly fine"; no screenshots or details on how it was installed). It's in real use on the maintainer's StorageWars project, a private GitHub repo over HTTPS, and on this repo itself: commit `39a940b` was made from the panel (an early build, before the status strip).
 
 Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` on a CI zip):
 - **macOS 10.13 (Intel) / 11.0 (Apple Silicon)**, matching Godot 4.7. Set via `macos_deployment_target` in `SConstruct` and passed to libgit2's CMake. Without it the library requires the CI runner's macOS version (the first CI build required macOS 26).
@@ -67,6 +67,7 @@ Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` o
 | `src/editor/file_opener.{h,cpp}` | `open_file()`: in Godot if it can edit the file, else the configured external editor or VS Code. |
 | `src/editor/ui_text.{h,cpp}` | Wording helpers: `plural`, `time_ago`, `status_letter`, ... |
 | `src/editor/git_editor_plugin.{h,cpp}` | `GitEditorPlugin`: adds/removes the dock. |
+| `src/addon_files.{h,cpp}` | Finds the addon's `godot_git.gdextension` next to the library, and keeps the library mapped after Godot unloads it (see gotcha 30). |
 | `src/register_types.cpp` | Extension entry `godot_git_library_init`. SCENE level: `git_libgit2_init()` + `GitRepository`. EDITOR level: `GitDock`/`GitEditorPlugin` (internal classes) + `EditorPlugins::add_by_type`. |
 | `project/` | Dev/test Godot project. Has no main scene on purpose. |
 | `project/tests/` | Backend test suites (`run_tests.gd` + `test_*.gd`); see Testing. Not part of the shipped addon. |
@@ -259,6 +260,8 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 28. **Wrapping `Label`s in a dialog need a minimum width** (`custom_minimum_size.x`). A wrapping label measures its height at its minimum width; at 0 that's one word per line, and the dialog opens as tall as the screen. `make_label` in `git_dock_setup.cpp` takes the width.
 29. **libgit2 on Windows finds the global config through `HOMEDRIVE`+`HOMEPATH` as well as `HOME`/`USERPROFILE`.** To start an editor "without a git identity" for a screenshot, override all four (or the real `~/.gitconfig` is found). The tests use `GitRepository.set_config_home` instead.
 
+30. **Godot unloads an extension whose `.gdextension` disappears mid-session** (`EditorFileSystem::_scan_extensions` → `GDExtensionManager::ensure_extensions_loaded`, checked in 4.7.1). It does so whether or not it's `reloadable`, and it happens on every platform, e.g. when switching to a branch without the addon. Two things then pointed into the unmapped library and crashed the editor. First, the dock was `queue_free`d, so it was freed after the unload (now `memdelete`d in `_exit_tree`). Second, godot-cpp's instance bindings on engine objects (EditorFileSystem, theme icons, ...) keep free callbacks into the library, and Godot only clears those for reloadable extensions on *reload*. So at unload, if our `.gdextension` is gone, `register_types.cpp` pins the library (`RTLD_NODELETE` / `GET_MODULE_HANDLE_EX_FLAG_PIN`). When the addon comes back in the same session, the OS returns that same pinned copy, and godot-cpp can't initialize twice (its statics and `library` pointer are stale). So a retired copy loads as an empty extension and warns "restart the editor". The dock asks before switching to a branch without the addon (`_addon_removed_by`). Tested with a headless driver that moves the addon folder away and back.
+
 ## libgit2 gotchas
 
 1. **`git_error_last()` is never null** since 1.8. "No error" has `klass == GIT_ERROR_NONE`, and `get_last_error()` filters that out.
@@ -313,7 +316,7 @@ It has been verified end to end in a real editor (fetch, pull, merge, commit, co
 
 ### Unproven or untested
 
-- **The dock on Linux and Windows ARM, and in depth on macOS.** CI proves all five libraries load in the official Godot 4.7.2 and pass the backend suite, HTTPS included. On macOS, a friend of the maintainer's used the dock on Apple Silicon without problems; nobody has looked closely at fonts, scaling, the file manager or VS Code paths there, or at an Intel Mac. The dock hasn't been seen on Linux or Windows ARM at all. macOS: see "macOS signing and Gatekeeper" below.
+- **The dock on Windows ARM, and in depth on macOS.** Linux x86_64 was checked by the maintainer on 2026-09-25 (looks, dialogs, fetch, pull); push, opening files in VS Code and Show in File Manager weren't explicitly reported there. CI proves all five libraries load in the official Godot 4.7.2 and pass the backend suite, HTTPS included. On macOS, a friend of the maintainer's used the dock on Apple Silicon without problems; nobody has looked closely at fonts, scaling, the file manager or VS Code paths there, or at an Intel Mac. The dock hasn't been seen on Windows ARM at all. macOS: see "macOS signing and Gatekeeper" below.
 - **macOS signing and Gatekeeper** (investigated 2026-09-23). The library has no Developer ID signature: the arm64 slice is ad-hoc linker-signed (flags 0x20002, which Apple Silicon requires and the linker adds automatically), and the x86_64 slice is unsigned. Whether it loads depends only on the `com.apple.quarantine` flag:
   - **Asset Library install inside Godot: no flag, loads.** It downloads with `HTTPRequest` and unzips with minizip + `FileAccess` (`editor/asset_library/`). The Godot editor isn't sandboxed and has no `LSFileQuarantineEnabled`, and it has `com.apple.security.cs.disable-library-validation`, so a non-Godot-signed library is allowed. CI's macOS test (curl download, no flag, arm64 runner) is the same condition, and it loads and passes.
   - **git clone of a project with the addon committed: no flag, loads.**
@@ -354,6 +357,8 @@ Roughly in order of value, after status and feedback. Per philosophy point 1, do
 
 ### Bugs found in real use (and fixed)
 
+- **Switching to a branch without the addon crashed the editor** (maintainer, StorageWars on Linux, 2026-09-25): branch `Niller` has no `addons/godot_git`, and the editor segfaulted a second after the switch. See gotcha 30. A second crash that day (restarting on `master`, inside Godot's own glTF reimport, no godot_git frames) wasn't reproduced headless; it may need the real renderer. Still open, dev-only: after a hot reload (`reloadable = true`) the editor crashes on quit (it used to crash right after the reload).
+
 Worth remembering, because each came from a path the tests didn't cover:
 - **A branch switch that failed halfway left the tree half-switched** (maintainer, playground project, 2026-09-24): `boss.png` was in use, so the switch failed after deleting `notes.txt`, the `.uid` files and several `.import` files. HEAD stayed on `main`, so they all showed as deleted changes, and the next pull was refused because of them. Pull's fast-forward and merge had the same flaw. Fixed with `checkout_all_or_nothing`; `test_checkout_safety.gd` reproduces it on Windows by holding a file open with `FileAccess`.
 - **Signing in from the panel never worked; only logins already saved by the git CLI did.** GCM refused to show its window when started by Godot (see `credential.interactive=always`), and even a successful sign-in wasn't saved because we never sent `approve`. The maintainer had a login saved from the CLI, so it went unnoticed until they tried the official plugin's sign-in. Verified on GitHub by signing out, signing in through the panel, and fetching again with prompts off. `test_credentials.gd` covers approve/reject with a fake helper and a local HTTP server.
@@ -377,7 +382,7 @@ Two tiers: small **stepping stones** that make the base solid, then the **big fe
    - Saving inside Godot refreshes the panel. It already did via `filesystem_changed`, and `project.godot` is now watched too.
    - Auto-fetch.
    - Pull refuses up front instead of ever stranding edits in a stash.
-4. **Run the Linux build on a real machine, then tag `v0.1.0`.** CI runs the backend tests on every platform (a real check that the libraries load and work). The dock has been used on an Apple Silicon Mac (a friend's quick check, 2026-09-24), but not yet seen on Linux. A stable base to come back to.
+4. ~~Run the Linux build on a real machine~~ (**done** 2026-09-25, see Supported targets; it also turned up the branch-switch crash, gotcha 30), **then tag `v0.1.0`**. Before tagging: check on Windows what the new "switch to a branch without the addon" dialog leads to. The loaded DLL is locked, so the panel's switch probably refuses ("file in use") rather than closing the panel as the dialog says; adjust the wording if so. Also check that a terminal `git checkout` there no longer crashes the editor. The Windows/macOS pinning code has only been compiled in CI.
 5. **Asset Library listing** after `v0.1.0`. macOS signing is *not* a blocker (see "macOS signing and Gatekeeper"). The source repo has no binaries, so the listing needs a custom download URL pointing at the release zip (or a binaries branch). Check whether Godot's newer Asset Store or the classic Asset Library is current, and their rules, at that time. The README needs a macOS note for browser-downloaded zips (`xattr -dr com.apple.quarantine addons/godot_git`).
 6. Later: a performance pass on `refresh()` for big repos.
 7. ~~Name for the dock tab.~~ **Decided 2026-09-24: it stays "Git".** The maintainer tried "Version Control" and found it too long for a small tab (it also clashes with Godot's own Version Control panel). The planned main-screen tab (diff/history) still needs its own name, not "Git" too; candidates "Review" / "Diff". The maintainer finds pun names pointless. Keep `set_layout_key("GodotGit")` unchanged if anything is ever renamed, or users lose their saved dock position.
@@ -429,7 +434,7 @@ A long session: RAII cleanup, sign-in from the panel, Git LFS, the new action la
 - GPG signing with a real key and passphrase window (the tests sign with SSH keys).
 - An actual SSH login that fetches and pushes. CI could run `sshd` on the Linux runner with a throwaway key.
 - Cancel during a real LFS download (local ones finish too fast).
-- The dock on Linux at all, and on macOS beyond a friend's quick look. That's what stands between us and `v0.1.0`.
+- The dock on macOS beyond a friend's quick look.
 
 **Things I'd think about**
 - **What locked `boss.png`?** Unknown: Godot importing it, the thumbnail generator, or antivirus. Background operations (LFS switch, commit with hooks) now let the editor keep scanning while files change. Checkouts survive it now, but pausing or deferring Godot's filesystem scan during our own operations might avoid the lock in the first place (`EditorFileSystem` has no pause API; worth a look).
@@ -441,7 +446,7 @@ A long session: RAII cleanup, sign-in from the panel, Git LFS, the new action la
 - **The test suite keeps growing** (296 checks, a few minutes on Windows). Fine for now; split slow suites if it starts to hurt.
 - **Asset Library**: check whether the official plugin is listed there for 4.x before writing our description.
 
-**Next**: `v0.1.0` (look at the dock on Linux, then tag), the Asset Library listing, then the diff viewer (Big features 1).
+**Next**: `v0.1.0` (check the branch-switch dialog on Windows, then tag), the Asset Library listing, then the diff viewer (Big features 1).
 
 ## Advice
 

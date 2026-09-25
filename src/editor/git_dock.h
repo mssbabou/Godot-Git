@@ -147,6 +147,8 @@ class GitDock : public EditorDock {
 	PackedStringArray pending_discard;
 	ConfirmationDialog *branch_dialog = nullptr;
 	LineEdit *branch_name_edit = nullptr;
+	ConfirmationDialog *switch_confirm = nullptr; // Switching to a branch without this addon.
+	String pending_switch;
 
 	// Setting a repository up: Initialize, Add Remote, and the name and email commits need.
 	ConfirmationDialog *init_dialog = nullptr;
@@ -215,6 +217,8 @@ class GitDock : public EditorDock {
 	void _confirm_discard(const PackedStringArray &p_paths);
 	void _on_discard_confirmed();
 	void _on_branch_selected(int p_index);
+	String _addon_removed_by(const String &p_branch) const;
+	void _switch_branch(const String &p_branch);
 	void _on_branch_dialog_confirmed();
 	void _on_commit_message_input(const Ref<InputEvent> &p_event);
 	void _on_amend_toggled(bool p_on);

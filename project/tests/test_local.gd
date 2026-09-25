@@ -106,3 +106,14 @@ func _branches() -> void:
 	check("switched to it", r.get_current_branch() == "feature/x")
 	check("listed", r.get_branches().has("feature/x") and r.get_branches().has("main"), r.get_branches())
 	check("switch back", r.checkout_branch("main") == OK and r.get_current_branch() == "main", GitRepository.get_last_error())
+
+	# The dock asks before switching to a branch that would delete the addon itself.
+	git(repo, ["checkout", "-q", "-b", "no-addon"])
+	git(repo, ["rm", "-q", "a.txt"])
+	write(repo.path_join("b.txt"), "b\n")
+	commit_all(repo, "drop a")
+	git(repo, ["checkout", "-q", "main"])
+	check("file at HEAD", r.has_file_at("HEAD", "a.txt"))
+	check("file missing on another branch", not r.has_file_at("no-addon", "a.txt"))
+	check("file only on another branch", r.has_file_at("no-addon", "b.txt") and not r.has_file_at("HEAD", "b.txt"))
+	check("nested path", not r.has_file_at("HEAD", "addons/godot_git/godot_git.gdextension"))
