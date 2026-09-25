@@ -1,13 +1,15 @@
 #include "addon_files.h"
 
+#include <godot_cpp/classes/file_access.hpp>
+
+// After godot-cpp: windows.h defines macros (CONNECT_DEFERRED, ...) that break its headers.
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <windows.h>
 #else
 #include <dlfcn.h>
 #endif
-
-#include <godot_cpp/classes/file_access.hpp>
 
 using namespace godot;
 
