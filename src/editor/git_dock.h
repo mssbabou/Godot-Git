@@ -208,6 +208,17 @@ class GitDock : public EditorDock {
 	String diff_commit; // Set when the file shown is from a commit (History), not uncommitted.
 	String diff_commit_shown; // "hash:path" already in the panel; commit diffs never change.
 
+	// Line counts (+/-) for the two lists. Counted on a worker thread with its own GitRepository:
+	// on a big change set it takes seconds (2.6 ms per file), and refresh runs after every save.
+	// The lists show the last counts meanwhile, so the totals don't flicker.
+	Ref<Thread> stats_thread;
+	bool stats_again = false; // Refreshed while counting: count once more afterwards.
+	bool stats_slow = false; // Counting for a while already: the totals are dimmed and say so.
+	Timer *stats_slow_timer = nullptr;
+	Dictionary file_icons; // File type -> its editor icon, for _file_icon; cleared with the theme.
+	Dictionary staged_stats; // {path: Vector2i(added, removed)}; Vector2i(-1, -1) for binary.
+	Dictionary unstaged_stats;
+
 	Timer *auto_fetch_timer = nullptr;
 	int64_t last_auto_fetch_attempt = 0;
 	bool auto_fetch_failed = false; // The failure is shown once, not every few minutes.
@@ -223,7 +234,7 @@ class GitDock : public EditorDock {
 	String _git_missing_warning() const;
 	String _needs_git(int p_op) const;
 	String _to_res_path(const String &p_path) const;
-	Ref<Texture2D> _file_icon(const String &p_path) const;
+	Ref<Texture2D> _file_icon(const String &p_path);
 	Color _status_color(const String &p_state) const;
 	Color _dim_color() const;
 	void _open_path(const String &p_path);
@@ -243,7 +254,13 @@ class GitDock : public EditorDock {
 	void _build_lists(Control *p_parent);
 	void _make_file_pane(FilePane &r_pane, Control *p_parent, const String &p_title, bool p_staged);
 	Label *_make_body(Control *p_section, Tree *p_tree);
-	void _fill_file_pane(FilePane &p_pane, const Array &p_status, const Dictionary &p_stats);
+	void _fill_file_pane(FilePane &p_pane, const Array &p_status);
+	void _start_line_stats();
+	void _line_stats_worker(const String &p_workdir);
+	void _line_stats_done(const Dictionary &p_staged, const Dictionary &p_unstaged);
+	void _on_line_stats_slow();
+	void _show_line_stats(FilePane &p_pane);
+	void _finish_stats_thread();
 	void _fill_history();
 	void _fill_commit(TreeItem *p_item);
 	void _fill_commit_later(uint64_t p_item);

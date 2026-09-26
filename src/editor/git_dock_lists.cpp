@@ -71,6 +71,11 @@ void GitDock::_build_lists(Control *p_parent) {
 	history_tree->connect("item_selected", callable_mp(this, &GitDock::_on_history_item_selected));
 	history_tree->connect("item_collapsed", callable_mp(this, &GitDock::_on_history_item_collapsed));
 	history_empty = _make_body(history_pane, history_tree);
+
+	stats_slow_timer = memnew(Timer);
+	stats_slow_timer->set_one_shot(true);
+	stats_slow_timer->connect("timeout", callable_mp(this, &GitDock::_on_line_stats_slow));
+	add_child(stats_slow_timer);
 }
 
 void GitDock::_make_file_pane(FilePane &r_pane, Control *p_parent, const String &p_title, bool p_staged) {
@@ -141,7 +146,7 @@ Label *GitDock::_make_body(Control *p_section, Tree *p_tree) {
 	return label;
 }
 
-void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status, const Dictionary &p_stats) {
+void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status) {
 	Tree *tree = p_pane.tree;
 	tree->clear();
 	p_pane.hovered_item = 0;
@@ -150,7 +155,7 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status, const Dic
 	const String key = p_pane.staged ? "index" : "worktree";
 	const Callable draw_row = callable_mp(this, &GitDock::_draw_file_row);
 
-	int total_added = 0, total_removed = 0, files = 0;
+	int files = 0;
 	if (!p_pane.staged) {
 		unstaged_paths.clear();
 	}
@@ -167,15 +172,6 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status, const Dic
 			unstaged_paths.push_back(path);
 		}
 
-		// Line counts only show as totals in the section header.
-		const Vector2i stats = p_stats.get(path, Vector2i());
-		if (stats.x > 0) {
-			total_added += stats.x;
-		}
-		if (stats.y > 0) {
-			total_removed += stats.y;
-		}
-
 		TreeItem *item = tree->create_item(root);
 		item->set_metadata(COLUMN_NAME, path);
 		item->set_meta("git_path", path);
@@ -189,14 +185,6 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status, const Dic
 		item->set_custom_draw_callback(COLUMN_NAME, draw_row);
 		item->set_text(COLUMN_NAME, path.get_file());
 		item->set_custom_color(COLUMN_NAME, Color(0, 0, 0, 0));
-		// The row itself stays calm (totals are in the header); the tooltip has this file's counts.
-		String lines;
-		if (stats.x < 0) {
-			lines = "binary or too large to count lines";
-		} else if (stats.x > 0 || stats.y > 0) {
-			lines = vformat("+%d %s%d", stats.x, minus(), stats.y);
-		}
-		item->set_tooltip_text(COLUMN_NAME, lines.is_empty() ? vformat("%s\n%s", path, status_name(state)) : vformat(String::utf8("%s\n%s · %s"), path, status_name(state), lines));
 	}
 
 	tree->set_visible(files > 0);
@@ -204,17 +192,104 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status, const Dic
 	p_pane.empty_label->set_text(p_pane.staged ? "Nothing staged." : "No changes.");
 
 	p_pane.file_count = files;
-
-	// Header: "27  +1204 −35  [⊖]".
 	p_pane.count->set_text(files > 0 ? itos(files) : String());
-	p_pane.added->set_text(files > 0 ? vformat("+%d", total_added) : String());
-	p_pane.removed->set_text(files > 0 ? vformat("%s%d", minus(), total_removed) : String());
-	p_pane.added->set_tooltip_text(plural(total_added, "line added", "lines added"));
-	p_pane.removed->set_tooltip_text(plural(total_removed, "line removed", "lines removed"));
+	_show_line_stats(p_pane); // The last counts, until the new ones arrive.
 	p_pane.action->set_disabled(files == 0);
 	if (p_pane.discard) {
 		p_pane.discard->set_disabled(files == 0);
 	}
+}
+
+// Counts the lines of both lists in the background (see stats_thread). A refresh during a count
+// asks for one more count afterwards, instead of piling up threads.
+void GitDock::_start_line_stats() {
+	if (stats_thread.is_valid() && stats_thread->is_started()) {
+		stats_again = true;
+		return;
+	}
+	stats_thread.instantiate();
+	stats_thread->start(callable_mp(this, &GitDock::_line_stats_worker).bind(repo->get_workdir()));
+	stats_slow_timer->start(0.25);
+}
+
+// Runs on stats_thread. A GitRepository must only be used by one thread, so this opens its own.
+void GitDock::_line_stats_worker(const String &p_workdir) {
+	Ref<GitRepository> worker_repo;
+	worker_repo.instantiate();
+	Dictionary staged, unstaged;
+	if (worker_repo->open(p_workdir) == OK) {
+		staged = worker_repo->get_line_stats(true);
+		unstaged = worker_repo->get_line_stats(false);
+	}
+	callable_mp(this, &GitDock::_line_stats_done).call_deferred(staged, unstaged);
+}
+
+void GitDock::_line_stats_done(const Dictionary &p_staged, const Dictionary &p_unstaged) {
+	_finish_stats_thread();
+	stats_slow_timer->stop();
+	stats_slow = false;
+	staged_stats = p_staged;
+	unstaged_stats = p_unstaged;
+	_show_line_stats(staged_pane);
+	_show_line_stats(changes_pane);
+	if (stats_again) {
+		stats_again = false;
+		_start_line_stats();
+	}
+}
+
+// Still counting after a quarter second: say so, rather than show old totals as if current.
+void GitDock::_on_line_stats_slow() {
+	stats_slow = true;
+	_show_line_stats(staged_pane);
+	_show_line_stats(changes_pane);
+}
+
+// Puts the line counts on a list: totals in its header ("+1204 −35"), each file's in its tooltip.
+// Files not counted yet (new since the last count) have none until the count arrives.
+void GitDock::_show_line_stats(FilePane &p_pane) {
+	const Dictionary &stats = p_pane.staged ? staged_stats : unstaged_stats;
+	int total_added = 0, total_removed = 0;
+	bool counted = false;
+	TreeItem *root = p_pane.tree->get_root();
+	for (TreeItem *item = root ? root->get_first_child() : nullptr; item; item = item->get_next()) {
+		const String path = item->get_meta("git_path", String());
+		const String state = item->get_meta("git_state", String());
+		String lines;
+		if (stats.has(path)) {
+			counted = true;
+			const Vector2i count = stats[path];
+			if (count.x < 0) {
+				lines = "binary or too large to count lines";
+			} else {
+				total_added += count.x;
+				total_removed += count.y;
+				if (count.x > 0 || count.y > 0) {
+					lines = vformat("+%d %s%d", count.x, minus(), count.y);
+				}
+			}
+		}
+		// The row itself stays calm (totals are in the header); the tooltip has this file's counts.
+		item->set_tooltip_text(COLUMN_NAME, lines.is_empty() ? vformat("%s\n%s", path, status_name(state)) : vformat(String::utf8("%s\n%s · %s"), path, status_name(state), lines));
+	}
+
+	// Header: "27  +1204 −35  [⊖]".
+	const bool show = p_pane.file_count > 0 && counted;
+	p_pane.added->set_text(show ? vformat("+%d", total_added) : String());
+	p_pane.removed->set_text(show ? vformat("%s%d", minus(), total_removed) : String());
+	const Color modulate = stats_slow ? Color(1, 1, 1, 0.5) : Color(1, 1, 1);
+	p_pane.added->set_modulate(modulate);
+	p_pane.removed->set_modulate(modulate);
+	const String counting = String::utf8("\nCounting lines again…");
+	p_pane.added->set_tooltip_text(plural(total_added, "line added", "lines added") + (stats_slow ? counting : String()));
+	p_pane.removed->set_tooltip_text(plural(total_removed, "line removed", "lines removed") + (stats_slow ? counting : String()));
+}
+
+void GitDock::_finish_stats_thread() {
+	if (stats_thread.is_valid() && stats_thread->is_started()) {
+		stats_thread->wait_to_finish();
+	}
+	stats_thread.unref();
 }
 
 void GitDock::_queue_align_header_buttons() {
