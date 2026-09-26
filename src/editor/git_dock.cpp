@@ -257,8 +257,6 @@ void GitDock::_update_icons() {
 	status_progress->add_theme_stylebox_override("fill", fill);
 	_update_status_style();
 
-	staged_pane.count->add_theme_color_override("font_color", dim);
-	changes_pane.count->add_theme_color_override("font_color", dim);
 	for (FilePane *pane : { &staged_pane, &changes_pane }) {
 		pane->added->add_theme_color_override("font_color", get_theme_color("success_color", "Editor"));
 		pane->removed->add_theme_color_override("font_color", get_theme_color("error_color", "Editor"));

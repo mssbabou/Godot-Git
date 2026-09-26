@@ -35,7 +35,7 @@ func _frames(count := 5) -> void:
 
 func _section(title: String) -> FoldableContainer:
 	for f: FoldableContainer in dock.find_children("*", "FoldableContainer", true, false):
-		if f.title == title:
+		if f.title == title or f.title.begins_with(title + " ("): # "Changes (9)"
 			return f
 	return null
 

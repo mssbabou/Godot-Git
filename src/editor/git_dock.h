@@ -88,7 +88,7 @@ class GitDock : public EditorDock {
 		FoldableContainer *container = nullptr;
 		Tree *tree = nullptr;
 		Label *empty_label = nullptr; // "No changes.", shown instead of the tree when it's empty.
-		Label *count = nullptr;
+		String title; // "Changes"; shown as "Changes (9)" while it lists files.
 		Label *added = nullptr;
 		Label *removed = nullptr;
 		MarginContainer *buttons_margin = nullptr; // Its right margin aligns the buttons with the rows'.

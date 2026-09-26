@@ -10,6 +10,7 @@
 #include <godot_cpp/classes/input_event_mouse_motion.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/scroll_container.hpp>
+#include <godot_cpp/classes/style_box_flat.hpp>
 #include <godot_cpp/classes/text_line.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/v_box_container.hpp>
@@ -81,13 +82,14 @@ void GitDock::_build_lists(Control *p_parent) {
 void GitDock::_make_file_pane(FilePane &r_pane, Control *p_parent, const String &p_title, bool p_staged) {
 	r_pane.staged = p_staged;
 
+	r_pane.title = p_title;
 	r_pane.container = memnew(FoldableContainer);
 	r_pane.container->set_title(p_title);
 	p_parent->add_child(r_pane.container);
 
-	// Header: file count, line totals and the "all" actions. The actions sit in the same order
-	// and exact positions as the row buttons (discard, then stage/unstage); see _align_header_buttons.
-	r_pane.count = memnew(Label);
+	// Header: line totals and the "all" actions (the file count is in the title: "Changes (9)").
+	// The actions sit in the same order and exact positions as the row buttons (discard, then
+	// stage/unstage); see _align_header_buttons.
 	r_pane.added = memnew(Label);
 	r_pane.removed = memnew(Label);
 
@@ -105,7 +107,7 @@ void GitDock::_make_file_pane(FilePane &r_pane, Control *p_parent, const String 
 	r_pane.action->connect("pressed", callable_mp(this, &GitDock::_on_more_menu_id).bind(p_staged ? MORE_UNSTAGE_ALL : MORE_STAGE_ALL));
 	r_pane.buttons->add_child(r_pane.action);
 
-	for (Control *control : { (Control *)r_pane.count, (Control *)r_pane.added, (Control *)r_pane.removed, (Control *)r_pane.buttons_margin }) {
+	for (Control *control : { (Control *)r_pane.added, (Control *)r_pane.removed, (Control *)r_pane.buttons_margin }) {
 		control->set_v_size_flags(SIZE_SHRINK_CENTER);
 		r_pane.container->add_title_bar_control(control);
 	}
@@ -192,7 +194,7 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status) {
 	p_pane.empty_label->set_text(p_pane.staged ? "Nothing staged." : "No changes.");
 
 	p_pane.file_count = files;
-	p_pane.count->set_text(files > 0 ? itos(files) : String());
+	p_pane.container->set_title(files > 0 ? vformat("%s (%d)", p_pane.title, files) : p_pane.title);
 	_show_line_stats(p_pane); // The last counts, until the new ones arrive.
 	p_pane.action->set_disabled(files == 0);
 	if (p_pane.discard) {
@@ -273,7 +275,7 @@ void GitDock::_show_line_stats(FilePane &p_pane) {
 		item->set_tooltip_text(COLUMN_NAME, lines.is_empty() ? vformat("%s\n%s", path, status_name(state)) : vformat(String::utf8("%s\n%s · %s"), path, status_name(state), lines));
 	}
 
-	// Header: "27  +1204 −35  [⊖]".
+	// Header: "Changes (27)  +1204 −35  [⊖]".
 	const bool show = p_pane.file_count > 0 && counted;
 	p_pane.added->set_text(show ? vformat("+%d", total_added) : String());
 	p_pane.removed->set_text(show ? vformat("%s%d", minus(), total_removed) : String());
@@ -484,14 +486,22 @@ void GitDock::_fill_commit(TreeItem *p_item) {
 	// Notes are single lines, trimmed to the width with the whole text in the tooltip. Not
 	// wrapped: the tree measures its height before wrapping, so rows below got cut off.
 	const String message = commit["message"];
+	// Notes are information, not buttons. The Tree highlights every row under the mouse, but draws
+	// a row's own background above that highlight, so the section's color covers it.
+	const Ref<StyleBoxFlat> section = history_pane->get_theme_stylebox("panel");
+	const Color background = section.is_valid() ? section->get_bg_color() : Color(0, 0, 0, 0);
 	auto add_note = [&](const String &p_text, const String &p_tooltip) {
 		TreeItem *note = history_tree->create_item(p_item);
 		note->set_meta("git_row", "note");
 		note->set_text(0, p_text);
 		note->set_custom_color(0, dim);
 		note->set_tooltip_text(0, p_tooltip);
-		note->set_selectable(0, false);
-		note->set_selectable(1, false);
+		for (int column = 0; column < 2; column++) {
+			note->set_selectable(column, false);
+			if (background.a > 0) {
+				note->set_custom_bg_color(column, background);
+			}
+		}
 	};
 
 	// The time for today's commits, the date for older ones; both, and the full hash, in the tooltip.
