@@ -363,6 +363,7 @@ void GitDock::refresh() {
 	_fill_history();
 	_update_actions();
 	_update_status();
+	_update_diff();
 	_queue_align_header_buttons();
 }
 

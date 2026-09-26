@@ -8,6 +8,7 @@
 #include <godot_cpp/godot.hpp>
 
 #include "addon_files.h"
+#include "editor/git_diff_dock.h"
 #include "editor/git_dock.h"
 #include "editor/git_editor_plugin.h"
 #include "git/git_lfs.h"
@@ -58,6 +59,8 @@ void initialize_godot_git_module(ModuleInitializationLevel p_level) {
 
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_INTERNAL_CLASS(GitDock);
+		GDREGISTER_INTERNAL_CLASS(GitDiffHighlighter);
+		GDREGISTER_INTERNAL_CLASS(GitDiffDock);
 		GDREGISTER_INTERNAL_CLASS(GitEditorPlugin);
 		EditorPlugins::add_by_type<GitEditorPlugin>();
 	}

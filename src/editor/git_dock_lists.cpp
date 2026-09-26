@@ -16,6 +16,7 @@
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
+#include "editor/git_diff_dock.h"
 #include "editor/ui_text.h"
 
 using namespace godot_git;
@@ -110,6 +111,7 @@ void GitDock::_make_file_pane(FilePane &r_pane, Control *p_parent, const String 
 	tree->connect("button_clicked", callable_mp(this, &GitDock::_on_tree_button_clicked));
 	tree->connect("item_activated", callable_mp(this, &GitDock::_on_file_activated).bind(tree));
 	tree->connect("item_mouse_selected", callable_mp(this, &GitDock::_on_tree_mouse_selected).bind(tree));
+	tree->connect("multi_selected", callable_mp(this, &GitDock::_on_file_multi_selected).bind(tree));
 	tree->connect("gui_input", callable_mp(this, &GitDock::_on_tree_gui_input).bind(tree));
 	tree->connect("mouse_exited", callable_mp(this, &GitDock::_on_tree_mouse_exited).bind(tree));
 	r_pane.tree = tree;
@@ -435,6 +437,15 @@ void GitDock::_on_file_activated(Object *p_tree) {
 }
 
 void GitDock::_on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_button, Object *p_tree) {
+	if (p_mouse_button == MOUSE_BUTTON_LEFT) {
+		// A click on a file brings up the Diff panel (the selection already put the file in it).
+		const FilePane *pane = _pane_for_tree(p_tree);
+		TreeItem *item = pane ? pane->tree->get_item_at_position(p_position) : nullptr;
+		if (item && item->get_metadata(COLUMN_NAME).get_type() == Variant::STRING) {
+			_show_diff(item->get_metadata(COLUMN_NAME), pane->staged, true);
+		}
+		return;
+	}
 	if (p_mouse_button != MOUSE_BUTTON_RIGHT) {
 		return;
 	}
@@ -524,5 +535,63 @@ void GitDock::_on_context_menu_id(int p_id) {
 			const Dictionary commit = history_tree->get_selected()->get_metadata(0);
 			DisplayServer::get_singleton()->clipboard_set(commit[p_id == MENU_COPY_HASH ? "hash" : "message"]);
 		} break;
+	}
+}
+
+// Selecting a file (by mouse or keyboard) shows its changes in the Diff panel.
+void GitDock::_on_file_multi_selected(TreeItem *p_item, int p_column, bool p_selected, Object *p_tree) {
+	const FilePane *pane = _pane_for_tree(p_tree);
+	if (!p_selected || !pane || !p_item || p_item->get_metadata(COLUMN_NAME).get_type() != Variant::STRING) {
+		return;
+	}
+	// One file at a time is shown, so only one list keeps a selection.
+	(pane->staged ? changes_pane : staged_pane).tree->deselect_all();
+	_show_diff(p_item->get_metadata(COLUMN_NAME), pane->staged, false);
+}
+
+void GitDock::set_diff_dock(GitDiffDock *p_dock) {
+	diff_dock = p_dock;
+	diff_dock->connect("open_requested", callable_mp(this, &GitDock::_open_path));
+}
+
+// p_focus: also bring the Diff panel up (a click), not just update it (keyboard, right-click).
+void GitDock::_show_diff(const String &p_path, bool p_staged, bool p_focus) {
+	diff_path = p_path;
+	diff_staged = p_staged;
+	_update_diff();
+	if (p_focus && diff_dock) {
+		diff_dock->make_visible();
+	}
+}
+
+// Brings the Diff panel up to date after a refresh. A file that was staged or unstaged meanwhile
+// is followed to its other list, so staging the file you're looking at keeps it on screen.
+void GitDock::_update_diff() {
+	if (!diff_dock || diff_path.is_empty() || repo.is_null() || !repo->is_open()) {
+		return;
+	}
+	Dictionary diff = repo->get_diff(diff_path, diff_staged);
+	if (diff.get("kind", String()) == "unchanged") {
+		const Dictionary other = repo->get_diff(diff_path, !diff_staged);
+		if (other.get("kind", String()) != "unchanged") {
+			diff_staged = !diff_staged;
+			diff = other;
+		}
+	}
+	diff_dock->set_diff(diff, diff_staged ? "Staged" : "Unstaged", _file_icon(diff_path));
+	_select_diff_row();
+}
+
+// Marks the file the Diff panel shows in its list (the lists are rebuilt on every refresh).
+void GitDock::_select_diff_row() {
+	FilePane &pane = diff_staged ? staged_pane : changes_pane;
+	TreeItem *root = pane.tree->get_root();
+	for (TreeItem *item = root ? root->get_first_child() : nullptr; item; item = item->get_next()) {
+		if (item->get_metadata(COLUMN_NAME).get_type() == Variant::STRING && String(item->get_metadata(COLUMN_NAME)) == diff_path) {
+			if (!pane.tree->get_next_selected(nullptr)) {
+				item->select(COLUMN_NAME); // Doesn't emit multi_selected, so it can't loop back here.
+			}
+			return;
+		}
 	}
 }

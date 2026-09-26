@@ -3,6 +3,9 @@
 void GitEditorPlugin::_enter_tree() {
 	dock = memnew(GitDock);
 	add_dock(dock);
+	diff_dock = memnew(GitDiffDock);
+	add_dock(diff_dock);
+	dock->set_diff_dock(diff_dock);
 }
 
 void GitEditorPlugin::_exit_tree() {
@@ -13,5 +16,10 @@ void GitEditorPlugin::_exit_tree() {
 		// frame. A queued free would then run the dock's destructor in unmapped code.
 		memdelete(dock);
 		dock = nullptr;
+	}
+	if (diff_dock) {
+		remove_dock(diff_dock);
+		memdelete(diff_dock); // Deleted after the Git dock, which points at it.
+		diff_dock = nullptr;
 	}
 }

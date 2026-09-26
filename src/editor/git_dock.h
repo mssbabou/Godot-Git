@@ -26,6 +26,8 @@
 
 #include "git/git_repository.h"
 
+class GitDiffDock;
+
 using namespace godot;
 
 // The "Git" panel shown on the right side of the editor. Its implementation is split over
@@ -194,6 +196,11 @@ class GitDock : public EditorDock {
 	Dictionary git_needs; // GitRepository::get_git_needs(), while git is missing.
 	String git_warning; // The warning shown once (so it can be cleared once git is installed).
 
+	// The Diff panel at the bottom, and the file it shows: clicking a file here shows its diff there.
+	GitDiffDock *diff_dock = nullptr;
+	String diff_path;
+	bool diff_staged = false;
+
 	Timer *auto_fetch_timer = nullptr;
 	int64_t last_auto_fetch_attempt = 0;
 	bool auto_fetch_failed = false; // The failure is shown once, not every few minutes.
@@ -243,6 +250,10 @@ class GitDock : public EditorDock {
 	void _on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_button, Object *p_tree);
 	void _on_file_activated(Object *p_tree);
 	void _on_context_menu_id(int p_id);
+	void _on_file_multi_selected(TreeItem *p_item, int p_column, bool p_selected, Object *p_tree);
+	void _show_diff(const String &p_path, bool p_staged, bool p_focus);
+	void _update_diff();
+	void _select_diff_row();
 
 	// git_dock_status.cpp: the status strip.
 	void _build_status_strip(Control *p_parent);
@@ -281,6 +292,7 @@ protected:
 
 public:
 	void refresh();
+	void set_diff_dock(GitDiffDock *p_dock);
 
 	GitDock();
 };

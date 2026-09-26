@@ -78,6 +78,7 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_sync_status"), &GitRepository::get_sync_status);
 	ClassDB::bind_method(D_METHOD("get_status"), &GitRepository::get_status);
 	ClassDB::bind_method(D_METHOD("get_line_stats", "staged"), &GitRepository::get_line_stats);
+	ClassDB::bind_method(D_METHOD("get_diff", "path", "staged"), &GitRepository::get_diff);
 	ClassDB::bind_method(D_METHOD("get_commits", "max_count"), &GitRepository::get_commits, DEFVAL(50));
 	ClassDB::bind_method(D_METHOD("uses_lfs"), &GitRepository::uses_lfs);
 	ClassDB::bind_method(D_METHOD("has_file_at", "revision", "path"), &GitRepository::has_file_at);

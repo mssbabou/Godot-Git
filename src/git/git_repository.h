@@ -49,6 +49,7 @@ public:
 	Dictionary get_sync_status() const;
 	Array get_status() const;
 	Dictionary get_line_stats(bool p_staged) const;
+	Dictionary get_diff(const String &p_path, bool p_staged) const;
 	Array get_commits(int p_max_count) const;
 	bool uses_lfs() const;
 	bool has_file_at(const String &p_revision, const String &p_path) const;
