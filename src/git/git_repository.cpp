@@ -65,6 +65,55 @@ String worktree_status_name(unsigned int p_status) {
 	return "";
 }
 
+// Reorders commits listed newest first so that within each run of commits made in the same second,
+// a commit comes before its parents (keeping the order otherwise). History would otherwise show a
+// merge below the commits it merged.
+void order_children_first(git_repository *p_repo, LocalVector<git_oid> &r_oids) {
+	LocalVector<int64_t> times;
+	for (const git_oid &oid : r_oids) {
+		CommitPtr commit;
+		times.push_back(git_commit_lookup(commit.out(), p_repo, &oid) == 0 ? (int64_t)git_commit_time(commit) : 0);
+	}
+	uint32_t start = 0;
+	while (start < r_oids.size()) {
+		uint32_t end = start + 1;
+		while (end < r_oids.size() && times[end] == times[start]) {
+			end++;
+		}
+		if (end - start > 1) {
+			// Repeatedly take the first commit that no remaining commit of the run has as a parent.
+			LocalVector<git_oid> remaining;
+			for (uint32_t i = start; i < end; i++) {
+				remaining.push_back(r_oids[i]);
+			}
+			auto is_parent_of_remaining = [&](const git_oid &p_candidate) {
+				for (const git_oid &other : remaining) {
+					CommitPtr commit;
+					if (git_commit_lookup(commit.out(), p_repo, &other) < 0) {
+						continue;
+					}
+					for (unsigned int p = 0; p < git_commit_parentcount(commit); p++) {
+						if (git_oid_equal(git_commit_parent_id(commit, p), &p_candidate)) {
+							return true;
+						}
+					}
+				}
+				return false;
+			};
+			uint32_t out = start;
+			while (!remaining.is_empty()) {
+				uint32_t pick = 0;
+				while (pick < remaining.size() - 1 && is_parent_of_remaining(remaining[pick])) {
+					pick++;
+				}
+				r_oids[out++] = remaining[pick];
+				remaining.remove_at(pick);
+			}
+		}
+		start = end;
+	}
+}
+
 } // namespace
 
 void GitRepository::_bind_methods() {
@@ -79,6 +128,8 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_status"), &GitRepository::get_status);
 	ClassDB::bind_method(D_METHOD("get_line_stats", "staged"), &GitRepository::get_line_stats);
 	ClassDB::bind_method(D_METHOD("get_diff", "path", "staged"), &GitRepository::get_diff);
+	ClassDB::bind_method(D_METHOD("get_commit_files", "hash"), &GitRepository::get_commit_files);
+	ClassDB::bind_method(D_METHOD("get_commit_diff", "hash", "path"), &GitRepository::get_commit_diff);
 	ClassDB::bind_method(D_METHOD("get_commits", "max_count"), &GitRepository::get_commits, DEFVAL(50));
 	ClassDB::bind_method(D_METHOD("uses_lfs"), &GitRepository::uses_lfs);
 	ClassDB::bind_method(D_METHOD("has_file_at", "revision", "path"), &GitRepository::has_file_at);
@@ -123,6 +174,8 @@ GitRepository::~GitRepository() {
 }
 
 void GitRepository::close() {
+	commits_key = String();
+	commits_cache = Array();
 	if (repo) {
 		release_lfs(repo);
 		git_repository_free(repo);
@@ -235,13 +288,16 @@ Dictionary GitRepository::get_line_stats(bool p_staged) const {
 		return result;
 	}
 
+	// Checked per file only in repositories that use LFS: an attribute lookup costs about half a
+	// millisecond per file on Windows, a second for 2,000 changed files.
+	const bool uses_lfs = repo_uses_lfs(repo);
 	const size_t count = git_diff_num_deltas(diff);
 	for (size_t i = 0; i < count; i++) {
 		// An LFS file's diff would be of its pointer text, which says nothing about the real file,
 		// and computing it runs the whole file through git-lfs.
 		const git_diff_delta *lfs_delta = git_diff_get_delta(diff, i);
 		const char *lfs_path = lfs_delta->new_file.path ? lfs_delta->new_file.path : lfs_delta->old_file.path;
-		if (is_lfs_path(repo, lfs_path)) {
+		if (uses_lfs && is_lfs_path(repo, lfs_path)) {
 			result[String::utf8(lfs_path)] = Vector2i(-1, -1);
 			continue;
 		}
@@ -398,11 +454,34 @@ Dictionary GitRepository::get_sync_status() const {
 
 // Returns up to p_max_count commits reachable from HEAD, newest first:
 // [{ "id": String (short hash), "hash": String, "summary": String, "message": String,
-//    "author": String, "time": int (unix), "unpushed": bool }, ...]
+//    "author": String, "time": int (unix), "unpushed": bool, "merge": bool }, ...]
 // "unpushed" means the commit isn't on any remote-tracking branch yet.
 Array GitRepository::get_commits(int p_max_count) const {
 	Array result;
 	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+
+	// The list only changes when HEAD or a branch moves (commit, pull, fetch, switch), so it's
+	// reused while every reference points where it did. Listing them takes about a millisecond.
+	String key = itos(p_max_count);
+	for (const char *glob : { "refs/heads/*", "refs/remotes/*" }) {
+		ReferenceIteratorPtr refs;
+		ReferencePtr ref;
+		if (git_reference_iterator_glob_new(refs.out(), repo, glob) == 0) {
+			while (git_reference_next(ref.out(), refs) == 0) {
+				const git_oid *target = git_reference_target(ref); // Null for origin/HEAD, an alias.
+				if (target) {
+					key += vformat("|%s=%s", git_reference_name(ref), git_oid_tostr_s(target));
+				}
+			}
+		}
+	}
+	ObjectPtr head;
+	if (git_revparse_single(head.out(), repo, "HEAD") == 0) {
+		key += vformat("|HEAD=%s", git_oid_tostr_s(git_object_id(head)));
+	}
+	if (key == commits_key) {
+		return commits_cache.duplicate(true);
+	}
 
 	HashSet<String> unpushed;
 	if (!get_remotes().is_empty()) {
@@ -421,14 +500,23 @@ Array GitRepository::get_commits(int p_max_count) const {
 	if (git_revwalk_new(walk.out(), repo) < 0) {
 		return result;
 	}
+	// Newest first. Not GIT_SORT_TOPOLOGICAL: it reads the whole history before returning the first
+	// commit (150 ms per refresh in Godot's own repository). Time alone leaves commits made in the
+	// same second (scripts, rebases) in any order, which order_children_first fixes.
 	git_revwalk_sorting(walk, GIT_SORT_TIME);
 	if (git_revwalk_push_head(walk) < 0) {
 		// No commits yet.
 		return result;
 	}
 
-	git_oid oid;
-	while (result.size() < p_max_count && git_revwalk_next(&oid, walk) == 0) {
+	LocalVector<git_oid> oids;
+	git_oid next;
+	while ((int)oids.size() < p_max_count && git_revwalk_next(&next, walk) == 0) {
+		oids.push_back(next);
+	}
+	order_children_first(repo, oids);
+
+	for (const git_oid &oid : oids) {
 		CommitPtr commit;
 		if (git_commit_lookup(commit.out(), repo, &oid) < 0) {
 			continue;
@@ -447,8 +535,11 @@ Array GitRepository::get_commits(int p_max_count) const {
 		item["author"] = author ? String::utf8(author->name) : String();
 		item["time"] = (int64_t)git_commit_time(commit);
 		item["unpushed"] = unpushed.has(hash);
+		item["merge"] = git_commit_parentcount(commit) > 1;
 		result.push_back(item);
 	}
+	commits_key = key;
+	commits_cache = result.duplicate(true);
 	return result;
 }
 

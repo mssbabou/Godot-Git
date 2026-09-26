@@ -138,6 +138,11 @@ class GitDock : public EditorDock {
 	FoldableContainer *history_pane = nullptr;
 	Tree *history_tree = nullptr;
 	Label *history_empty = nullptr;
+	int history_limit = 50; // Commits listed; "Load More" adds more.
+	Array history_shown; // The commits in the tree, so a refresh that changed none keeps it as is.
+	bool history_more = false;
+	Dictionary history_expanded; // Hashes of expanded commits, kept across rebuilds.
+	Dictionary commit_files; // Hash -> get_commit_files(). Commits never change, so it's kept.
 
 	Control *no_repo_ui = nullptr; // "Not a git repository yet", with Initialize Repository.
 	Label *no_repo_hint = nullptr;
@@ -200,6 +205,8 @@ class GitDock : public EditorDock {
 	GitDiffDock *diff_dock = nullptr;
 	String diff_path;
 	bool diff_staged = false;
+	String diff_commit; // Set when the file shown is from a commit (History), not uncommitted.
+	String diff_commit_shown; // "hash:path" already in the panel; commit diffs never change.
 
 	Timer *auto_fetch_timer = nullptr;
 	int64_t last_auto_fetch_attempt = 0;
@@ -238,6 +245,11 @@ class GitDock : public EditorDock {
 	Label *_make_body(Control *p_section, Tree *p_tree);
 	void _fill_file_pane(FilePane &p_pane, const Array &p_status, const Dictionary &p_stats);
 	void _fill_history();
+	void _fill_commit(TreeItem *p_item);
+	void _fill_commit_later(uint64_t p_item);
+	void _load_more_commits();
+	void _on_history_item_collapsed(TreeItem *p_item);
+	void _on_history_item_selected();
 	void _draw_file_row(TreeItem *p_item, const Rect2 &p_rect);
 	void _queue_align_header_buttons();
 	void _align_header_buttons();
@@ -252,6 +264,7 @@ class GitDock : public EditorDock {
 	void _on_context_menu_id(int p_id);
 	void _on_file_multi_selected(TreeItem *p_item, int p_column, bool p_selected, Object *p_tree);
 	void _show_diff(const String &p_path, bool p_staged, bool p_focus);
+	void _show_commit_diff(const String &p_hash, const String &p_path, bool p_focus);
 	void _update_diff();
 	void _select_diff_row();
 

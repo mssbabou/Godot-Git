@@ -32,7 +32,7 @@ What the dock does today:
 - Commit message box (Ctrl+Enter commits), then **☐ Amend** and **Commit**. Amend redoes the last commit (new message, plus whatever is staged). It's only enabled while that commit isn't on any remote-tracking branch, and ticking it fills in the last message.
 - "Staged Changes" and "Changes" sections (Godot `FoldableContainer`s) with file counts and **+/− line totals** in the header (each file's own +/− is in its tooltip), discard-all / stage-all / unstage-all header buttons, and per-file hover buttons (stage / unstage / discard). Both sections always show; when empty they show a plain dim label ("Nothing staged." / "No changes.").
 - Right-click menus on files (open, stage/unstage, discard, show in FileSystem / file manager, copy paths) and commits (copy hash / message).
-- History of the last 50 commits; commits not yet on any remote are highlighted with the accent color.
+- History, 50 commits at a time ("Load More Commits" adds 50); commits not yet on any remote are highlighted with the accent color. Clicking a commit expands it: author and time, the rest of its message, and the files it changed (rows like the Changes rows). Clicking one of those files shows its change in the Diff panel.
 - **A Diff panel at the bottom** (next to Output, Debugger, ...): clicking a file in Staged Changes or Changes shows its diff there, looking like the script editor (its colors and syntax highlighting), with added/removed lines tinted, old and new line numbers, and a Unified / Side by Side view. It follows a file you stage or unstage, updates as you save, and says plainly when there are no lines to show (binary, LFS, over 2 MB, rename only).
 - Double-click opens a file: in Godot if it's a scene/script/resource, otherwise in the external editor from Godot's settings, or VS Code.
 - Pull fast-forwards or creates a merge commit; uncommitted changes to other files stay put. It's refused up front (naming the files) if the new commits touch files you have uncommitted changes to, and conflicting merges are refused and fully undone. It never leaves anything in a stash.
@@ -53,7 +53,7 @@ Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` o
 | `src/git/` | **Backend**, no editor dependencies. All git logic lives here. |
 | `src/git/git_repository.h` | `GitRepository` (RefCounted): the libgit2 wrapper's whole API. Exposed to GDScript only so the test suite can drive the shipped library; deliberately not documented as a public API (decided 2026-09-24), so it can change freely. |
 | `src/git/git_repository.cpp` | Opening, reading state (status, line stats, branches, history), local changes (stage, discard, commit, checkout). |
-| `src/git/git_repository_diff.cpp` | `get_diff`: one file's hunks and lines for the Diff panel. |
+| `src/git/git_repository_diff.cpp` | `get_diff`, `get_commit_diff`: one file's hunks and lines for the Diff panel; `get_commit_files` for History. |
 | `src/git/git_repository_remote.cpp` | Fetch, pull, push. `pull()` is split into `paths_blocking_pull` / `fast_forward` / `merge_and_commit` / `merge_with_autostash`. |
 | `src/git/git_remote_callbacks.{h,cpp}` | libgit2 remote callbacks: logins via `git credential fill/approve/reject`, progress reporting (`RemoteContext`, `report_progress`), cancel. |
 | `src/git/git_cli.{h,cpp}` | Steps handed to the git CLI because libgit2 would skip hooks or signing, or handles SSH badly: `commit_needs_git`, `has_hook`, `commit_with_git`, and `run_git_command` (runs git with merged output, live progress lines, Cancel). |
@@ -62,7 +62,7 @@ Minimum OS versions of the built libraries (check with `pyelftools`/`macholib` o
 | `src/editor/` | **Editor UI.** |
 | `src/editor/git_dock.h` | `GitDock` (EditorDock). Its private methods are grouped by the file that implements them. |
 | `src/editor/git_dock.cpp` | Building the dock, `refresh()`, toolbar and action row, local actions (stage, discard, commit, branches). |
-| `src/editor/git_dock_lists.cpp` | Staged Changes / Changes / History: row drawing, header alignment, hover buttons, clicks, context menu. |
+| `src/editor/git_dock_lists.cpp` | Staged Changes / Changes / History: row drawing, header alignment, hover buttons, clicks, context menu, expandable commits, and which file the Diff panel shows. |
 | `src/editor/git_dock_status.cpp` | The status strip. |
 | `src/editor/git_dock_network.cpp` | Fetch / pull / push on a worker thread, auto-fetch. |
 | `src/editor/git_dock_setup.cpp` | Setting a repository up: the empty state with Initialize Repository, Add Remote, the name and email dialog. |
@@ -195,6 +195,16 @@ libgit2 runs ssh itself (`USE_SSH=exec`), but badly for us. On Windows it ignore
 - **Status strip** (`_set_status` / `_update_status` / `_update_status_style`), under the toolbar. Every result and error goes here. It's one wrapping `RichTextLabel` (never trimmed; selectable so errors can be copied), an icon, a Cancel/Dismiss button, and a thin progress bar while busy. Kinds: idle ("Last fetched 3h ago", from `last_fetched` in the sync status), busy, success ("· just now", kept current by a 30 s timer), neutral (canceled), warning and error (tinted background, stay until dismissed or replaced). Results never time out. Toasts are only used when the dock is hidden behind another tab, so an outcome is never missed.
 - Progress: the worker's `GitRepository` gets `set_progress_callback(callable_mp(dock, &_network_progress))`. The backend throttles to ~10 updates/s and uses `call_deferred`, so the dock is only touched on the main thread. Cancel calls the static `GitRepository::cancel_network()`, which sets an atomic flag the libgit2 callbacks check (returning `GIT_EUSER`) and kills the child process being waited on (`git credential fill`, `git lfs fetch/push`; tracked with `track_process`). On Windows that's `taskkill /T`, because git's own children (Git Credential Manager's window, git-lfs) outlive their parent otherwise. The op then fails with `ERR_SKIP`.
 
+### History
+
+- `get_commits` walks `GIT_SORT_TIME` (not `TOPOLOGICAL`, which reads the whole history first) and then `order_children_first` puts commits made in the same second child-first. Its result is cached while HEAD and every branch point at the same commits (`commits_key`).
+- `_fill_history` asks for `history_limit + 1` commits (50, plus 50 per "Load More Commits") and **only rebuilds the tree when the commits changed** (`history_shown`); otherwise it just updates the ages. Every save refreshes the dock, so without this, expanded commits and the selection would reset constantly. When it does rebuild, `history_expanded` (hashes) re-expands what was open.
+- Expanding (click or arrow) and Load More build rows deferred, never inside the Tree's mouse handling (gotcha 38).
+- Rows carry meta `git_row`: `commit` (metadata = the commit dictionary), `placeholder`, `note`, `file`, `more`. A commit starts collapsed with a placeholder child (so it shows the arrow); expanding it (`item_collapsed`) calls `_fill_commit`, which reads `get_commit_files` once per hash (`commit_files` cache; commits never change). A click on a commit row toggles it, like VS Code.
+- `_fill_commit` adds notes (author and time, up to 6 lines of the message body, a merge note) as single trimmed lines with the full text in the tooltip, then file rows drawn by the same `_draw_file_row` as the change lists (up to 500, then "...and N more files"). Notes are not autowrapped: see gotcha 36.
+- A merge commit's files and diffs are against its first parent: what it brought into the branch.
+- Clicking a commit's file sets `diff_commit` and shows `get_commit_diff` in the Diff panel ("Commit eabb44a"). Commit diffs never change, so `_update_diff` doesn't re-read them on refresh (`diff_commit_shown`). Selecting in any list clears the other two.
+
 ### GitDiffDock (the Diff panel)
 
 - An `EditorDock` in `DOCK_SLOT_BOTTOM` (layouts: horizontal, floating), title "Diff", layout key `GodotGitDiff`, minimum height 240 px scaled (the bottom panel otherwise opens one line tall). Created by `GitEditorPlugin` next to the Git dock, which gets a pointer (`set_diff_dock`) and is deleted first.
@@ -203,7 +213,7 @@ libgit2 runs ssh itself (`USE_SSH=exec`), but badly for us. On Windows it ignore
 - **Rendering.** Read-only `CodeEdit`s: one for the unified view, two in an `HSplitContainer` for side by side, which scroll together (both sides have the same row count, with blank filler rows opposite one-sided lines). In the editor theme a `CodeEdit` already has the script editor's font, background and colors; only `font_readonly_color` is overridden (read-only text is dimmed otherwise). Each `CodeEdit` sits in a `PanelContainer` that draws the code editor's stylebox (background, padding, corners), and the `CodeEdit` itself gets empty styleboxes (gotcha 35). Row tints are `set_line_background_color` (text area only), and the gutters (`GUTTER_TYPE_CUSTOM`, `_draw_gutter`) paint the same tint plus right-aligned numbers and the +/− sign, so each row reads as one band. Hunk headers (`@@ -12,7 +12,9 @@ func _ready():`) are dimmed rows; a new or deleted file's single `@@ -0,0 ...` header is left out.
 - **Syntax highlighting** (`GitDiffHighlighter`): `.gd` gets Godot's own `GDScriptSyntaxHighlighter` (exposed to extensions), other code and Godot's text formats a `CodeHighlighter` with the editor's highlighting colors, strings and the file type's comment markers; `.txt`/`.md` none. A highlighter reads its lines from the TextEdit it's attached to, so the real highlighter sits on a hidden mirror `CodeEdit` whose hunk headers and fillers are blank lines (so an `@@` line can't open a string), and `GitDiffHighlighter` on the visible one forwards to it, dimming headers.
 - The view (Unified / Side by Side) is saved per project in `EditorSettings` project metadata `godot_git/diff_view`.
-- Not done yet: image before/after, word-level highlights within changed lines, commits (History; see Big features 2).
+- Not done yet: image before/after, word-level highlights within changed lines.
 
 ---
 
@@ -236,6 +246,8 @@ libgit2 runs ssh itself (`USE_SSH=exec`), but badly for us. On Windows it ignore
    - For screenshots of dialogs, start the editor with `--single-window` (otherwise popups are separate OS windows that `PrintWindow` on the main window misses), and trigger the driver with `get_tree().create_timer(...)`, not a frame count: an unfocused editor only draws ~10 frames a second.
 3. **Visual checks.** Screenshot the editor window with Win32 `PrintWindow` (works when occluded, but restore it if minimized), then crop the dock. **Never** simulate the OS mouse or keyboard: it acts on whatever window is on top of the user's desktop.
 4. **Demo scenarios** must be designed so the git CLI agrees with them. A demo where "teammate" and "me" edit **adjacent lines** conflicts in git too. That once made pull look broken when it was behaving correctly.
+
+**Open the editor once after every C++ change, before handing back** (`--headless -e --path <a project with the addon> --quit-after 600`, exit code 0). The backend suite never creates the dock: a one-line infinite recursion in History (2026-09-26) passed all 341 checks and crashed every editor at startup. On Windows, a crashed editor run in Git Bash exits with **127** (stack overflow) or 139 (access violation), often with nothing in the log; the Windows Application event log (Event ID 1000) names the faulting module. A second GUI editor started while another runs may also just exit; close the other one first.
 
 Before handing UI work back, look at a screenshot. Several layout bugs (clipped columns, invisible letters, highlight on half a row) were only visible that way.
 
@@ -287,6 +299,11 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 
 35. **A `TextEdit` clips its lines to its whole rect, not to the inside of its stylebox's padding.** A row scrolled half out of view is drawn into the padding, up to the rounded edge. The script editor has this too, but tinted diff rows made it obvious. Fix: let a parent `PanelContainer` draw the stylebox and give the `TextEdit` empty styleboxes, so the clip edge is the padding's inner edge.
 
+36. **A `Tree` with scrolling disabled measures its height before autowrapped cells wrap.** With a wrapping note in History, the tree reported less height than its rows took, and the last commits were cut off (the dock relies on trees reporting their full height, gotcha 8). History's notes are single trimmed lines instead.
+37. **Aligning to a folded section's tree looped forever and crashed the editor** (found 2026-09-26, present since at least `v0.1.0`). `_align_header_buttons` measured row geometry of a tree whose `FoldableContainer` was folded: `is_visible()` is still true there (only `is_visible_in_tree()` is false), the measured position was meaningless, the header buttons moved, the header re-sorted, and it aligned again. Millions of layout calls later the editor segfaulted. Folding "Changes" was enough. Use `is_visible_in_tree()` for "is this on screen".
+
+38. **A `Tree` refuses to create or clear items while it handles a mouse press** (`blocked` in `Tree::_gui_input`, 4.7.2): `create_item()` logs "The tree cannot create items during mouse selection events" and returns **null**, and `clear()` does nothing. Everything it emits from there (`item_mouse_selected`, `item_selected`, `multi_selected`, `item_collapsed` from a click on the arrow or row) runs inside that. Expanding a History commit on click used the null item and crashed the editor (maintainer, dev project, 2026-09-26). Build rows from those signals with `call_deferred` (`_fill_commit_later`, `_load_more_commits`). `button_clicked` fires on release, outside it, so hover buttons may refresh directly. **A UI driver can't catch this**: an emitted signal runs outside the blocked section, and injected clicks don't reach the Tree without the real cursor. Test clicks that build rows by hand.
+
 ## libgit2 gotchas
 
 1. **`git_error_last()` is never null** since 1.8. "No error" has `klass == GIT_ERROR_NONE`, and `get_last_error()` filters that out.
@@ -310,6 +327,7 @@ Before handing UI work back, look at a screenshot. Several layout bugs (clipped 
 - **Own dock rather than `EditorVCSInterface`.** Godot's built-in VCS panels are fixed and limited (no real history or branch UI). The official godot-git-plugin already fills that role, so an own dock is the only way to make something better. We also don't implement the interface alongside the dock (decided 2026-09-24): it only feeds Godot's own VCS panels, so it would add a second, weaker UI for the same repo. That UI can't show our progress, cancel or refusals. The engine also takes one VCS plugin per project, so it would compete with the official one. The official plugin is short (~1,050 lines) because Godot's `version_control_editor_plugin.cpp` (~1,600 lines) draws its UI, and because its git logic is thin: conflicts are left in the files, progress just gets `print()`ed, and logins are a typed username and password.
 - **Editor-only, shipped as `addons/godot_git/`.** It's a dev tool and must not end up in games. The standard addon layout means installing is "unzip into your project".
 - **Honesty over cleverness.** Only show actions that can actually be performed. Pull and Push disappear without a remote, Push is disabled with nothing to send, and tooltips say exactly what a button will do. We briefly had one context-sensitive "do the next thing" button; the maintainer preferred **separate Commit / Pull / Push buttons**, labeled with counts ("↓ Pull 2", "↑ Push 1").
+- **Features live where you already are, not in menus** (decided 2026-09-26). Each action shows up on the thing it acts on, at the moment it's needed: right-click a commit for commit actions, the branch picker for branch actions, a dialog only when a real decision is needed (e.g. what to do with your changes when switching branches). Sections appear only when they have something in them (like Stashes). The ⋮ menu is for rare, repository-wide actions. The maintainer's counterexample is VS Code's stash: buried two submenus deep, and once made, a stash is invisible, so it's "almost useless". The panel shouldn't lay out every git feature in the open either; things rarely needed in game projects stay out (see "Left to the terminal" under Big features).
 - **Native look.** `FoldableContainer` sections, editor theme icons/colors, Tree button styles for header buttons, Title Case. Avoid inventing styles.
 - **Calm lists.** Status letter on the left in a fixed column, neutral file names, dimmed folder after the name, action buttons only on hover, line counts as section totals on screen and per file only in the tooltip. Each of these came from an earlier version looking cluttered.
 - **The panel does git operations; it doesn't set up accounts or hosting** (decided 2026-09-25). It can initialize a repository, add a remote by URL and set your name and email, because it can do each of those completely. It doesn't create repositories on GitHub/GitLab, run an OAuth flow, store tokens or generate SSH keys: every host differs (we'd do one well and the rest half-way), it would be a security surface inside a game editor plugin, and it would split logins from the git CLI's. Logins come from git's credential helper (Git Credential Manager does the browser sign-in), SSH from the user's own ssh setup. What the panel owes the user is a clear message when a login is missing: on macOS/Linux git often has no helper that can *ask* for one (osxkeychain, libsecret only store), so that message should name Git Credential Manager, `gh auth login`, or signing in once with `git fetch` in a terminal. Done 2026-09-25: when git has no credential helper for the remote (`git config --get-urlmatch credential.helper <url>`), the login error says so and names `gh auth login` and Git Credential Manager (`test_credentials.gd`).
@@ -360,16 +378,29 @@ It has been verified end to end in a real editor (fetch, pull, merge, commit, co
 ### Missing features
 
 Roughly in order of value, after status and feedback. Per philosophy point 1, don't expose any of these half-done; a feature appears in the UI when it fully works.
-- **Diff viewer.** The biggest gap. Clicking a file in the dock should show its diff in a bottom-panel dock; see Big features 1. libgit2 patches are already computed for line stats.
-- **Conflict resolution.** Today conflicting pulls are refused. A minimal version: let the merge happen, list conflicted files with "take mine / take theirs / open in editor", and commit when resolved.
-- Stash UI, branch delete/rename, tags, blame, per-hunk staging.
+- **Diff viewer.** First version done for uncommitted files (Big features 1); commits come with History.
+- **The git features we'll support, and where each one lives, are planned under Big features** (decided 2026-09-26): History, restore a file from a commit, undo last commit, revert, stash, ignore a file, branch delete/rename, merging branches, conflict resolution, partial staging, LFS locking. Also there: what's deliberately left to the terminal.
 - **Managing remotes after the first one** (rename, change URL, remove). Add Remote only appears while there are none; the rest is rare and done in a terminal.
 - **UI tests in the repo.** The backend has a suite; the dock is only checked with scratch UI drivers and screenshots.
 - Localization: strings are hardcoded English (Godot uses `TTR`; extensions have no equivalent wired up here).
 
 ### Performance considerations
-- `refresh()` does full status + two diffs (line stats) + a 50-commit revwalk + the unpushed walk (capped at 1000) on **every** filesystem change and focus-in. Fine for normal projects; big repos or huge changesets will feel it. Candidates: debounce refreshes, compute line stats lazily or on a thread, skip stats above N files.
-- `get_line_stats` generates a patch per changed file. Files over 2 MB are treated as binary on purpose.
+Measured 2026-09-26 (Windows, this machine; median of 5; benchmark scripts were in the session scratchpad, not in the repo):
+
+| | Godot engine repo (86k commits, 14k files, clean) | 2,500 changed files (2,000 modified, 500 staged, 500 new) | one 20,000-line file, 13k lines changed |
+|---|---|---|---|
+| `get_status` | 76 ms | 8 ms | 3 ms |
+| `get_line_stats` unstaged / staged | 73 / 3 ms | **5,180 / 520 ms** | 13 / 0.3 ms |
+| `get_commits(51)`, first call | 140 ms | 1 ms | 0.2 ms |
+| `get_commit_files` (median of 50 commits) | 6 ms | 7 ms | 5 ms |
+| `get_diff` / `get_commit_diff` of one file | 1 / 6 ms | 0.3 / 2 ms | 21 / 11 ms |
+| **Dock `refresh()`** (headless editor) | ~160 ms (commits cached) | **6.8 s** | 18 ms |
+| Diff panel: show / switch to side by side | | 5 / 2 ms | 0.53 / 0.87 s |
+
+- **The big one: `get_line_stats` costs 2.6 ms per changed file** (the git CLI's `git diff --numstat`: 0.13 ms). libgit2 loads the content filters for every file without its attribute cache (`diff_file.c`, `git_filter_list_load` without a session), so each file looks up `.gitattributes` from scratch, which is slow on Windows. Since refresh runs on the main thread after every save, 2,000 changed files (a Godot version upgrade rewriting every scene) freeze the editor for ~7 s per save. **Fix still to do:** compute line stats on a worker thread and fill in the header totals and tooltips when they arrive (the counts in the list headers are all they feed). Also possible: diff only the paths `get_status` reported (saves the second workdir scan, ~70 ms in the engine repo).
+- Building the rows costs ~0.5 ms per file (about 1.1 s for 2,000), mostly per-row work in `_fill_file_pane` (`_file_icon` lookups, tooltips). Worth measuring once line stats are off the main thread.
+- Fixed in this pass: per-file LFS attribute checks only run in repositories that use LFS (they cost 0.57 ms per file: 1.3 s of the 7 s); `get_commits` reuses its last result while HEAD and every branch point at the same commits (a millisecond to check; the libgit2 walks cost 140 ms in the engine repo, where `git rev-list` takes 31 ms); the Diff panel skips its hidden highlighter copy for plain text (halved a 13k-line diff to 0.53 s).
+- Files over 2 MB are treated as binary on purpose.
 
 ### Behavior worth knowing
 
@@ -434,7 +465,7 @@ Two tiers: small **stepping stones** that make the base solid, then the **big fe
 - **Scope.** Read-only first. Staging single hunks or lines from the diff comes after, and only once it works completely (philosophy point 1).
 - **Backend.** A `get_diff(path, staged)` returning hunks and lines with old/new line numbers; libgit2 already builds these patches for the line stats. Computed only for the file that's clicked.
 
-**2. History: expandable commits in the right dock**, like VS Code's Source Control graph (decided 2026-09-26):
+**2. History: expandable commits in the right dock**, like VS Code's Source Control graph (decided 2026-09-26). **First version done (2026-09-26)**, see "History" under Architecture; checked on screen (expanding, a merge, a commit's file in the Diff panel, surviving a refresh, Load More with 65 commits), not yet by the maintainer:
 - **Expanding a commit** in History shows its full message, author and date, and the files it changed, as rows that look exactly like the Changes rows (status letter, icon, name, dimmed folder, +/− in the tooltip). **Clicking one of those files opens its diff in the bottom panel**, the same as for uncommitted files. The diffs themselves never go in the dock: it's ~200–460 px wide, too narrow for code.
 - **Everything loads on demand**, never all up front:
   - a commit's files are read only when it's expanded (the row gets a placeholder child so the arrow shows, replaced on the Tree's `item_collapsed` signal);
@@ -444,9 +475,40 @@ Two tiers: small **stepping stones** that make the base solid, then the **big fe
 - **Backend.** A call returning one commit's changed files (path, status, +/−), plus `get_diff` for a commit's file, plus paging for `get_history`.
 - Start without a branch graph; a graph is a separate, harder piece.
 
-**3. Conflict resolution.** Let a pull stop at conflicts instead of refusing. List conflicted files with "keep mine / take theirs / open in editor", show them in the diff view, and finish the merge when all are resolved (or abort cleanly). This removes the last "use git in a terminal" message.
+**3. Commit actions in History** (right-click a commit or one of its files; all build on feature 2):
+- **Restore This Version** (right-click a file under a commit): puts the file back as it was in that commit, as an uncommitted change you can review in the Diff panel and commit or discard. For "I broke this scene yesterday". Probably the most-used of all; refuses (naming the file) if the file has uncommitted changes, rather than overwrite them.
+- **Undo Last Commit** (the newest commit, only while it isn't on any remote-tracking branch, like Amend): moves the branch back one commit and leaves its changes staged. Nothing is lost. Hidden or disabled with a reason once pushed, since rewriting pushed history hurts teammates.
+- **Revert Commit** (any commit): a new commit that undoes it, safe for pushed history. A revert that would conflict is refused and fully undone until conflict resolution exists.
 
-**4. Stash and branch management.** A stash list with restore/drop, and branch delete/rename. Tags fit here too.
+**4. Manual stash** (decided 2026-09-26). Branch switching stays as it is: like `git switch` and SourceTree, it carries uncommitted changes over when none of the changed files differ between the branches, and otherwise refuses before touching anything (all or nothing, never half-switched). No question on every switch. The maintainer is fine with that; what's missing is a way to set changes aside without committing or discarding them:
+- **Stash Changes** on the Changes header and in the ⋮ menu. Includes new (untracked) files, or "set aside" would quietly leave them behind.
+- **A Stashes section** in the dock, below Changes, shown only while stashes exist (a stash must never be forgotten, the maintainer's complaint about VS Code). Rows like "`main` · 4 files · 2h ago"; Restore and Delete on each (Delete asks first). Stashes made in a terminal show too. Expanding one to see its files, and each file's diff in the Diff panel, comes with History (the same mechanism).
+- **Restore is all or nothing**, like switching and Pull: it refuses up front, naming the files, when your current changes touch the same files, and the stash is only dropped after it applied completely. Never libgit2's `git_stash_pop` (libgit2 gotcha 2).
+- Files open in Godot (scenes) get rewritten by stash and restore; check on screen that the editor reloads them properly.
+- **Also: the switch refusal should name the files in the way** (today it only says "Your local changes would be overwritten by switching branches. Commit or discard them first."), and mention stashing as a third way out.
+- **Rule: never stash as part of another operation** (the maintainer, 2026-09-26). Other clients' "stash, switch, re-apply" (VS Code's Stash & Checkout, SourceTree, GitHub Desktop bringing changes along) can leave you on the new branch with conflict markers in your files, and sometimes without the stash. The panel's promise is the opposite: an operation either works or refuses before touching anything. Switching and Pull already work that way (Pull's internal autostash only runs once it's certain to restore cleanly); stash stays something only the user does, and Restore is all or nothing.
+- Considered and dropped: asking "leave or bring my changes" on every switch with changes (GitHub Desktop), and restoring them automatically when you come back. More friction than it saves.
+
+**5. Small, contextual extras:**
+- **Ignore...** (right-click a new, untracked file; decided 2026-09-26). One menu item that opens a small dialog, not a submenu, because the choice has consequences a menu can't show:
+  - Three choices: **this file** (`/art/boss.psd`), **all files of this type** (`*.psd`), **the folder** (`/art/raw/`, with a dropdown for which parent). No custom-pattern field: the maintainer found it pointless, since a power user opens the file. An **Edit .gitignore** button opens it instead.
+  - It shows the effect before you confirm ("Hides 12 files from Changes"), computed by libgit2 against the current untracked files with a temporary in-memory rule (`git_ignore_add_rule`, then `git_ignore_clear_internal_rules`), so it's git's real matching, not ours.
+  - Godot's companion files (`.import`, `.uid`) are ignored along with the file, and the dialog says so; otherwise the list doesn't get cleaner. Several selected files are listed, and "this type" covers all their extensions.
+  - **Only for untracked files.** `.gitignore` does nothing to a tracked file, so offering it there would be a button that lies. The real action for tracked files is "Stop Tracking" (`git rm --cached`), which deletes the file from teammates' disks when they pull; it needs its own warning and is left out until someone asks.
+  - The rule goes into the `.gitignore` next to `project.godot` (the one Initialize Repository writes), or the nearest existing one above it. Afterwards `.gitignore` shows in Changes like any edit: the Diff panel shows the added lines and a discard undoes them, so it needs no undo of its own. The status strip confirms ("Ignored `*.psd` (12 files)").
+  - Initialize Repository already writes Godot's own `.gitignore` and `.gitattributes`.
+- **Branch delete and rename** in the branch picker (delete refuses unmerged work unless confirmed; never deletes the current branch).
+
+**6. Merging and conflicts:**
+- **Conflict resolution.** Let a pull (or merge, or stash restore) stop at conflicts instead of refusing. List conflicted files with "Keep Mine / Take Theirs / Open in Editor", show them in the Diff panel as a three-way view (it's still a diff), and finish the merge when all are resolved, or abort cleanly. This removes the last "use git in a terminal" message.
+- **Merge a branch into the current one** (from the branch picker). Only after conflict resolution; before that it would refuse too often to be worth showing.
+
+**7. Later:**
+- **Stage part of a file** (hunks, then lines) from the Diff panel, once it works completely.
+- **LFS file locking** (`git lfs lock`), for teams where artists share binary scenes and textures. git-lfs supports it; it needs a clear "locked by X" state on file rows.
+- Tags, if releases need them.
+
+**Left to the terminal** (decided 2026-09-26): rebase and interactive rebase, cherry-pick, submodules, worktrees, reflog, bisect, blame. They're powerful but rare in game projects, and each needs a lot of UI to do right; half-done would break philosophy point 1. Revisit only if real use asks for one.
 
 ## Where we left off (2026-09-24)
 
@@ -480,7 +542,7 @@ A long session: RAII cleanup, sign-in from the panel, Git LFS, the new action la
 - **The test suite keeps growing** (296 checks, a few minutes on Windows). Fine for now; split slow suites if it starts to hurt.
 - **Asset Library**: check whether the official plugin is listed there for 4.x before writing our description.
 
-**Next**: `v0.1.1` with the branch-switch crash fix, then check the branch-switch dialog on Windows, the Asset Library listing, then the diff viewer (Big features 1).
+**Next** (2026-09-26): `v0.1.1` is out. The Diff panel and History (Big features 1, 2) have first versions, waiting on the maintainer's use. Next: manual stash (4; it fixes a real problem now) and the commit actions (3). The fix for the fold crash (gotcha 37) is worth a `v0.1.2`. Still open alongside: check the branch-switch dialog on Windows, and the Asset Library listing.
 
 ## Advice
 

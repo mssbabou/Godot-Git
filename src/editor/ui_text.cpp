@@ -23,6 +23,9 @@ String status_letter(const String &p_state) {
 	if (p_state == "renamed") {
 		return "R";
 	}
+	if (p_state == "copied") {
+		return "C";
+	}
 	if (p_state == "typechange") {
 		return "T";
 	}
@@ -60,6 +63,11 @@ String relative_time(int64_t p_unix_time) {
 		return vformat("%dmo", seconds / (86400 * 30));
 	}
 	return vformat("%dy", seconds / (86400 * 365));
+}
+
+String local_date_time(int64_t p_unix_time) {
+	const int64_t bias_minutes = Dictionary(Time::get_singleton()->get_time_zone_from_system()).get("bias", 0);
+	return Time::get_singleton()->get_datetime_string_from_unix_time(p_unix_time + bias_minutes * 60, true);
 }
 
 String time_ago(int64_t p_unix_time) {

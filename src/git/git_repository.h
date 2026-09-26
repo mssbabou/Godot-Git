@@ -25,6 +25,10 @@ class GitRepository : public RefCounted {
 	int pulled_commits = 0;
 	bool pull_merged = false;
 	Callable progress_callback;
+	// get_commits' last result, and what it depended on (HEAD and every branch's commit): reading
+	// history is slow in big repositories (150 ms in Godot's own), and most refreshes change neither.
+	mutable String commits_key;
+	mutable Array commits_cache;
 	bool login_prompts_allowed = true;
 
 	void close();
@@ -50,6 +54,8 @@ public:
 	Array get_status() const;
 	Dictionary get_line_stats(bool p_staged) const;
 	Dictionary get_diff(const String &p_path, bool p_staged) const;
+	Array get_commit_files(const String &p_hash) const;
+	Dictionary get_commit_diff(const String &p_hash, const String &p_path) const;
 	Array get_commits(int p_max_count) const;
 	bool uses_lfs() const;
 	bool has_file_at(const String &p_revision, const String &p_path) const;

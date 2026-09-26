@@ -62,6 +62,7 @@ using IndexPtr = Owned<git_index, git_index_free>;
 using ObjectPtr = Owned<git_object, git_object_free>;
 using PatchPtr = Owned<git_patch, git_patch_free>;
 using ReferencePtr = Owned<git_reference, git_reference_free>;
+using ReferenceIteratorPtr = Owned<git_reference_iterator, git_reference_iterator_free>;
 using RemotePtr = Owned<git_remote, git_remote_free>;
 using RevwalkPtr = Owned<git_revwalk, git_revwalk_free>;
 using SignaturePtr = Owned<git_signature, git_signature_free>;

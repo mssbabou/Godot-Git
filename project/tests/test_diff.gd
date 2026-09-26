@@ -1,5 +1,6 @@
 extends "res://tests/test_case.gd"
-## get_diff: what the diff view shows for a file, checked against `git diff`.
+## get_diff, get_commit_files, get_commit_diff: what the Diff panel and History show, checked
+## against `git diff` and `git show`.
 
 
 func run() -> void:
@@ -8,6 +9,9 @@ func run() -> void:
 	_staged_changes()
 	_special_files()
 	_line_endings()
+	_commits()
+	_history_order()
+	_history_cache()
 
 
 ## `git diff` output as [origins, texts, hunk headers], for comparing with get_diff.
@@ -153,3 +157,135 @@ func _line_endings() -> void:
 	write(repo.path_join("a.txt"), "one\r\nTWO\r\n")
 	var diff := open(repo).get_diff("a.txt", false)
 	check("CRLF file: lines without \\r", _our_lines(diff).texts == ["one", "two", "TWO"], _our_lines(diff).texts)
+
+
+## `git show --name-status` of a commit as {path: letter}, against its first parent.
+func _git_name_status(repo: String, commit: String) -> Dictionary:
+	var result := {}
+	var out := git(repo, ["diff", "--name-status", "-M", "--no-color", commit + "^1", commit]) if git(repo, ["rev-list", "--parents", "-n", "1", commit]).split(" ").size() > 1 else git(repo, ["show", "--name-status", "-M", "--no-color", "--format=", commit])
+	for line: String in out.split("
+"):
+		if line.is_empty():
+			continue
+		var parts := line.split("	")
+		result[parts[parts.size() - 1]] = parts[0].left(1)
+	return result
+
+
+func _our_name_status(files: Array) -> Dictionary:
+	var letters := { "new": "A", "modified": "M", "deleted": "D", "renamed": "R", "copied": "C", "typechange": "T" }
+	var result := {}
+	for file: Dictionary in files:
+		result[file.path] = letters.get(file.status, "?")
+	return result
+
+
+func _commits() -> void:
+	var repo := make_repo("commits")
+	var body := ""
+	for i in 20:
+		body += "same line %d
+" % i
+	write(repo.path_join("a.txt"), "one
+two
+three
+")
+	write(repo.path_join("old.txt"), body)
+	write(repo.path_join("gone.txt"), "bye
+")
+	commit_all(repo, "first")
+	var first := git(repo, ["rev-parse", "HEAD"])
+	write(repo.path_join("a.txt"), "one
+TWO
+three
+four
+")
+	git(repo, ["mv", "old.txt", "renamed.txt"])
+	git(repo, ["rm", "-q", "gone.txt"])
+	write(repo.path_join("sub/new.txt"), "hello
+")
+	commit_all(repo, "second")
+	var second := git(repo, ["rev-parse", "HEAD"])
+	var r := open(repo)
+
+	var files := r.get_commit_files(second)
+	check("commit files: same as git show", _our_name_status(files) == _git_name_status(repo, second), [_our_name_status(files), _git_name_status(repo, second)])
+	var by_path := {}
+	for file: Dictionary in files:
+		by_path[file.path] = file
+	check("commit files: rename keeps its old path", by_path.get("renamed.txt", {}).get("old_path") == "old.txt", by_path.get("renamed.txt"))
+	check("commit files: line counts", by_path.get("a.txt", {}).get("added") == 2 and by_path.get("a.txt", {}).get("removed") == 1, by_path.get("a.txt"))
+	var first_files := r.get_commit_files(first)
+	check("first commit: every file added", _our_name_status(first_files) == { "a.txt": "A", "old.txt": "A", "gone.txt": "A" }, _our_name_status(first_files))
+	check("short hash works", r.get_commit_files(second.left(7)).size() == files.size())
+	check("unknown commit: nothing", r.get_commit_files("0123456789abcdef0123456789abcdef01234567").is_empty())
+
+	var diff := r.get_commit_diff(second, "a.txt")
+	var theirs := _git_lines(repo, [second + "^", second, "--", "a.txt"])
+	check("commit diff: same lines as git", _our_lines(diff).origins == theirs.origins and _our_lines(diff).texts == theirs.texts, [_our_lines(diff), theirs])
+	check("commit diff: line numbers", _numbers_consistent(diff))
+	check("commit diff of a deleted file", r.get_commit_diff(second, "gone.txt").get("status") == "deleted" and _our_lines(r.get_commit_diff(second, "gone.txt")).origins == "-")
+	check("commit diff of a file it didn't touch", r.get_commit_diff(second, "zzz.txt").get("kind") == "unchanged")
+
+	# A merge shows what it brought into the branch: its changes against the first parent.
+	git(repo, ["checkout", "-q", "-b", "feature"])
+	write(repo.path_join("feature.txt"), "feature
+")
+	commit_all(repo, "feature work")
+	git(repo, ["checkout", "-q", "main"])
+	write(repo.path_join("main.txt"), "main
+")
+	commit_all(repo, "main work")
+	git(repo, ["merge", "-q", "--no-edit", "feature"])
+	var merge := git(repo, ["rev-parse", "HEAD"])
+	check("merge commit: files against the first parent", _our_name_status(r.get_commit_files(merge)) == { "feature.txt": "A" }, _our_name_status(r.get_commit_files(merge)))
+
+
+# History lists a commit before its parents, even when they were all made in the same second
+# (sorting by time alone left them in any order).
+func _history_order() -> void:
+	var repo := make_repo("order")
+	OS.set_environment("GIT_AUTHOR_DATE", "2026-01-01T12:00:00")
+	OS.set_environment("GIT_COMMITTER_DATE", "2026-01-01T12:00:00")
+	for i in 4:
+		write(repo.path_join("f%d.txt" % i), "x
+")
+		commit_all(repo, "commit %d" % i)
+	git(repo, ["checkout", "-q", "-b", "side", "HEAD~2"])
+	write(repo.path_join("side.txt"), "x
+")
+	commit_all(repo, "side")
+	git(repo, ["checkout", "-q", "main"])
+	git(repo, ["merge", "-q", "--no-edit", "side"])
+	OS.unset_environment("GIT_AUTHOR_DATE")
+	OS.unset_environment("GIT_COMMITTER_DATE")
+
+	var position := {}
+	var commits := open(repo).get_commits(50)
+	for i in commits.size():
+		position[commits[i].hash] = i
+	var ok := commits.size() == 6
+	for c: Dictionary in commits:
+		for parent in git(repo, ["rev-list", "--parents", "-n", "1", c.hash]).split(" ").slice(1):
+			ok = ok and position.get(parent, -1) > position[c.hash]
+	check("history: every commit before its parents, same-second commits too", ok, commits.map(func(c): return c.summary))
+
+
+# get_commits reuses its last result while no branch moved; anything that moves one must show.
+func _history_cache() -> void:
+	var shared := make_shared("cache")
+	var r := open(shared.mine)
+	check("history: first commit listed", r.get_commits(50).size() == 1)
+	write(shared.mine.path_join("x.txt"), "changed in a terminal
+")
+	commit_all(shared.mine, "From a terminal")
+	var commits := r.get_commits(50)
+	check("history: a commit made elsewhere shows", commits.size() == 2 and commits[0].summary == "From a terminal", commits.map(func(c): return c.summary))
+	check("history: not pushed yet", commits[0].unpushed)
+	git(shared.mine, ["push", "-q"])
+	check("history: pushed from a terminal, no longer marked", not r.get_commits(50)[0].unpushed)
+	git(shared.mine, ["commit", "-q", "--amend", "-m", "Amended in a terminal"])
+	check("history: an amend shows", r.get_commits(50)[0].summary == "Amended in a terminal")
+	var result := r.get_commits(50)
+	result[0].summary = "changed by the caller"
+	check("history: callers get their own copy", r.get_commits(50)[0].summary == "Amended in a terminal")

@@ -1,4 +1,5 @@
-// GitRepository: the diff of one file, for the diff view.
+// GitRepository: the diffs for the Diff panel (one file's uncommitted changes, or its change in a
+// commit) and the files a commit changed, for History.
 
 #include "git/git_repository.h"
 
@@ -71,7 +72,7 @@ Dictionary describe_file_diff(git_repository *p_repo, git_diff *p_diff, const St
 
 		// An LFS file's diff would be of its pointer text, which says nothing about the real file,
 		// and computing it runs the whole file through git-lfs.
-		if (is_lfs_path(p_repo, new_path)) {
+		if (repo_uses_lfs(p_repo) && is_lfs_path(p_repo, new_path)) {
 			result["kind"] = "lfs";
 			return result;
 		}
@@ -143,6 +144,40 @@ Dictionary describe_file_diff(git_repository *p_repo, git_diff *p_diff, const St
 	return result;
 }
 
+// What p_hash (a commit, full or short hash) changed: the diff from its first parent (or from
+// nothing, for the first commit) to it, with renames found. A merge is compared with its first
+// parent, like `git log --first-parent`: what merging brought into the branch.
+int commit_diff(git_repository *p_repo, const String &p_hash, git_diff **r_diff) {
+	ObjectPtr object;
+	int err = git_revparse_single(object.out(), p_repo, p_hash.utf8().get_data());
+	CommitPtr commit;
+	if (err >= 0) {
+		err = git_commit_lookup(commit.out(), p_repo, git_object_id(object));
+	}
+	TreePtr tree;
+	if (err >= 0) {
+		err = git_commit_tree(tree.out(), commit);
+	}
+	TreePtr parent_tree;
+	if (err >= 0 && git_commit_parentcount(commit) > 0) {
+		CommitPtr parent;
+		err = git_commit_parent(parent.out(), commit, 0);
+		if (err >= 0) {
+			err = git_commit_tree(parent_tree.out(), parent);
+		}
+	}
+	if (err < 0) {
+		return err;
+	}
+	git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+	opts.max_size = MAX_DIFF_SIZE;
+	err = git_diff_tree_to_tree(r_diff, p_repo, parent_tree, tree, &opts);
+	if (err >= 0) {
+		git_diff_find_similar(*r_diff, nullptr);
+	}
+	return err;
+}
+
 } // namespace
 
 // The uncommitted change to one file, for the diff view. p_staged: HEAD vs index (what the next
@@ -178,6 +213,50 @@ Dictionary GitRepository::get_diff(const String &p_path, bool p_staged) const {
 		err = git_diff_index_to_workdir(diff.out(), repo, nullptr, &opts);
 	}
 	if (err < 0) {
+		return Dictionary();
+	}
+	return describe_file_diff(repo, diff, p_path);
+}
+
+// The files commit p_hash changed (see commit_diff), in git's order:
+// [{ "path", "old_path", "status" (as in get_status), "added", "removed" }, ...]. "added" and
+// "removed" are -1 for binary, LFS and very large files, and for every file of a commit that
+// changed more than 300 (counting lines means diffing each one, and nobody reads that many).
+Array GitRepository::get_commit_files(const String &p_hash) const {
+	Array result;
+	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+	DiffPtr diff;
+	if (commit_diff(repo, p_hash, diff.out()) < 0) {
+		return result;
+	}
+	const bool uses_lfs = repo_uses_lfs(repo); // See get_line_stats.
+	const size_t count = git_diff_num_deltas(diff);
+	for (size_t i = 0; i < count; i++) {
+		const git_diff_delta *delta = git_diff_get_delta(diff, i);
+		const char *path = delta->new_file.path ? delta->new_file.path : delta->old_file.path;
+		Dictionary file;
+		file["path"] = String::utf8(path);
+		file["old_path"] = String::utf8(delta->old_file.path ? delta->old_file.path : path);
+		file["status"] = delta_status_name(delta->status);
+		file["added"] = -1;
+		file["removed"] = -1;
+		PatchPtr patch;
+		if (count <= 300 && !(uses_lfs && is_lfs_path(repo, path)) && git_patch_from_diff(patch.out(), diff, i) == 0 && patch && !(git_patch_get_delta(patch)->flags & GIT_DIFF_FLAG_BINARY)) {
+			size_t added = 0, removed = 0;
+			git_patch_line_stats(nullptr, &added, &removed, patch);
+			file["added"] = (int64_t)added;
+			file["removed"] = (int64_t)removed;
+		}
+		result.push_back(file);
+	}
+	return result;
+}
+
+// How commit p_hash changed one file, in the same form as get_diff.
+Dictionary GitRepository::get_commit_diff(const String &p_hash, const String &p_path) const {
+	ERR_FAIL_NULL_V_MSG(repo, Dictionary(), "Repository is not open.");
+	DiffPtr diff;
+	if (commit_diff(repo, p_hash, diff.out()) < 0) {
 		return Dictionary();
 	}
 	return describe_file_diff(repo, diff, p_path);
