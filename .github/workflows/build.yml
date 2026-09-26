@@ -83,7 +83,8 @@ jobs:
           if-no-files-found: error
 
   # Runs project/tests (the GitRepository suites) with the official Godot, headless, against each
-  # platform's freshly built library. Covers the backend only; the dock UI isn't tested here.
+  # platform's freshly built library, then the smoke test of the dock (tools/smoke) in a headless
+  # editor. The suites never create the dock; the smoke test catches it crashing the editor.
   test:
     name: Test ${{ matrix.name }}
     needs: build
@@ -107,6 +108,11 @@ jobs:
         with:
           name: bin-${{ matrix.platform }}-${{ matrix.arch }}
           path: project/addons/godot_git/bin
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
 
       - name: Download Godot
         shell: bash
@@ -139,6 +145,16 @@ jobs:
       - name: Run tests
         shell: bash
         run: '"$GODOT" --headless --path project -s res://tests/run_tests.gd -- --online'
+
+      # A playground project with the dock and the smoke-test plugin. The first run registers the
+      # extension; the second uses the dock and must end with "SMOKE: OK" (a crash never gets there).
+      - name: Smoke test the dock
+        shell: bash
+        run: |
+          python tools/make_playground.py "$RUNNER_TEMP/smoke" --smoke
+          "$GODOT" --headless -e --path "$RUNNER_TEMP/smoke" --quit-after 300 || true
+          "$GODOT" --headless -e --path "$RUNNER_TEMP/smoke" --quit-after 20000 2>&1 | tee smoke.log || true
+          grep -q "SMOKE: OK" smoke.log
 
   package:
     name: Package

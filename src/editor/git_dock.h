@@ -283,6 +283,7 @@ class GitDock : public EditorDock {
 	void _show_diff(const String &p_path, bool p_staged, bool p_focus);
 	void _show_commit_diff(const String &p_hash, const String &p_path, bool p_focus);
 	void _update_diff();
+	void _add_image_versions(Dictionary &r_diff, const String &p_old_version, const String &p_new_version);
 	void _select_diff_row();
 
 	// git_dock_status.cpp: the status strip.

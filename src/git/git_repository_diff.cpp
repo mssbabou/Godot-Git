@@ -1,9 +1,12 @@
 // GitRepository: the diffs for the Diff panel (one file's uncommitted changes, or its change in a
-// commit) and the files a commit changed, for History.
+// commit), the files a commit changed, for History, and a file's content in any version, for
+// previews of files that aren't text (images).
 
 #include "git/git_repository.h"
 
 #include <git2.h>
+
+#include <godot_cpp/classes/file_access.hpp>
 
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
@@ -178,6 +181,24 @@ int commit_diff(git_repository *p_repo, const String &p_hash, git_diff **r_diff)
 	return err;
 }
 
+// If p_bytes is a Git LFS pointer (what git stores for an LFS file), the object id it names.
+String lfs_pointer_oid(const PackedByteArray &p_bytes) {
+	// Pointers are a few lines of text, well under 1 KB, and always start like this.
+	if (p_bytes.size() > 1024) {
+		return String();
+	}
+	const String text = String::utf8((const char *)p_bytes.ptr(), p_bytes.size());
+	if (!text.begins_with("version https://git-lfs.github.com/spec/")) {
+		return String();
+	}
+	for (const String &line : text.split("\n")) {
+		if (line.begins_with("oid sha256:")) {
+		return line.trim_prefix("oid sha256:").strip_edges();
+		}
+}
+return String();
+}
+
 } // namespace
 
 // The uncommitted change to one file, for the diff view. p_staged: HEAD vs index (what the next
@@ -260,4 +281,64 @@ Dictionary GitRepository::get_commit_diff(const String &p_hash, const String &p_
 		return Dictionary();
 	}
 	return describe_file_diff(repo, diff, p_path);
+}
+
+// A file's content in one version: p_version is "workdir" (the file on disk), "index" (what's
+// staged) or a revision ("HEAD", a commit hash, "<hash>^1" for its first parent).
+// { "exists": bool, "bytes": PackedByteArray, "lfs": "" | "cached" | "missing" }.
+// Git stores an LFS file as a small pointer; its real content is read from git-lfs's local cache,
+// which holds every version that was checked out or pulled. "missing": not in the cache (a version
+// never fetched), so "bytes" is empty. The file on disk is already the real content.
+Dictionary GitRepository::get_file_bytes(const String &p_version, const String &p_path) const {
+	Dictionary result;
+	result["exists"] = false;
+	result["bytes"] = PackedByteArray();
+	result["lfs"] = String();
+	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+
+	PackedByteArray bytes;
+	if (p_version == "workdir") {
+		const String path = get_workdir().path_join(p_path);
+		if (!FileAccess::file_exists(path)) {
+			return result;
+		}
+		bytes = FileAccess::get_file_as_bytes(path);
+	} else {
+		git_oid blob_id;
+		if (p_version == "index") {
+			IndexPtr index;
+			const git_index_entry *entry = nullptr;
+			if (git_repository_index(index.out(), repo) < 0 || !(entry = git_index_get_bypath(index, p_path.utf8().get_data(), 0))) {
+				return result;
+			}
+			git_oid_cpy(&blob_id, &entry->id);
+		} else {
+			ObjectPtr object;
+			if (git_revparse_single(object.out(), repo, vformat("%s:%s", p_version, p_path).utf8().get_data()) < 0 || git_object_type(object) != GIT_OBJECT_BLOB) {
+				return result;
+			}
+			git_oid_cpy(&blob_id, git_object_id(object));
+		}
+		BlobPtr blob;
+		if (git_blob_lookup(blob.out(), repo, &blob_id) < 0) {
+			return result;
+		}
+		bytes.resize(git_blob_rawsize(blob));
+		memcpy(bytes.ptrw(), git_blob_rawcontent(blob), bytes.size());
+	}
+	result["exists"] = true;
+
+	const String oid = lfs_pointer_oid(bytes);
+	if (!oid.is_empty() && oid.length() > 4) {
+		const String object = String::utf8(git_repository_commondir(repo)).path_join("lfs/objects").path_join(oid.substr(0, 2)).path_join(oid.substr(2, 2)).path_join(oid);
+		if (FileAccess::file_exists(object)) {
+			result["lfs"] = "cached";
+			bytes = FileAccess::get_file_as_bytes(object);
+		} else {
+			result["lfs"] = "missing";
+			bytes = PackedByteArray();
+		}
+	}
+	result["bytes"] = bytes;
+	return result;
 }

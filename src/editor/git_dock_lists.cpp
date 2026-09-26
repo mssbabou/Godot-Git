@@ -846,7 +846,9 @@ void GitDock::_update_diff() {
 		const String key = diff_commit + ":" + diff_path;
 		if (key != diff_commit_shown) {
 			diff_commit_shown = key;
-			diff_dock->set_diff(repo->get_commit_diff(diff_commit, diff_path), vformat("Commit %s", diff_commit.left(7)), _file_icon(diff_path));
+			Dictionary diff = repo->get_commit_diff(diff_commit, diff_path);
+			_add_image_versions(diff, diff_commit + "^1", diff_commit);
+			diff_dock->set_diff(diff, vformat("Commit %s", diff_commit.left(7)), _file_icon(diff_path));
 		}
 		_select_diff_row();
 		return;
@@ -859,8 +861,21 @@ void GitDock::_update_diff() {
 			diff = other;
 		}
 	}
+	if (diff.get("kind", String()) != "unchanged") {
+		_add_image_versions(diff, diff_staged ? "HEAD" : "index", diff_staged ? "index" : "workdir");
+	}
 	diff_dock->set_diff(diff, diff_staged ? "Staged" : "Unstaged", _file_icon(diff_path));
 	_select_diff_row();
+}
+
+// An image's two versions, for the Diff panel's before | after (the old one under its old name,
+// for a rename). Versions as in GitRepository::get_file_bytes.
+void GitDock::_add_image_versions(Dictionary &r_diff, const String &p_old_version, const String &p_new_version) {
+	if (!GitDiffDock::is_image_path(diff_path)) {
+		return;
+	}
+	r_diff["image_old"] = repo->get_file_bytes(p_old_version, r_diff.get("old_path", diff_path));
+	r_diff["image_new"] = repo->get_file_bytes(p_new_version, diff_path);
 }
 
 // Marks the file the Diff panel shows in its list (the lists are rebuilt on every refresh).

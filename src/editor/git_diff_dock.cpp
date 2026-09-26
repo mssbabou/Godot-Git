@@ -10,6 +10,8 @@
 #include <godot_cpp/classes/gd_script_syntax_highlighter.hpp>
 #include <godot_cpp/classes/h_box_container.hpp>
 #include <godot_cpp/classes/h_split_container.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/margin_container.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/style_box_empty.hpp>
@@ -81,7 +83,63 @@ CommentStyle comment_style(const String &p_extension) {
 	return {};
 }
 
+// The image formats Godot can read from bytes, by extension.
+const char *IMAGE_EXTENSIONS[] = { "png", "jpg", "jpeg", "webp", "bmp", "tga", "svg", "exr", "dds" };
+
+// r_size is the image's own size; an SVG is rendered larger than that, so it stays sharp when
+// it's shown bigger (it's a vector image).
+Ref<Image> decode_image(const PackedByteArray &p_bytes, const String &p_extension, Size2i &r_size) {
+	Ref<Image> image;
+	image.instantiate();
+	Error err = ERR_FILE_UNRECOGNIZED;
+	if (p_extension == "png") {
+		err = image->load_png_from_buffer(p_bytes);
+	} else if (p_extension == "jpg" || p_extension == "jpeg") {
+		err = image->load_jpg_from_buffer(p_bytes);
+	} else if (p_extension == "webp") {
+		err = image->load_webp_from_buffer(p_bytes);
+	} else if (p_extension == "bmp") {
+		err = image->load_bmp_from_buffer(p_bytes);
+	} else if (p_extension == "tga") {
+		err = image->load_tga_from_buffer(p_bytes);
+	} else if (p_extension == "svg") {
+		err = image->load_svg_from_buffer(p_bytes);
+		r_size = err == OK ? image->get_size() : Size2i();
+		const int largest = MAX(r_size.x, r_size.y);
+		if (err == OK && largest > 0 && largest < 1024) {
+			err = image->load_svg_from_buffer(p_bytes, 1024.0f / largest);
+		}
+		return err == OK && !image->is_empty() ? image : Ref<Image>();
+	} else if (p_extension == "exr") {
+		err = image->load_exr_from_buffer(p_bytes);
+	} else if (p_extension == "dds") {
+		err = image->load_dds_from_buffer(p_bytes);
+	}
+	r_size = err == OK ? image->get_size() : Size2i();
+	return err == OK && !image->is_empty() ? image : Ref<Image>();
+}
+
+String file_size_text(int64_t p_bytes) {
+	if (p_bytes < 1024) {
+		return vformat("%d bytes", p_bytes);
+	}
+	if (p_bytes < 1024 * 1024) {
+		return vformat("%d KB", (p_bytes + 512) / 1024);
+	}
+	return vformat("%.1f MB", p_bytes / (1024.0 * 1024.0));
+}
+
 } // namespace
+
+bool GitDiffDock::is_image_path(const String &p_path) {
+	const String extension = p_path.get_extension().to_lower();
+	for (const char *image_extension : IMAGE_EXTENSIONS) {
+		if (extension == image_extension) {
+			return true;
+		}
+	}
+	return false;
+}
 
 void GitDiffDock::Rows::add(const String &p_text, RowKind p_kind, int p_old, int p_new) {
 	text.push_back(p_text);
@@ -170,6 +228,13 @@ GitDiffDock::GitDiffDock() {
 		panes[side].edit->get_v_scroll_bar()->connect("value_changed", callable_mp(this, &GitDiffDock::_on_scrolled).bind(side));
 	}
 
+	HBoxContainer *images = memnew(HBoxContainer);
+	images->set_v_size_flags(SIZE_EXPAND_FILL);
+	body->add_child(images);
+	image_view = images;
+	_make_image_side(0, images);
+	_make_image_side(1, images);
+
 	CenterContainer *center = memnew(CenterContainer);
 	center->set_v_size_flags(SIZE_EXPAND_FILL);
 	body->add_child(center);
@@ -217,11 +282,35 @@ void GitDiffDock::_make_pane(PaneIndex p_index, Control *p_parent, int p_number_
 	edit->set_syntax_highlighter(pane.highlighter);
 }
 
+void GitDiffDock::_make_image_side(int p_index, Control *p_parent) {
+	ImageSide &side = image_sides[p_index];
+	VBoxContainer *column = memnew(VBoxContainer);
+	column->set_h_size_flags(SIZE_EXPAND_FILL);
+	p_parent->add_child(column);
+
+	side.caption = memnew(Label);
+	side.caption->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	column->add_child(side.caption);
+
+	// The frame lays its children over each other: the picture, or the note.
+	side.frame = memnew(PanelContainer);
+	side.frame->set_v_size_flags(SIZE_EXPAND_FILL);
+	column->add_child(side.frame);
+	side.picture = memnew(Control);
+	side.picture->connect("draw", callable_mp(this, &GitDiffDock::_draw_image_side).bind(p_index));
+	side.frame->add_child(side.picture);
+	side.note = memnew(Label);
+	side.note->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
+	side.note->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
+	side.note->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	side.frame->add_child(side.note);
+}
+
 void GitDiffDock::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_READY: {
 			const int view = editor_settings()->get_project_metadata("godot_git", "diff_view", (int)VIEW_UNIFIED);
-			view_select->select(view == VIEW_SPLIT ? VIEW_SPLIT : VIEW_UNIFIED);
+			text_view = view == VIEW_SPLIT ? VIEW_SPLIT : VIEW_UNIFIED;
 			// Again: at THEME_CHANGED the CodeEdit's code font size isn't final yet (gotcha 20),
 			// and the gutter numbers came out smaller than the code.
 			_update_theme();
@@ -249,6 +338,7 @@ void GitDiffDock::_update_theme() {
 	CodeEdit *any_edit = panes[PANE_UNIFIED].edit;
 	theme.line_number = any_edit->get_theme_color("line_number_color");
 	theme.font = any_edit->get_theme_font("font");
+	theme.checkerboard = get_theme_icon("GuiMiniCheckerboard", "EditorIcons");
 	theme.font_size = any_edit->get_theme_font_size("font_size");
 	theme.ascent = theme.font->get_ascent(theme.font_size);
 	theme.height = theme.font->get_height(theme.font_size);
@@ -256,6 +346,11 @@ void GitDiffDock::_update_theme() {
 	theme.scale = EditorInterface::get_singleton()->get_editor_scale();
 
 	open_button->set_button_icon(get_theme_icon("Load", "EditorIcons"));
+	for (ImageSide &side : image_sides) {
+		side.frame->add_theme_stylebox_override("panel", get_theme_stylebox("read_only", "CodeEdit"));
+		side.caption->add_theme_color_override("font_color", theme.dim);
+		side.note->add_theme_color_override("font_color", theme.dim);
+	}
 	for (Label *label : { folder_label, source_label, message_label }) {
 		label->add_theme_color_override("font_color", theme.dim);
 	}
@@ -294,21 +389,33 @@ void GitDiffDock::set_diff(const Dictionary &p_diff, const String &p_source, con
 void GitDiffDock::_render() {
 	_update_header();
 
-	const String text = _empty_text();
+	const View view = _current_view();
+	const String text = view == VIEW_IMAGE ? String() : _empty_text();
 	message_label->set_text(text);
 	message_view->set_visible(!text.is_empty());
-	const bool split = view_select->get_selected_id() == VIEW_SPLIT;
-	unified_view->set_visible(text.is_empty() && !split);
+	const bool split = view == VIEW_SPLIT;
+	unified_view->set_visible(text.is_empty() && view == VIEW_UNIFIED);
 	split_view->set_visible(text.is_empty() && split);
+	image_view->set_visible(view == VIEW_IMAGE);
+	_show_images();
 
 	// Only the visible view holds lines; the others are emptied.
 	Rows unified, old_side, new_side;
-	if (text.is_empty()) {
+	if (text.is_empty() && view != VIEW_IMAGE) {
 		_build_rows(unified, old_side, new_side);
 	}
 	_fill_pane(panes[PANE_UNIFIED], split ? Rows() : unified);
 	_fill_pane(panes[PANE_OLD], split ? old_side : Rows());
 	_fill_pane(panes[PANE_NEW], split ? new_side : Rows());
+}
+
+// Images open as images; an SVG (also text) can be switched to its text diff.
+GitDiffDock::View GitDiffDock::_current_view() const {
+	const bool has_lines = diff.get("kind", String()) == "text" && !Array(diff.get("hunks", Array())).is_empty();
+	if (diff.has("image_new") && (!has_lines || !images_as_text)) {
+		return VIEW_IMAGE;
+	}
+	return text_view;
 }
 
 void GitDiffDock::_update_header() {
@@ -331,7 +438,18 @@ void GitDiffDock::_update_header() {
 	added_label->set_tooltip_text(plural(added, "line added", "lines added"));
 	removed_label->set_tooltip_text(plural(removed, "line removed", "lines removed"));
 
-	view_select->set_visible(kind == "text" && !Array(diff.get("hunks", Array())).is_empty());
+	// The views this file has: images as images, text as unified or side by side.
+	const bool has_lines = kind == "text" && !Array(diff.get("hunks", Array())).is_empty();
+	view_select->clear();
+	if (diff.has("image_new") && has_lines) {
+		view_select->add_item("Image", VIEW_IMAGE);
+	}
+	if (has_lines) {
+		view_select->add_item("Unified", VIEW_UNIFIED);
+		view_select->add_item("Side by Side", VIEW_SPLIT);
+	}
+	view_select->select(view_select->get_item_index(_current_view()));
+	view_select->set_visible(view_select->get_item_count() > 1);
 	const bool deleted = diff.get("status", String()) == "deleted";
 	open_button->set_disabled(deleted);
 	open_button->set_tooltip_text(deleted ? vformat("%s is deleted, so there's nothing to open.", name) : String("Open the file"));
@@ -552,8 +670,74 @@ void GitDiffDock::_on_scrolled(double p_value, int p_from) {
 }
 
 void GitDiffDock::_on_view_selected(int p_index) {
-	editor_settings()->set_project_metadata("godot_git", "diff_view", view_select->get_item_id(p_index));
+	const View view = (View)view_select->get_item_id(p_index);
+	if (diff.has("image_new")) {
+		images_as_text = view != VIEW_IMAGE; // Only a choice made on an image counts for images.
+	}
+	if (view != VIEW_IMAGE) {
+		text_view = view;
+		editor_settings()->set_project_metadata("godot_git", "diff_view", (int)view);
+	}
 	_render();
+}
+
+// The picture as large as fits, centered, on a checkerboard of exactly its size (so transparent
+// parts show, and where the image ends is clear).
+void GitDiffDock::_draw_image_side(int p_index) {
+	const ImageSide &side = image_sides[p_index];
+	if (side.texture.is_null()) {
+		return;
+	}
+	const Size2 area = side.picture->get_size();
+	const Size2 size = side.texture->get_size();
+	const float scale = MIN(area.x / size.x, area.y / size.y);
+	const Size2 shown = (size * scale).floor();
+	const Rect2 rect(((area - shown) / 2).floor(), shown);
+	side.picture->draw_texture_rect(theme.checkerboard, rect, true);
+	side.picture->draw_texture_rect(side.texture, rect, false);
+}
+
+// Before | after for an image: each side's picture with its size, or why there's none.
+void GitDiffDock::_show_images() {
+	const String extension = String(diff.get("path", String())).get_extension().to_lower();
+	Ref<Image> images[2];
+	Size2i sizes[2];
+	for (int i = 0; i < 2; i++) {
+		ImageSide &side = image_sides[i];
+		const Dictionary version = diff.get(i == 0 ? "image_old" : "image_new", Dictionary());
+		String caption = i == 0 ? "Before" : "After";
+		String note;
+		if (_current_view() != VIEW_IMAGE) {
+			// Not shown; drop the textures.
+		} else if (!bool(version.get("exists", false))) {
+			note = i == 0 ? "Not in the old version: this is a new file." : "Not in the new version: the file is deleted.";
+		} else if (String(version.get("lfs", String())) == "missing") {
+			note = "Stored with Git LFS, and this version hasn't been downloaded.";
+		} else {
+			const PackedByteArray bytes = version["bytes"];
+			images[i] = decode_image(bytes, extension, sizes[i]);
+			if (images[i].is_valid()) {
+				caption += vformat(String::utf8(" · %d×%d · %s"), sizes[i].x, sizes[i].y, file_size_text(bytes.size()));
+			} else {
+				note = "Couldn't read this image.";
+			}
+		}
+		side.caption->set_text(caption);
+		side.note->set_text(note);
+		side.note->set_visible(!note.is_empty());
+		side.texture = images[i].is_valid() ? Ref<Texture2D>(ImageTexture::create_from_image(images[i])) : Ref<Texture2D>();
+		// Small images are mostly pixel art: scaled up without blurring. SVGs are rendered large.
+		const bool small = images[i].is_valid() && extension != "svg" && MAX(sizes[i].x, sizes[i].y) <= 256;
+		side.picture->set_texture_filter(small ? TEXTURE_FILTER_NEAREST : TEXTURE_FILTER_LINEAR);
+		side.picture->queue_redraw();
+	}
+	// Re-saved or re-compressed without a visible change: say so, or it looks like a missed edit.
+	if (images[0].is_valid() && images[1].is_valid() && images[0]->get_size() == images[1]->get_size() && images[0]->get_format() == images[1]->get_format() && images[0]->get_data() == images[1]->get_data()) {
+		image_sides[1].caption->set_text(image_sides[1].caption->get_text() + String::utf8(" · same pixels"));
+		image_sides[1].caption->set_tooltip_text("Pixel for pixel the same image; only the file changed (saved again, or compressed differently).");
+	} else {
+		image_sides[1].caption->set_tooltip_text(String());
+	}
 }
 
 void GitDiffDock::_on_open_pressed() {

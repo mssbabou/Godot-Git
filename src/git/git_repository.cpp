@@ -130,6 +130,7 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_diff", "path", "staged"), &GitRepository::get_diff);
 	ClassDB::bind_method(D_METHOD("get_commit_files", "hash"), &GitRepository::get_commit_files);
 	ClassDB::bind_method(D_METHOD("get_commit_diff", "hash", "path"), &GitRepository::get_commit_diff);
+	ClassDB::bind_method(D_METHOD("get_file_bytes", "version", "path"), &GitRepository::get_file_bytes);
 	ClassDB::bind_method(D_METHOD("get_commits", "max_count"), &GitRepository::get_commits, DEFVAL(50));
 	ClassDB::bind_method(D_METHOD("uses_lfs"), &GitRepository::uses_lfs);
 	ClassDB::bind_method(D_METHOD("has_file_at", "revision", "path"), &GitRepository::has_file_at);

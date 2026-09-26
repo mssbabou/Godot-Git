@@ -24,6 +24,7 @@ ZIP_PREFIX = "addons/godot_git"
 # Extra files placed in the zip: source path -> path inside the addon folder.
 EXTRA_FILES = {
     "LICENSE": "LICENSE",
+    "README.md": "README.md",  # The Asset Store recommends a copy in the plugin folder.
     "thirdparty/libgit2/COPYING": "thirdparty/libgit2-COPYING.txt",
     "thirdparty/godot-cpp/LICENSE.md": "thirdparty/godot-cpp-LICENSE.md",
 }

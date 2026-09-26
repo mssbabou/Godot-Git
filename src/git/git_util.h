@@ -54,6 +54,7 @@ public:
 };
 
 using AnnotatedCommitPtr = Owned<git_annotated_commit, git_annotated_commit_free>;
+using BlobPtr = Owned<git_blob, git_blob_free>;
 using BranchIteratorPtr = Owned<git_branch_iterator, git_branch_iterator_free>;
 using CommitPtr = Owned<git_commit, git_commit_free>;
 using ConfigPtr = Owned<git_config, git_config_free>;

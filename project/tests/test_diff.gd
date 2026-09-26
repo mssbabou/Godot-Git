@@ -1,6 +1,6 @@
 extends "res://tests/test_case.gd"
-## get_diff, get_commit_files, get_commit_diff: what the Diff panel and History show, checked
-## against `git diff` and `git show`.
+## get_diff, get_commit_files, get_commit_diff, get_file_bytes: what the Diff panel and History
+## show, checked against `git diff` and `git show`.
 
 
 func run() -> void:
@@ -12,6 +12,7 @@ func run() -> void:
 	_commits()
 	_history_order()
 	_history_cache()
+	_file_bytes()
 
 
 ## `git diff` output as [origins, texts, hunk headers], for comparing with get_diff.
@@ -289,3 +290,51 @@ func _history_cache() -> void:
 	var result := r.get_commits(50)
 	result[0].summary = "changed by the caller"
 	check("history: callers get their own copy", r.get_commits(50)[0].summary == "Amended in a terminal")
+
+
+func _bytes(path: String, data: PackedByteArray) -> void:
+	DirAccess.make_dir_recursive_absolute(path.get_base_dir())
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	f.store_buffer(data)
+	f.close()
+
+
+## Whether p_bytes are exactly git's version p_spec ("HEAD:art/icon.png"): git hashes the bytes,
+## and the hash must be the blob id git has for that version. (Reading binary output through a
+## shell redirect doesn't survive OS.execute's quoting; see gotcha 25.)
+func _is_git_version(repo: String, spec: String, bytes: PackedByteArray) -> bool:
+	var file := dir.path_join("hash-me.bin")
+	_bytes(file, bytes)
+	return git(repo, ["hash-object", file]) == git(repo, ["rev-parse", spec])
+
+
+# The image previews read a file's bytes in each version. Binary content, each side different.
+func _file_bytes() -> void:
+	var repo := make_repo("bytes")
+	var v1 := PackedByteArray([0x89, 0x50, 0x4E, 0x47, 0, 1, 2, 3, 255, 13, 10, 0])
+	var v2 := v1.duplicate()
+	v2.append_array(PackedByteArray([4, 5, 6]))
+	var v3 := v2.duplicate()
+	v3[5] = 99
+	_bytes(repo.path_join("art/icon.png"), v1)
+	write(repo.path_join("gone.txt"), "bye
+")
+	commit_all(repo, "first")
+	_bytes(repo.path_join("art/icon.png"), v2)
+	git(repo, ["rm", "-q", "gone.txt"])
+	commit_all(repo, "second")
+	var second := git(repo, ["rev-parse", "HEAD"])
+	_bytes(repo.path_join("art/icon.png"), v3)
+	git(repo, ["add", "art/icon.png"])
+	var v4 := v3.duplicate()
+	v4.append(7)
+	_bytes(repo.path_join("art/icon.png"), v4)
+	var r := open(repo)
+
+	check("bytes: HEAD is exactly git's version", _is_git_version(repo, "HEAD:art/icon.png", r.get_file_bytes("HEAD", "art/icon.png").bytes) and r.get_file_bytes("HEAD", "art/icon.png").bytes == v2)
+	check("bytes: the staged version", r.get_file_bytes("index", "art/icon.png").bytes == v3)
+	check("bytes: the file on disk", r.get_file_bytes("workdir", "art/icon.png").bytes == v4)
+	check("bytes: a commit's first parent", r.get_file_bytes(second + "^1", "art/icon.png").bytes == v1)
+	check("bytes: a file deleted in that commit is gone from it", not r.get_file_bytes(second, "gone.txt").exists and r.get_file_bytes(second + "^1", "gone.txt").exists)
+	check("bytes: no first parent for the first commit", not r.get_file_bytes(git(repo, ["rev-list", "--max-parents=0", "HEAD"]) + "^1", "art/icon.png").exists)
+	check("bytes: not LFS", r.get_file_bytes("HEAD", "art/icon.png").lfs == "")

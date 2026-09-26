@@ -56,6 +56,7 @@ public:
 	Dictionary get_diff(const String &p_path, bool p_staged) const;
 	Array get_commit_files(const String &p_hash) const;
 	Dictionary get_commit_diff(const String &p_hash, const String &p_path) const;
+	Dictionary get_file_bytes(const String &p_version, const String &p_path) const;
 	Array get_commits(int p_max_count) const;
 	bool uses_lfs() const;
 	bool has_file_at(const String &p_revision, const String &p_path) const;

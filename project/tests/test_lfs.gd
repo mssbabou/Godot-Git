@@ -14,6 +14,7 @@ func run() -> void:
 	await _commit_and_push()
 	await _switch_branch()
 	await _changes()
+	_file_bytes()
 
 
 ## Like make_shared(), with *.png stored in LFS and one image (icon.png) in the first commit.
@@ -117,3 +118,22 @@ func _changes() -> void:
 	var status := r.get_status()
 	check("edited image shows as changed", status.size() == 1 and status[0].path == "icon.png", status)
 	check("image counts as binary", r.get_line_stats(false).get("icon.png") == Vector2i(-1, -1), r.get_line_stats(false))
+
+
+# The Diff panel's image previews read old versions with get_file_bytes: an LFS file must come back
+# as the real image (from git-lfs's local cache), never the pointer git stores for it.
+func _file_bytes() -> void:
+	var shared := _make_lfs_shared("bytes")
+	var first := FileAccess.get_file_as_bytes(shared.mine.path_join("icon.png"))
+	var changed := _write_image(shared.mine.path_join("icon.png"), 2500)
+	var r := open(shared.mine)
+	var head := r.get_file_bytes("HEAD", "icon.png")
+	check("LFS: HEAD's version is the real image, from the cache", head.lfs == "cached" and head.bytes == first, [head.lfs, head.bytes.size(), first.size()])
+	var disk := r.get_file_bytes("workdir", "icon.png")
+	check("LFS: the file on disk is read as is", disk.lfs == "" and disk.bytes == changed)
+	# A version that was never downloaded: remove it from the cache.
+	var oid := git(shared.mine, ["lfs", "ls-files", "--long"]).split(" ")[0]
+	var object: String = shared.mine.path_join(".git/lfs/objects").path_join(oid.substr(0, 2)).path_join(oid.substr(2, 2)).path_join(oid)
+	check("LFS: found the cached object to remove", DirAccess.remove_absolute(object) == OK, object)
+	var missing := r.get_file_bytes("HEAD", "icon.png")
+	check("LFS: a version not in the cache says so, with no bytes", missing.exists and missing.lfs == "missing" and missing.bytes.is_empty(), missing)
