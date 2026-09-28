@@ -21,6 +21,9 @@ void GitDock::_start_network(int p_op) {
 	if (p_op == NETWORK_PULL && (int)sync_status.get("ahead", 0) > 0 && _ask_identity(NETWORK_PULL)) {
 		return;
 	}
+	if (p_op == NETWORK_PULL && _ask_to_save("Pull", callable_mp(this, &GitDock::_start_network).bind(p_op))) {
+		return;
+	}
 	if (network_op == NETWORK_NONE) {
 		_run_network((NetworkOp)p_op, false);
 		return;
@@ -52,6 +55,9 @@ void GitDock::_run_network(NetworkOp p_op, bool p_quiet) {
 	network_ahead = sync_status.get("ahead", 0);
 	network_publish = p_op == NETWORK_PUSH && String(sync_status.get("upstream", String())).is_empty();
 	_update_actions();
+	if (p_op == NETWORK_PULL || p_op == NETWORK_SWITCH) {
+		_remember_open_scenes(); // To reload the ones it rewrites; see _reload_changed_scenes.
+	}
 
 	if (!p_quiet) {
 		_set_status(STATUS_BUSY, _network_description(p_op));
@@ -189,6 +195,9 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		return;
 	}
 
+	if (p_op == NETWORK_COMMIT && p_err != OK) {
+		push_after_commit = false;
+	}
 	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit" };
 	if (p_err == ERR_SKIP && p_op == NETWORK_COMMIT) {
 		// A post-commit hook may have been running: don't claim nothing happened. History shows it.
@@ -229,6 +238,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			} else {
 				_set_status(STATUS_SUCCESS, vformat("Pulled %s from %s", plural(commits, "commit", "commits"), p_upstream));
 			}
+			_reload_changed_scenes(); // After the status: a scene it couldn't reload warns there.
 		} break;
 		case NETWORK_PUSH: {
 			if (network_publish) {
@@ -239,6 +249,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		} break;
 		case NETWORK_SWITCH: {
 			_set_status(STATUS_SUCCESS, vformat("Switched to %s", repo->get_current_branch()));
+			_reload_changed_scenes();
 		} break;
 		case NETWORK_COMMIT: {
 			amend_check->set_pressed_no_signal(false);
@@ -246,6 +257,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			commit_message->clear();
 			_update_actions();
 			_report_commit(network_amend, network_commit_files, network_amended_id);
+			_after_commit();
 		} break;
 	}
 }

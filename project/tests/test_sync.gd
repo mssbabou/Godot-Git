@@ -7,6 +7,7 @@ func run() -> void:
 	_merge_and_push()
 	_conflict_refused()
 	_publish_and_remote_branches()
+	_prune_and_pull_blockers()
 
 
 func _fetch_and_fast_forward() -> void:
@@ -94,3 +95,33 @@ func _publish_and_remote_branches() -> void:
 	check("check out a remote branch", r.checkout_branch("origin/experiment") == OK, GitRepository.get_last_error())
 	check("local branch tracks it", r.get_current_branch() == "experiment" and r.get_sync_status().upstream == "origin/experiment", r.get_sync_status())
 	check("its files are there", exists(s.mine.path_join("exp.txt")))
+
+
+# Fetch prunes branches deleted on the remote; get_pull_blockers names the uncommitted files the
+# fetched commits change too (the ones pull refuses for), before Pull is pressed.
+func _prune_and_pull_blockers() -> void:
+	var s := make_shared("prune")
+	var r := open(s.mine)
+	check("remote URL", r.get_remote_url("origin") == s.remote or r.get_remote_url("origin") == git(s.mine, ["remote", "get-url", "origin"]), r.get_remote_url("origin"))
+	check("no URL for a remote that doesn't exist", r.get_remote_url("nope") == "")
+
+	git(s.theirs, ["push", "-q", "origin", "HEAD:refs/heads/old-feature"])
+	check("fetch", r.fetch() == OK, GitRepository.get_last_error())
+	check("new remote branch listed", Array(r.get_remote_branches()).has("origin/old-feature"), r.get_remote_branches())
+	git(s.theirs, ["push", "-q", "origin", "--delete", "old-feature"])
+	check("fetch again", r.fetch() == OK, GitRepository.get_last_error())
+	check("branch deleted on the remote is gone after a fetch", not Array(r.get_remote_branches()).has("origin/old-feature"), r.get_remote_branches())
+
+	check("no blockers when there's nothing to pull", r.get_pull_blockers().is_empty(), r.get_pull_blockers())
+	teammate_pushes(s, "x.txt", "x-theirs\n")
+	teammate_pushes(s, "new.txt", "new-theirs\n")
+	write(s.mine.path_join("x.txt"), "x-mine\n") # Changed by the new commits too.
+	write(s.mine.path_join("new.txt"), "mine\n") # Untracked, and the new commits add it.
+	write(s.mine.path_join("y.txt"), "y-mine\n") # Not touched by the new commits.
+	check("fetch with local changes", r.fetch() == OK, GitRepository.get_last_error())
+	check("blockers are the overlapping files", Array(r.get_pull_blockers()) == ["new.txt", "x.txt"], r.get_pull_blockers())
+	check("and pull refuses for exactly those", r.pull() != OK and GitRepository.get_last_error().contains("new.txt, x.txt"), GitRepository.get_last_error())
+	git(s.mine, ["checkout", "--", "x.txt"])
+	DirAccess.remove_absolute(s.mine.path_join("new.txt"))
+	check("no blockers once they're gone", r.get_pull_blockers().is_empty(), r.get_pull_blockers())
+	check("pull works then", r.pull() == OK, GitRepository.get_last_error())

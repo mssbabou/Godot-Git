@@ -135,6 +135,9 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("uses_lfs"), &GitRepository::uses_lfs);
 	ClassDB::bind_method(D_METHOD("has_file_at", "revision", "path"), &GitRepository::has_file_at);
 	ClassDB::bind_method(D_METHOD("get_git_needs"), &GitRepository::get_git_needs);
+	ClassDB::bind_method(D_METHOD("get_remote_url", "remote"), &GitRepository::get_remote_url);
+	ClassDB::bind_method(D_METHOD("get_large_staged_files", "min_size"), &GitRepository::get_large_staged_files);
+	ClassDB::bind_method(D_METHOD("get_pull_blockers"), &GitRepository::get_pull_blockers);
 
 	ClassDB::bind_method(D_METHOD("stage", "path"), &GitRepository::stage);
 	ClassDB::bind_method(D_METHOD("unstage", "path"), &GitRepository::unstage);
@@ -360,6 +363,48 @@ Dictionary GitRepository::get_git_needs() const {
 	}
 	result["ssh_remotes"] = ssh;
 	result["https_remotes"] = https;
+	return result;
+}
+
+// The URL p_remote fetches from, or "" if there's no such remote.
+String GitRepository::get_remote_url(const String &p_remote) const {
+	RemotePtr remote;
+	if (!repo || git_remote_lookup(remote.out(), repo, p_remote.utf8().get_data()) < 0 || !git_remote_url(remote)) {
+		return String();
+	}
+	return String::utf8(git_remote_url(remote));
+}
+
+// Staged files (new or changed) of at least p_min_size bytes, as [{path, size}], largest first.
+// Sizes are of what's staged: a Git LFS file is only its small pointer, so it never counts.
+Array GitRepository::get_large_staged_files(int64_t p_min_size) const {
+	Array result;
+	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+	ObjectPtr head_tree; // Null before the first commit: everything staged is new.
+	git_revparse_single(head_tree.out(), repo, "HEAD^{tree}");
+	DiffPtr diff;
+	OdbPtr odb;
+	if (git_diff_tree_to_index(diff.out(), repo, (git_tree *)head_tree.get(), nullptr, nullptr) < 0 || git_repository_odb(odb.out(), repo) < 0) {
+		return result;
+	}
+	for (size_t i = 0; i < git_diff_num_deltas(diff); i++) {
+		const git_diff_delta *delta = git_diff_get_delta(diff, i);
+		if (delta->status == GIT_DELTA_DELETED) {
+			continue;
+		}
+		size_t size = 0;
+		git_object_t type;
+		if (git_odb_read_header(&size, &type, odb, &delta->new_file.id) == 0 && (int64_t)size >= p_min_size) {
+			Dictionary file;
+			file["path"] = String::utf8(delta->new_file.path);
+			file["size"] = (int64_t)size;
+			int at = 0;
+			while (at < result.size() && (int64_t)Dictionary(result[at])["size"] >= (int64_t)size) {
+				at++;
+			}
+			result.insert(at, file);
+		}
+	}
 	return result;
 }
 

@@ -61,6 +61,9 @@ public:
 	bool uses_lfs() const;
 	bool has_file_at(const String &p_revision, const String &p_path) const;
 	Dictionary get_git_needs() const;
+	String get_remote_url(const String &p_remote) const;
+	Array get_large_staged_files(int64_t p_min_size) const;
+	PackedStringArray get_pull_blockers() const;
 
 	Error stage(const String &p_path);
 	Error unstage(const String &p_path);

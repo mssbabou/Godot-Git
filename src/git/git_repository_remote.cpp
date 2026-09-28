@@ -31,6 +31,9 @@ Error GitRepository::_fetch_remote(const String &p_remote) {
 	ctx.login_prompts_allowed = login_prompts_allowed;
 	ctx.progress = progress_callback;
 	git_fetch_options opts = GIT_FETCH_OPTIONS_INIT;
+	// Branches deleted on the remote disappear here too, instead of lingering in the branch picker
+	// (and in the "is this commit pushed?" checks) forever. Local branches are never touched.
+	opts.prune = GIT_FETCH_PRUNE;
 	set_remote_callbacks(opts.callbacks, ctx);
 
 	report_progress(&ctx, "Connecting...", String(), -1);
@@ -260,6 +263,22 @@ Error merge_with_autostash(git_repository *p_repo, git_reference *p_head, git_re
 }
 
 } // namespace
+
+// The uncommitted files a pull would refuse for, as of the last fetch (see pull()), so the panel
+// can say so before Pull is pressed. Empty when there's nothing to pull.
+PackedStringArray GitRepository::get_pull_blockers() const {
+	ReferencePtr head;
+	ReferencePtr upstream;
+	if (!repo || git_repository_head(head.out(), repo) < 0 || git_branch_upstream(upstream.out(), head) < 0) {
+		return PackedStringArray();
+	}
+	const git_oid *ours = git_reference_target(head);
+	const git_oid *theirs = git_reference_target(upstream);
+	if (!ours || !theirs || git_oid_equal(ours, theirs)) {
+		return PackedStringArray();
+	}
+	return paths_blocking_pull(repo, ours, theirs);
+}
 
 // Fetches the upstream, then fast-forwards, or creates a merge commit when both sides have new
 // commits. It refuses (changing nothing) when the new commits touch files with uncommitted
@@ -492,6 +511,7 @@ Error GitRepository::_fetch_with_git(const String &p_remote) {
 	PackedStringArray args = ssh_args(repo);
 	args.push_back("fetch");
 	args.push_back("--progress");
+	args.push_back("--prune");
 	args.push_back(p_remote);
 	String output;
 	int exit_code = 0;

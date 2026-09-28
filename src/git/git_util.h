@@ -61,6 +61,7 @@ using ConfigPtr = Owned<git_config, git_config_free>;
 using DiffPtr = Owned<git_diff, git_diff_free>;
 using IndexPtr = Owned<git_index, git_index_free>;
 using ObjectPtr = Owned<git_object, git_object_free>;
+using OdbPtr = Owned<git_odb, git_odb_free>;
 using PatchPtr = Owned<git_patch, git_patch_free>;
 using ReferencePtr = Owned<git_reference, git_reference_free>;
 using ReferenceIteratorPtr = Owned<git_reference_iterator, git_reference_iterator_free>;

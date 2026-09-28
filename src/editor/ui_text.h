@@ -29,4 +29,11 @@ String time_ago(int64_t p_unix_time);
 // "1 file", "3 files".
 String plural(int p_count, const String &p_singular, const String &p_plural);
 
+// A remote's URL (https, ssh:// or scp-style git@host:owner/repo) as the repository's web page,
+// e.g. "https://github.com/owner/repo". Only for GitHub, GitLab and Bitbucket; "" otherwise.
+String web_repository_url(const String &p_remote_url);
+
+// "GitHub", "GitLab" or "Bitbucket" for a web_repository_url().
+String web_host_name(const String &p_web_url);
+
 } // namespace godot_git

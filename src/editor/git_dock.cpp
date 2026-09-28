@@ -19,6 +19,7 @@
 #include "addon_files.h"
 #include "build_info.h"
 #include "editor/file_opener.h"
+#include "editor/filesystem_colors.h"
 #include "editor/ui_text.h"
 
 using namespace godot_git;
@@ -145,6 +146,28 @@ GitDock::GitDock() {
 	branch_vb->add_child(branch_name_edit);
 	branch_dialog->register_text_enter(branch_name_edit);
 
+	unsaved_confirm = memnew(ConfirmationDialog);
+	unsaved_confirm->set_title("Unsaved Changes");
+	unsaved_confirm->set_autowrap(true);
+	unsaved_confirm->get_label()->set_custom_minimum_size(Vector2(440 * scale, 0)); // See large_confirm.
+	unsaved_confirm->connect("confirmed", callable_mp(this, &GitDock::_on_unsaved_confirmed));
+	unsaved_confirm->connect("custom_action", callable_mp(this, &GitDock::_on_unsaved_custom_action));
+	unsaved_skip = unsaved_confirm->add_button("", false, "skip");
+	add_child(unsaved_confirm);
+
+	large_confirm = memnew(ConfirmationDialog);
+	large_confirm->set_title("Large Files");
+	large_confirm->set_ok_button_text("Commit Anyway");
+	large_confirm->set_autowrap(true);
+	// A wrapping label measures its height at its minimum width: without one, the dialog opens
+	// as tall as one word per line.
+	large_confirm->get_label()->set_custom_minimum_size(Vector2(440 * scale, 0));
+	large_confirm->connect("confirmed", callable_mp(this, &GitDock::_on_large_confirmed));
+	add_child(large_confirm);
+
+	filesystem_colors = memnew(GitFileSystemColors);
+	add_child(filesystem_colors);
+
 	// Timers. Saves of scenes, scripts and resources reach us through "filesystem_changed", but
 	// Project Settings writes project.godot directly; checking its modified time is one cheap stat.
 	project_file_timer = memnew(Timer);
@@ -261,6 +284,10 @@ void GitDock::_update_icons() {
 	for (FilePane *pane : { &staged_pane, &changes_pane }) {
 		pane->added->add_theme_color_override("font_color", get_theme_color("success_color", "Editor"));
 		pane->removed->add_theme_color_override("font_color", get_theme_color("error_color", "Editor"));
+		// The editor theme pads every Label on both sides, which set "+195" and "−14" two
+		// paddings apart. Without it they're the header's own spacing apart: about a space.
+		pane->added->add_theme_stylebox_override("normal", empty);
+		pane->removed->add_theme_stylebox_override("normal", empty);
 	}
 
 	if (is_node_ready()) {
@@ -294,8 +321,11 @@ void GitDock::_build_more_menu() {
 		more->add_check_item("Fetch Automatically", MORE_AUTO_FETCH);
 		more->set_item_checked(more->get_item_count() - 1, _is_auto_fetch_enabled());
 		more->set_item_tooltip(more->get_item_count() - 1, "Check the remote for new commits every few minutes, in the background. It never changes your files and never asks you to sign in.");
-		more->add_separator();
 	}
+	more->add_check_item("Color Changed Files in FileSystem", MORE_FILESYSTEM_COLORS);
+	more->set_item_checked(more->get_item_count() - 1, _is_filesystem_colors_enabled());
+	more->set_item_tooltip(more->get_item_count() - 1, "Show changed files in the FileSystem dock in the colors of their status letters, and the folders holding them in a softer color.");
+	more->add_separator();
 	more->add_icon_item(get_theme_icon("Reload", "EditorIcons"), "Refresh", MORE_REFRESH);
 	more->add_icon_item(get_theme_icon("Folder", "EditorIcons"), "Open Repository Folder", MORE_OPEN_FOLDER);
 
@@ -357,6 +387,7 @@ void GitDock::refresh() {
 		repo_ui->hide();
 		no_repo_ui->show();
 		set_title("Git");
+		filesystem_colors->set_colors(Dictionary(), Dictionary());
 		return;
 	}
 	no_repo_ui->hide();
@@ -374,6 +405,8 @@ void GitDock::refresh() {
 	_fill_branches();
 
 	const Array status = repo->get_status();
+	// After a fetch: the files a pull would refuse for, so their rows and Pull can say so up front.
+	pull_blockers = (int)sync_status.get("behind", 0) > 0 ? repo->get_pull_blockers() : PackedStringArray();
 	_fill_file_pane(staged_pane, status);
 	_fill_file_pane(changes_pane, status);
 	_start_line_stats();
@@ -381,6 +414,7 @@ void GitDock::refresh() {
 	staged_count = staged_pane.file_count;
 	set_title(status.is_empty() ? String("Git") : vformat("Git (%d)", status.size()));
 
+	_update_filesystem_colors(status);
 	_fill_history();
 	_update_actions();
 	_update_status();
@@ -573,7 +607,8 @@ void GitDock::_update_actions() {
 		} else if (!has_message) {
 			commit_button->set_tooltip_text("Write a commit message first.");
 		} else {
-			commit_button->set_tooltip_text(vformat("Commit %s to %s.", plural(staged_count, "staged file", "staged files"), branch));
+			commit_button->set_tooltip_text(vformat("Commit %s to %s.%s", plural(staged_count, "staged file", "staged files"), branch,
+					has_remotes ? String("\nCtrl+Shift+Enter in the message commits and pushes.") : String()));
 		}
 	}
 	if (git_missing && shown != NETWORK_COMMIT && repo->commit_runs_git(amending)) {
@@ -591,6 +626,11 @@ void GitDock::_update_actions() {
 	pull_button->set_text(shown == NETWORK_PULL ? String("Pulling...") : (behind > 0 ? vformat("Pull %d", behind) : String("Pull")));
 	if (!pull_needs_git.is_empty()) {
 		pull_button->set_tooltip_text(pull_needs_git);
+	} else if (!pull_blockers.is_empty() && shown != NETWORK_PULL) {
+		// Pull would refuse anyway (see GitRepository::pull): say why before it's pressed.
+		pull_button->set_disabled(true);
+		pull_button->set_tooltip_text(vformat("Pull is waiting: the new commits on %s change %s, which you have uncommitted changes to. Commit or discard your changes to %s first (marked in Changes).",
+				upstream, join_list(pull_blockers.slice(0, 3)) + (pull_blockers.size() > 3 ? vformat(" and %d more", pull_blockers.size() - 3) : String()), pull_blockers.size() == 1 ? "it" : "them"));
 	} else {
 		pull_button->set_tooltip_text(behind > 0
 						? vformat("Pull: get %s from %s.", plural(behind, "new commit", "new commits"), upstream)
@@ -653,6 +693,10 @@ void GitDock::_on_more_menu_id(int p_id) {
 		case MORE_OPEN_FOLDER: {
 			OS::get_singleton()->shell_show_in_file_manager(repo->get_workdir(), true);
 		} break;
+		case MORE_FILESYSTEM_COLORS: {
+			EditorInterface::get_singleton()->get_editor_settings()->set_project_metadata("godot_git", "filesystem_colors", !_is_filesystem_colors_enabled());
+			refresh();
+		} break;
 		case MORE_BUILD_INFO: {
 			const String url = String::utf8(build_url());
 			if (!url.is_empty()) {
@@ -705,6 +749,7 @@ void GitDock::_confirm_discard(const PackedStringArray &p_paths) {
 }
 
 void GitDock::_on_discard_confirmed() {
+	_remember_open_scenes();
 	for (const String &path : pending_discard) {
 		const Error err = repo->discard(path);
 		if (err != OK) {
@@ -715,6 +760,7 @@ void GitDock::_on_discard_confirmed() {
 	pending_discard.clear();
 	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 	refresh();
+	_reload_changed_scenes();
 }
 
 void GitDock::_on_branch_selected(int p_index) {
@@ -766,6 +812,10 @@ void GitDock::_switch_branch(const String &p_branch) {
 	if (target.is_empty() || !repo.is_valid()) {
 		return;
 	}
+	if (_ask_to_save("Switch", callable_mp(this, &GitDock::_switch_branch).bind(target))) {
+		_fill_branches(); // Shows the current branch until it's answered.
+		return;
+	}
 	if (repo->uses_lfs()) {
 		// May download LFS files: in the background, with progress and Cancel.
 		network_branch = target;
@@ -773,6 +823,7 @@ void GitDock::_switch_branch(const String &p_branch) {
 		_start_network(NETWORK_SWITCH);
 		return;
 	}
+	_remember_open_scenes();
 	const Error err = repo->checkout_branch(target);
 	_report(err, "Switch branch");
 	if (err == OK) {
@@ -781,6 +832,7 @@ void GitDock::_switch_branch(const String &p_branch) {
 	refresh();
 	if (err == OK) {
 		_set_status(STATUS_SUCCESS, vformat("Switched to %s", repo->get_current_branch()));
+		_reload_changed_scenes(); // After the status: a scene it couldn't reload warns there.
 	}
 }
 
@@ -795,13 +847,57 @@ void GitDock::_on_branch_dialog_confirmed() {
 
 void GitDock::_on_commit_message_input(const Ref<InputEvent> &p_event) {
 	Ref<InputEventKey> key = p_event;
-	if (key.is_valid() && key->is_pressed() && !key->is_echo() && key->is_command_or_control_pressed() &&
-			(key->get_keycode() == KEY_ENTER || key->get_keycode() == KEY_KP_ENTER)) {
+	if (key.is_null() || !key->is_pressed()) {
+		return;
+	}
+	if (!key->is_echo() && key->is_command_or_control_pressed() && (key->get_keycode() == KEY_ENTER || key->get_keycode() == KEY_KP_ENTER)) {
 		commit_message->accept_event();
 		if (!commit_button->is_disabled()) {
+			// With Shift: push right after, if there's a remote to push to.
+			push_after_commit = key->is_shift_pressed() && sync_status.get("has_remotes", false);
 			_commit();
 		}
+		return;
 	}
+	// Up in an empty box (or on a message it put there) brings back your earlier messages.
+	const bool plain = !key->is_command_or_control_pressed() && !key->is_shift_pressed() && !key->is_alt_pressed();
+	const bool recalled = message_history_index >= 0 && message_history_index < message_history.size() && commit_message->get_text() == message_history[message_history_index];
+	if (plain && key->get_keycode() == KEY_UP && (commit_message->get_text().is_empty() || recalled) && commit_message->get_caret_line() == 0) {
+		commit_message->accept_event();
+		if (!recalled) {
+			message_history_index = -1; // An empty box starts again from the newest.
+		}
+		_recall_message(1);
+	} else if (plain && key->get_keycode() == KEY_DOWN && recalled && commit_message->get_caret_line() == commit_message->get_line_count() - 1) {
+		commit_message->accept_event();
+		_recall_message(-1);
+	}
+}
+
+// p_step 1 goes one message further back, -1 one newer (and past the newest, back to empty).
+void GitDock::_recall_message(int p_step) {
+	if (message_history_index < 0 && p_step > 0) {
+		// Your own recent messages, newest first, without repeats. Not merges: git makes up their
+		// messages ("Merge branch 'main'"), which aren't worth bringing back.
+		message_history.clear();
+		const String me = repo->get_identity().get("name", String());
+		const Array commits = repo->get_commits(100);
+		for (int i = 0; i < commits.size() && message_history.size() < 20; i++) {
+			const Dictionary commit = commits[i];
+			const String message = commit["message"];
+			if (String(commit["author"]) == me && !bool(commit["merge"]) && !message.is_empty() && !message_history.has(message)) {
+				message_history.push_back(message);
+			}
+		}
+	}
+	const int index = message_history_index + p_step;
+	if (index >= message_history.size()) {
+		return;
+	}
+	message_history_index = MAX(index, -1);
+	commit_message->set_text(message_history_index >= 0 ? message_history[message_history_index] : String());
+	commit_message->set_caret_line(0);
+	commit_message->set_caret_column(0);
 }
 
 // Ticking Amend fills in the last commit's message to edit; unticking puts back what was
@@ -828,6 +924,9 @@ void GitDock::_commit() {
 	if (_ask_identity(NETWORK_COMMIT)) {
 		return; // Commits once the name and email are saved.
 	}
+	if (_ask_about_large_files()) {
+		return; // Commits if confirmed.
+	}
 	const int files = staged_count;
 	const String old_id = last_commit_id;
 	if (repo->commit_runs_git(amending)) {
@@ -849,7 +948,72 @@ void GitDock::_commit() {
 	refresh();
 	if (err == OK) {
 		_report_commit(amending, files, old_id);
+		_after_commit();
+	} else {
+		push_after_commit = false;
 	}
+}
+
+// Staged files over 50 MB (where GitHub starts warning; it refuses 100 MB) get a question first:
+// once committed, a file stays in the history for good and every clone downloads it. Returns true
+// if it asked; the commit then happens on "Commit Anyway".
+bool GitDock::_ask_about_large_files() {
+	if (large_checked) {
+		large_checked = false;
+		return false;
+	}
+	const Array large = repo->get_large_staged_files(50 * 1024 * 1024);
+	if (large.is_empty()) {
+		return false;
+	}
+	PackedStringArray lines;
+	for (int i = 0; i < MIN(large.size(), 8); i++) {
+		const Dictionary file = large[i];
+		lines.push_back(vformat(String::utf8("• %s (%s)"), file["path"], String::humanize_size(file["size"])));
+	}
+	if (large.size() > 8) {
+		lines.push_back(vformat("...and %d more", large.size() - 8));
+	}
+	large_confirm->set_text(vformat("%s:\n%s\n\nOnce committed, a file stays in the history for good, and everyone who clones the repository downloads it. GitHub refuses files over 100 MB. Git LFS keeps big files like these out of the history.",
+			large.size() == 1 ? String("This staged file is over 50 MB") : String("These staged files are over 50 MB"), String("\n").join(lines)));
+	large_confirm->popup_centered();
+	push_after_commit = false; // Pushing big files is exactly what to think twice about.
+	return true;
+}
+
+void GitDock::_on_large_confirmed() {
+	large_checked = true;
+	_commit();
+}
+
+// After a successful commit: Ctrl+Shift+Enter pushes it right away.
+void GitDock::_after_commit() {
+	message_history_index = -1;
+	if (push_after_commit) {
+		push_after_commit = false;
+		_start_network(NETWORK_PUSH);
+	}
+}
+
+// The commit's page on GitHub, GitLab or Bitbucket, from the upstream's remote (else origin, else
+// the only remote). Empty for other hosts: no guessing at URLs that may not exist.
+String GitDock::_web_commit_url(const String &p_hash) const {
+	String remote = String(sync_status.get("upstream", String())).get_slice("/", 0);
+	const PackedStringArray remotes = repo->get_remotes();
+	if (remote.is_empty() || !remotes.has(remote)) {
+		remote = remotes.has("origin") || remotes.is_empty() ? String("origin") : remotes[0];
+	}
+	const String site = web_repository_url(repo->get_remote_url(remote));
+	if (site.is_empty()) {
+		return String();
+	}
+	if (site.contains("://gitlab.com/")) {
+		return vformat("%s/-/commit/%s", site, p_hash);
+	}
+	if (site.contains("://bitbucket.org/")) {
+		return vformat("%s/commits/%s", site, p_hash);
+	}
+	return vformat("%s/commit/%s", site, p_hash);
 }
 
 // After refresh(), so last_commit_id is the new commit.

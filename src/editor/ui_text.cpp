@@ -79,4 +79,38 @@ String plural(int p_count, const String &p_singular, const String &p_plural) {
 	return vformat("%d %s", p_count, p_count == 1 ? p_singular : p_plural);
 }
 
+String web_repository_url(const String &p_remote_url) {
+	String rest = p_remote_url.strip_edges();
+	// "git@github.com:owner/repo.git" (scp-style) or "ssh://git@github.com/owner/repo.git".
+	if (!rest.contains("://") && rest.contains(":")) {
+		const int colon = rest.find(":");
+		rest = vformat("%s/%s", rest.substr(0, colon), rest.substr(colon + 1));
+	} else {
+		rest = rest.get_slice("://", 1);
+	}
+	rest = rest.get_slice("@", rest.get_slice_count("@") - 1); // Drop "git@" or "user:token@".
+	String host = rest.get_slice("/", 0).get_slice(":", 0).to_lower(); // No port.
+	const String path = rest.substr(rest.find("/") + 1).trim_suffix("/").trim_suffix(".git");
+	if (rest.find("/") < 0 || path.get_slice_count("/") < 2) {
+		return String();
+	}
+	if (host == "ssh.github.com") {
+		host = "github.com";
+	}
+	if (host != "github.com" && host != "gitlab.com" && host != "bitbucket.org") {
+		return String();
+	}
+	return vformat("https://%s/%s", host, path);
+}
+
+String web_host_name(const String &p_web_url) {
+	if (p_web_url.contains("://gitlab.com/")) {
+		return "GitLab";
+	}
+	if (p_web_url.contains("://bitbucket.org/")) {
+		return "Bitbucket";
+	}
+	return "GitHub";
+}
+
 } // namespace godot_git

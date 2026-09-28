@@ -27,6 +27,7 @@
 #include "git/git_repository.h"
 
 class GitDiffDock;
+class GitFileSystemColors;
 
 using namespace godot;
 
@@ -53,6 +54,7 @@ class GitDock : public EditorDock {
 		MENU_COPY_RELATIVE_PATH,
 		MENU_COPY_HASH,
 		MENU_COPY_MESSAGE,
+		MENU_OPEN_ON_WEB,
 		// "More" (⋮) menu.
 		MORE_REFRESH,
 		MORE_STAGE_ALL,
@@ -63,6 +65,7 @@ class GitDock : public EditorDock {
 		MORE_AUTO_FETCH,
 		MORE_ADD_REMOTE,
 		MORE_BUILD_INFO,
+		MORE_FILESYSTEM_COLORS,
 	};
 
 	enum NetworkOp {
@@ -133,6 +136,13 @@ class GitDock : public EditorDock {
 	String last_commit_id;
 	String last_commit_message;
 	bool last_commit_pushed = false;
+	bool push_after_commit = false; // Ctrl+Shift+Enter: commit, then push.
+	// Up/Down in an empty message box goes through your recent commit messages.
+	PackedStringArray message_history;
+	int message_history_index = -1;
+	ConfirmationDialog *large_confirm = nullptr; // Staged files big enough to regret committing.
+	bool large_checked = false;
+	PackedStringArray pull_blockers; // Uncommitted files the new commits change too (Pull refuses).
 
 	FilePane staged_pane;
 	FilePane changes_pane;
@@ -202,6 +212,15 @@ class GitDock : public EditorDock {
 	Dictionary git_needs; // GitRepository::get_git_needs(), while git is missing.
 	String git_warning; // The warning shown once (so it can be cleared once git is installed).
 
+	// Keeping the editor in step: unsaved files are offered to be saved before a pull or switch
+	// (unsaved_then runs once answered), and open scenes it rewrote are reloaded afterwards.
+	ConfirmationDialog *unsaved_confirm = nullptr;
+	Button *unsaved_skip = nullptr;
+	Callable unsaved_then;
+	bool unsaved_checked = false; // Set just before unsaved_then runs, so it doesn't ask again.
+	Dictionary open_scene_hashes; // res:// path -> MD5 of the file, before the operation.
+	GitFileSystemColors *filesystem_colors = nullptr;
+
 	// The Diff panel at the bottom, and the file it shows: clicking a file here shows its diff there.
 	GitDiffDock *diff_dock = nullptr;
 	String diff_path;
@@ -249,7 +268,12 @@ class GitDock : public EditorDock {
 	void _on_commit_message_input(const Ref<InputEvent> &p_event);
 	void _on_amend_toggled(bool p_on);
 	void _commit();
+	bool _ask_about_large_files();
+	void _on_large_confirmed();
 	void _report_commit(bool p_amended, int p_files, const String &p_old_id);
+	void _after_commit();
+	void _recall_message(int p_step);
+	String _web_commit_url(const String &p_hash) const;
 
 	// git_dock_lists.cpp: the Staged Changes / Changes / History sections.
 	void _build_lists(Control *p_parent);
@@ -294,6 +318,16 @@ class GitDock : public EditorDock {
 	void _update_status();
 	void _update_status_style();
 	void _on_status_button();
+
+	// git_dock_editor.cpp: keeping the rest of the editor in step (saving first, reloading
+	// scenes, FileSystem dock colors).
+	bool _ask_to_save(const String &p_verb, const Callable &p_then);
+	void _on_unsaved_confirmed();
+	void _on_unsaved_custom_action(const StringName &p_action);
+	void _remember_open_scenes();
+	void _reload_changed_scenes();
+	bool _is_filesystem_colors_enabled() const;
+	void _update_filesystem_colors(const Array &p_status);
 
 	// git_dock_setup.cpp: setting a repository up (Initialize, Add Remote, name and email).
 	void _build_setup(Control *p_parent);

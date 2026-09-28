@@ -124,6 +124,11 @@ func _run() -> void:
 	_check(_file_row("Changes", "player.gd") != null, "an unstaged file is listed")
 	_check(_file_row("Staged Changes", "enemy.gd") != null, "a staged file is listed")
 
+	# Changed files are colored in the FileSystem dock (its own Tree, recolored by the panel).
+	var fs_tree: Tree = EditorInterface.get_file_system_dock().find_children("*", "Tree", true, false)[0]
+	var fs_player := _row(fs_tree, func(item: TreeItem) -> bool: return item.get_metadata(0) == "res://player.gd")
+	_check(fs_player != null and fs_player.has_meta("godot_git_previous_color"), "a changed file is colored in the FileSystem dock")
+
 	# Folding and unfolding each section. Folding once sent the header alignment into an endless
 	# layout loop that crashed the editor after a moment, so each stays folded for a while.
 	for title in ["Staged Changes", "Changes", "History"]:

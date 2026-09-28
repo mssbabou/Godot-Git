@@ -14,6 +14,7 @@
 #include <godot_cpp/classes/text_line.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/v_box_container.hpp>
+#include <godot_cpp/classes/v_scroll_bar.hpp>
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
@@ -272,7 +273,11 @@ void GitDock::_show_line_stats(FilePane &p_pane) {
 			}
 		}
 		// The row itself stays calm (totals are in the header); the tooltip has this file's counts.
-		item->set_tooltip_text(COLUMN_NAME, lines.is_empty() ? vformat("%s\n%s", path, status_name(state)) : vformat(String::utf8("%s\n%s · %s"), path, status_name(state), lines));
+		String tooltip = lines.is_empty() ? vformat("%s\n%s", path, status_name(state)) : vformat(String::utf8("%s\n%s · %s"), path, status_name(state), lines);
+		if (pull_blockers.has(path)) {
+			tooltip += vformat("\n\nThe new commits on %s change this file too, so Pull waits until your changes to it are committed or discarded.", String(sync_status.get("upstream", String())));
+		}
+		item->set_tooltip_text(COLUMN_NAME, tooltip);
 	}
 
 	// Header: "Changes (27)  +1204 −35  [⊖]".
@@ -309,6 +314,31 @@ void GitDock::_align_header_buttons() {
 		if (!pane->container->is_visible_in_tree()) {
 			continue;
 		}
+		// In a narrow dock the header can't hold the title, the +/- totals and the buttons, and
+		// the title got cut off ("Changes (1"). The count matters more, so the totals step aside
+		// (each file's counts stay in its tooltip). Decided from widths that don't depend on
+		// whether the totals are shown, so hiding them can't flip the decision back.
+		FoldableContainer *section = pane->container;
+		const Ref<Font> font = section->get_theme_font("font");
+		const int font_size = section->get_theme_font_size("font_size");
+		const int separation = section->get_theme_constant("h_separation");
+		float needed = section->get_theme_stylebox("title_panel")->get_minimum_size().x + section->get_theme_icon("expanded_arrow")->get_width() + separation;
+		needed += font->get_string_size(section->get_title(), HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+		for (Control *control : { (Control *)pane->added, (Control *)pane->removed, (Control *)pane->buttons_margin }) {
+			needed += control->get_combined_minimum_size().x + separation;
+		}
+		float available = section->get_size().x;
+		for (Node *parent = section->get_parent(); parent; parent = parent->get_parent()) {
+			if (ScrollContainer *scroll = Object::cast_to<ScrollContainer>(parent)) {
+				// The scroll bar depends on the lists' height, not on the totals: no loop either.
+				const VScrollBar *bar = scroll->get_v_scroll_bar();
+				available = MIN(available, (float)(scroll->get_size().x - (bar->is_visible() ? bar->get_size().x : 0.0f)));
+				break;
+			}
+		}
+		const bool totals_fit = needed <= available;
+		pane->added->set_visible(totals_fit);
+		pane->removed->set_visible(totals_fit);
 		Tree *tree = pane->tree;
 		TreeItem *first = tree->get_root() ? tree->get_root()->get_first_child() : nullptr;
 		// Nothing to line up with while the section is empty or folded. A folded section's tree
@@ -327,8 +357,8 @@ void GitDock::_align_header_buttons() {
 	}
 }
 
-// Paints a file row: status letter, file icon, name, and the folder dimmed after the name
-// (like VS Code), each trimmed with an ellipsis when space runs out. p_rect is the cell's
+// Paints a file row: file icon, name in its status color, the folder dimmed after the name, and
+// the status letter at the far right (like VS Code), text trimmed with an ellipsis when space runs out. p_rect is the cell's
 // content area, which the Tree has already shrunk to leave room for the hover buttons.
 void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 	Tree *tree = p_item->get_tree();
@@ -340,7 +370,7 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 	const RID canvas = tree->get_custom_drawing_canvas_item();
 	const String path = p_item->get_meta("git_path", String());
 	const String state = p_item->get_meta("git_state", String());
-	const float right = p_rect.get_end().x;
+	float right = p_rect.get_end().x; // Where text stops; moves left for the warning sign.
 
 	// Draws one piece of text starting at p_x, vertically centered; returns where it ends.
 	auto draw_text = [&](const String &p_text, float p_x, const Color &p_color) -> float {
@@ -356,14 +386,26 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 		return p_x + MIN(line->get_size().x, right - p_x);
 	};
 
-	// Status letter in a fixed-width slot, so icons and names line up down the list.
-	float x = p_rect.position.x;
+	// The status letter at the far right, in a fixed-width slot so the letters line up down the
+	// list (the FileSystem dock shows the same letter the same way; see filesystem_colors.cpp).
+	// Hover buttons shrink p_rect, so on hover the letter moves left of them.
+	const Color color = _status_color(state);
 	const float letter_width = font->get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
 	const String letter = status_letter(state);
-	const float letter_x = x + (letter_width - font->get_string_size(letter, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x) / 2;
-	draw_text(letter, letter_x, _status_color(state));
-	x += letter_width + 6 * scale;
+	right -= letter_width;
+	const float letter_x = right + (letter_width - font->get_string_size(letter, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x) / 2;
+	font->draw_string(canvas, Vector2(letter_x, p_rect.position.y + (p_rect.size.y - font->get_height(font_size)) / 2 + font->get_ascent(font_size)), letter, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color);
+	right -= 6 * scale;
 
+	// A file the new commits change too (Pull waits for it): a warning sign next to the letter.
+	if (pane && pull_blockers.has(path)) {
+		const Ref<Texture2D> warning = get_theme_icon("StatusWarning", "EditorIcons");
+		right -= warning->get_width();
+		warning->draw(canvas, Vector2(right, p_rect.position.y + (p_rect.size.y - warning->get_height()) / 2));
+		right -= 4 * scale;
+	}
+
+	float x = p_rect.position.x;
 	const bool deleted = state == "deleted";
 	const Ref<Texture2D> icon = p_item->get_meta("git_icon", Variant());
 	if (icon.is_valid()) {
@@ -371,10 +413,16 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 		x += icon->get_width() + tree->get_theme_constant("icon_h_separation");
 	}
 
-	// Name in the Tree's own text colors, so selection and hover look native.
+	// The name in the Tree's own text colors, so selection and hover look native. Not in its
+	// status color, unlike the FileSystem dock: there color picks the changed files out of all
+	// of them, but every file here is changed, and the letter already says how. Colored names
+	// were tried (2026-09-28) and read busy; kept here, switched off, in case that's revisited.
+	constexpr bool COLOR_NAMES = false;
 	Color name_color = tree->get_theme_color("font_color");
 	if (p_item->is_selected(COLUMN_NAME)) {
 		name_color = tree->get_theme_color("font_selected_color");
+	} else if (COLOR_NAMES) {
+		name_color = color;
 	} else if (pane && p_item->get_instance_id() == pane->hovered_item) {
 		name_color = tree->get_theme_color("font_hovered_color");
 	}
@@ -718,6 +766,17 @@ void GitDock::_on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_but
 		if (row == "commit") {
 			context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Commit Hash", MENU_COPY_HASH);
 			context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Commit Message", MENU_COPY_MESSAGE);
+			const Dictionary commit = tree->get_selected()->get_metadata(0);
+			const String url = _web_commit_url(commit["hash"]);
+			if (!url.is_empty()) {
+				// Only offered for GitHub, GitLab and Bitbucket; before it's pushed there's no page yet.
+				context_menu->add_separator();
+				context_menu->add_icon_item(get_theme_icon("ExternalLink", "EditorIcons"), vformat("Open on %s", web_host_name(url)), MENU_OPEN_ON_WEB);
+				if (commit["unpushed"]) {
+					context_menu->set_item_disabled(-1, true);
+					context_menu->set_item_tooltip(-1, "This commit isn't pushed yet, so it isn't there.");
+				}
+			}
 		} else if (row == "file") {
 			context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Path", MENU_COPY_PATH);
 			context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Relative Path", MENU_COPY_RELATIVE_PATH);
@@ -804,6 +863,10 @@ void GitDock::_on_context_menu_id(int p_id) {
 		case MENU_COPY_MESSAGE: {
 			const Dictionary commit = history_tree->get_selected()->get_metadata(0);
 			DisplayServer::get_singleton()->clipboard_set(commit[p_id == MENU_COPY_HASH ? "hash" : "message"]);
+		} break;
+		case MENU_OPEN_ON_WEB: {
+			const Dictionary commit = history_tree->get_selected()->get_metadata(0);
+			OS::get_singleton()->shell_open(_web_commit_url(commit["hash"]));
 		} break;
 	}
 }

@@ -10,6 +10,7 @@ func run() -> void:
 	_line_stats()
 	_commit_and_history()
 	_branches()
+	_large_staged_files()
 
 
 func _status_and_staging() -> void:
@@ -117,3 +118,29 @@ func _branches() -> void:
 	check("file missing on another branch", not r.has_file_at("no-addon", "a.txt"))
 	check("file only on another branch", r.has_file_at("no-addon", "b.txt") and not r.has_file_at("HEAD", "b.txt"))
 	check("nested path", not r.has_file_at("HEAD", "addons/godot_git/godot_git.gdextension"))
+
+
+# The commit warning for big files: what's staged and at least the given size, largest first.
+func _large_staged_files() -> void:
+	var repo := make_repo("large")
+	write(repo.path_join("small.txt"), "small\n")
+	commit_all(repo, "init")
+	var r := open(repo)
+	var big := FileAccess.open(repo.path_join("big.bin"), FileAccess.WRITE)
+	big.store_buffer(_bytes(3000))
+	big.close()
+	var bigger := FileAccess.open(repo.path_join("bigger.bin"), FileAccess.WRITE)
+	bigger.store_buffer(_bytes(5000))
+	bigger.close()
+	check("nothing staged, nothing large", r.get_large_staged_files(1000).is_empty())
+	r.stage_all()
+	var large: Array = r.get_large_staged_files(2000)
+	check("large staged files, largest first", large.map(func(f): return f.path) == ["bigger.bin", "big.bin"], large)
+	check("sizes", large[0].size == 5000 and large[1].size == 3000, large)
+	check("above the limit only", r.get_large_staged_files(4000).size() == 1)
+
+
+func _bytes(count: int) -> PackedByteArray:
+	var data := PackedByteArray()
+	data.resize(count)
+	return data

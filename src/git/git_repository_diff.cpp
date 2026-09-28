@@ -5,6 +5,7 @@
 #include "git/git_repository.h"
 
 #include <git2.h>
+#include <cstring>
 
 #include <godot_cpp/classes/file_access.hpp>
 
@@ -184,19 +185,20 @@ int commit_diff(git_repository *p_repo, const String &p_hash, git_diff **r_diff)
 // If p_bytes is a Git LFS pointer (what git stores for an LFS file), the object id it names.
 String lfs_pointer_oid(const PackedByteArray &p_bytes) {
 	// Pointers are a few lines of text, well under 1 KB, and always start like this.
-	if (p_bytes.size() > 1024) {
+	// The prefix is compared as bytes first: decoding a small binary file (a 32×32 PNG) as UTF-8
+	// makes Godot print a Unicode error to the Output panel.
+	static const char prefix[] = "version https://git-lfs.github.com/spec/";
+	const int64_t prefix_length = sizeof(prefix) - 1;
+	if (p_bytes.size() > 1024 || p_bytes.size() < prefix_length || memcmp(p_bytes.ptr(), prefix, prefix_length) != 0) {
 		return String();
 	}
 	const String text = String::utf8((const char *)p_bytes.ptr(), p_bytes.size());
-	if (!text.begins_with("version https://git-lfs.github.com/spec/")) {
-		return String();
-	}
 	for (const String &line : text.split("\n")) {
 		if (line.begins_with("oid sha256:")) {
-		return line.trim_prefix("oid sha256:").strip_edges();
+			return line.trim_prefix("oid sha256:").strip_edges();
 		}
-}
-return String();
+	}
+	return String();
 }
 
 } // namespace
