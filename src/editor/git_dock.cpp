@@ -17,6 +17,7 @@
 #include <godot_cpp/core/math.hpp>
 
 #include "addon_files.h"
+#include "build_info.h"
 #include "editor/file_opener.h"
 #include "editor/ui_text.h"
 
@@ -297,6 +298,19 @@ void GitDock::_build_more_menu() {
 	}
 	more->add_icon_item(get_theme_icon("Reload", "EditorIcons"), "Refresh", MORE_REFRESH);
 	more->add_icon_item(get_theme_icon("Folder", "EditorIcons"), "Open Repository Folder", MORE_OPEN_FOLDER);
+
+	// Where this library came from, so nobody has to take a binary on faith.
+	more->add_separator();
+	const String version = String::utf8(build_version());
+	const String commit = String::utf8(build_commit());
+	if (commit.is_empty()) {
+		more->add_item(vformat(String::utf8("Godot Git %s · Local Build"), version), MORE_BUILD_INFO);
+		more->set_item_disabled(more->get_item_count() - 1, true);
+		more->set_item_tooltip(more->get_item_count() - 1, "Built outside the project's GitHub Actions (for example on your own computer), so there's no public build log to check it against.");
+	} else {
+		more->add_icon_item(get_theme_icon("ExternalLink", "EditorIcons"), vformat(String::utf8("Godot Git %s · Built by GitHub from %s"), version, commit.left(7)), MORE_BUILD_INFO);
+		more->set_item_tooltip(more->get_item_count() - 1, vformat("Built by the project's public GitHub Actions from commit %s. Opens that build: its log shows exactly what was compiled, and releases come with signed attestations you can verify.", commit));
+	}
 }
 
 String GitDock::_to_res_path(const String &p_path) const {
@@ -638,6 +652,12 @@ void GitDock::_on_more_menu_id(int p_id) {
 		} break;
 		case MORE_OPEN_FOLDER: {
 			OS::get_singleton()->shell_show_in_file_manager(repo->get_workdir(), true);
+		} break;
+		case MORE_BUILD_INFO: {
+			const String url = String::utf8(build_url());
+			if (!url.is_empty()) {
+				OS::get_singleton()->shell_open(url);
+			}
 		} break;
 	}
 }

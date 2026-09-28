@@ -115,7 +115,7 @@ public:
 		PackedStringArray args;
 		String program;
 		if (is_windows()) {
-			// cmd gets one string (Godot quotes each argument; see CLAUDE.md gotcha 24).
+			// cmd gets one string: Godot quotes each argument separately, which cmd misreads.
 			program = "cmd";
 			args.push_back("/c");
 			args.push_back(vformat("cd /d \"%s\" && %s 2>\"%s\"", workdir.replace("/", "\\"), git, log_path.replace("/", "\\")));

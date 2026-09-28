@@ -17,7 +17,8 @@ namespace godot_git {
 
 namespace {
 
-// Not a String: no String may exist before the GDExtension interface does (CLAUDE.md gotcha 3).
+// Not a String: a global String is built when the library loads, before the GDExtension interface
+// exists, and crashes the editor.
 std::mutex git_program_lock;
 std::string git_program_name = "git";
 std::atomic<int> git_state{ -1 }; // -1 unknown, 0 missing, 1 installed.
@@ -170,7 +171,7 @@ Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const Packed
 	PackedStringArray args;
 	String program;
 	if (OS::get_singleton()->get_name() == "Windows") {
-		// cmd gets one string (Godot quotes each argument; see CLAUDE.md gotcha 24).
+		// cmd gets one string: Godot quotes each argument separately, which cmd misreads.
 		// Forward slashes: a quoted path ending in a backslash would read as an escaped quote.
 		String command = vformat("%s -C \"%s\"", git_program(), workdir);
 		for (const String &arg : p_args) {

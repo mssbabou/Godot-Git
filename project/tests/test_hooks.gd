@@ -112,7 +112,7 @@ func _signing() -> void:
 	var out := []
 	var code: int
 	if OS.get_name() == "Windows":
-		# Godot drops empty arguments on Windows (CLAUDE.md gotcha 25), so -N "" goes through cmd.
+		# Godot drops empty arguments on Windows, so -N "" goes through cmd.
 		code = OS.execute("cmd", ["/c", "ssh-keygen -q -t ed25519 -N \"\" -C test -f \"%s\"" % key], out, true)
 	else:
 		code = OS.execute("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "test", "-f", key], out, true)

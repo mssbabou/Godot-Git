@@ -1,5 +1,5 @@
-// The status strip: what the panel is doing, or what it last did. See CLAUDE.md, "Status and
-// feedback".
+// The status strip: what the panel is doing, or what it last did. Every result and error stays
+// here until the next one, so an outcome is never missed.
 
 #include "editor/git_dock.h"
 

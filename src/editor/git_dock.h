@@ -62,6 +62,7 @@ class GitDock : public EditorDock {
 		MORE_OPEN_FOLDER,
 		MORE_AUTO_FETCH,
 		MORE_ADD_REMOTE,
+		MORE_BUILD_INFO,
 	};
 
 	enum NetworkOp {

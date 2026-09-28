@@ -1,7 +1,7 @@
 // Setting a repository up from the panel: Initialize Repository (when the project isn't in one),
 // Add Remote (when it has none), and the name and email git needs before the first commit.
-// Signing in and creating the repository on GitHub or elsewhere stay outside the panel; see
-// CLAUDE.md, "Design decisions".
+// Signing in and creating the repository on GitHub or elsewhere stay outside the panel: logins
+// come from git's own credential helper, and every host sets repositories up differently.
 
 #include "editor/git_dock.h"
 

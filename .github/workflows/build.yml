@@ -1,16 +1,17 @@
 # Builds the editor plugin for every supported platform and packages it as one zip.
-# - Every push/PR: build all platforms, upload "godot_git" zip as a workflow artifact.
-# - Publishing a GitHub release: same, and the zip is attached to the release.
+# - Every push/PR: build all platforms, test them, upload the "godot_git" zip as a workflow artifact.
+# - Pushing a tag like v0.3.0: the same, built without any cache, and then a draft release with the
+#   zip, SHA256SUMS and signed build attestations. Publishing the draft (by hand) makes it immutable.
+# Actions are pinned to commit hashes (the tag in the comment), so what runs can't change underneath.
 
 name: Build
 
 on:
   push:
     branches: [master]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
-  release:
-    types: [published]
 
 permissions:
   contents: read
@@ -36,27 +37,37 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive
 
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.x"
 
       - name: Install SCons
         run: python -m pip install scons
 
+      # Baked into the library (the ⋮ menu shows it) and used for the zip's name.
+      - name: Version
+        shell: bash
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="dev-${GITHUB_SHA::7}"; fi
+          echo "GODOT_GIT_VERSION=$version" >> "$GITHUB_ENV"
+
       # Cache key follows the submodule commits and the libgit2 build script, so bumping
       # libgit2/godot-cpp or changing its build options starts from a clean cache.
+      # Releases are built from scratch: nothing from an earlier run goes into a release.
       - name: Compute cache key
+        if: github.ref_type != 'tag'
         id: cache-key
         shell: bash
         run: echo "deps=$(git submodule status | sha1sum | cut -c1-12)-${{ hashFiles('tools/libgit2.py') }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore build cache
-        uses: actions/cache@v6
+        if: github.ref_type != 'tag'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .scons-cache
@@ -68,11 +79,11 @@ jobs:
       - name: Build
         shell: bash
         env:
-          SCONS_CACHE: ${{ github.workspace }}/.scons-cache
+          SCONS_CACHE: ${{ github.ref_type != 'tag' && format('{0}/.scons-cache', github.workspace) || '' }}
         run: scons platform=${{ matrix.platform }} arch=${{ matrix.arch }} target=editor -j4
 
       - name: Upload library
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: bin-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
@@ -101,16 +112,16 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Download library
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: bin-${{ matrix.platform }}-${{ matrix.arch }}
           path: project/addons/godot_git/bin
 
       - name: Setup Python
-        uses: actions/setup-python@v7
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.x"
 
@@ -161,17 +172,15 @@ jobs:
     needs: build
     # Pinned so the image doesn't change underneath us; this job only zips files and uploads them.
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write # To attach the zip to a release.
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive # For the third-party license files.
 
       - name: Download libraries
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: bin-*
           path: project/addons/godot_git/bin
@@ -180,23 +189,67 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "release" ]; then
-            version="${{ github.event.release.tag_name }}"
-          else
-            version="dev-${GITHUB_SHA::7}"
-          fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then version="$GITHUB_REF_NAME"; else version="dev-${GITHUB_SHA::7}"; fi
           python tools/package.py --version "$version" --require-all
           echo "ZIP=dist/godot_git-$version.zip" >> "$GITHUB_ENV"
 
       - name: Upload package
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: godot_git
           path: ${{ env.ZIP }}
           if-no-files-found: error
 
-      - name: Attach to release
-        if: github.event_name == 'release'
+  # Only for tags, and only once every platform's tests passed. Makes a draft release; nothing
+  # is ever replaced (no --clobber), and publishing the draft by hand makes it immutable.
+  release:
+    name: Draft release
+    needs: [package, test]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # To create the release.
+      id-token: write # To sign the attestations (Sigstore).
+      attestations: write # To store them with the repository.
+      artifact-metadata: write # For the attestations' storage records.
+
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: godot_git
+          path: dist
+
+      - name: Download libraries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: bin-*
+          path: addons/godot_git/bin
+          merge-multiple: true
+
+      # Paths as they are in a project, so `sha256sum -c SHA256SUMS --ignore-missing` can be run
+      # from a project's folder to check an installed copy (from the Asset Store, say) too.
+      - name: Checksums
+        shell: bash
+        run: |
+          (cd dist && sha256sum godot_git-*.zip) > SHA256SUMS
+          find addons -type f | sort | xargs sha256sum >> SHA256SUMS
+          cat SHA256SUMS
+
+      # Signed statements that these exact files were built by this workflow from this commit.
+      # Anyone can check one: gh attestation verify <file> --repo <this repository>
+      - name: Attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/godot_git-*.zip
+            addons/godot_git/bin/windows/*.dll
+            addons/godot_git/bin/linux/*.so
+            addons/godot_git/bin/macos/*.framework/libgodot_git.*
+
+      - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "$ZIP" --clobber
+        run: >-
+          gh release create "$GITHUB_REF_NAME" dist/godot_git-*.zip SHA256SUMS
+          --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "$GITHUB_REF_NAME" --generate-notes

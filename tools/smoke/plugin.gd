@@ -9,8 +9,9 @@ extends EditorPlugin
 ##   godot --headless -e --path <folder> --quit-after 20000   (the test; exit code 1 on failure)
 ##
 ## Limits: headless, so nothing is drawn (row and gutter drawing aren't exercised), and clicks are
-## emitted signals, not real mouse input, which skips the Tree's own click handling (CLAUDE.md,
-## gotcha 38). A crash still ends the run without "SMOKE: OK", which is what CI checks for.
+## emitted signals, not real mouse input, which skips the Tree's own click handling (a Tree
+## refuses to create rows while it handles a real click). A crash still ends the run without
+## "SMOKE: OK", which is what CI checks for.
 
 var failures := 0
 var base: Control
@@ -108,6 +109,13 @@ func _run() -> void:
 	dock.make_visible() # So trees have a size and rows a position.
 	diff.make_visible()
 	await _frames()
+
+	# The ⋮ menu ends with where this library was built (a CI build names its commit).
+	var more_button: MenuButton = dock.find_children("*", "MenuButton", true, false)[0]
+	more_button.get_popup().about_to_popup.emit()
+	var build_line := more_button.get_popup().get_item_text(more_button.get_popup().item_count - 1)
+	print("SMOKE: ", build_line)
+	_check(build_line.begins_with("Godot Git "), "the ⋮ menu says where this build comes from")
 
 	# Refreshing twice: the second takes the "nothing changed" paths (History kept as is).
 	dock.refresh()

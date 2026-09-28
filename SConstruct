@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import json
 import os
 import sys
 
@@ -57,7 +58,34 @@ env.Append(CPPPATH=["src/"])
 # Object files go to build/obj/ instead of next to the sources. Their names already carry the
 # platform, target and arch (e.g. .windows.editor.x86_64.obj), so one folder serves all builds.
 env.VariantDir("build/obj", "src", duplicate=False)
-sources = Glob("build/obj/*.cpp") + Glob("build/obj/git/*.cpp") + Glob("build/obj/editor/*.cpp")
+sources = Glob("build/obj/*.cpp", exclude=["build/obj/build_info.cpp"]) + Glob("build/obj/git/*.cpp") + Glob("build/obj/editor/*.cpp")
+
+
+# Where this build comes from (see src/build_info.h). CI builds name their commit and run, which is
+# what the release attestations point at; anything else is a local build.
+def write_build_info():
+    version = package.detect_version()
+    commit, url = "", ""
+    if os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get("GITHUB_REPOSITORY"):
+        commit = os.environ.get("GITHUB_SHA", "")
+        url = "{}/{}/actions/runs/{}".format(
+            os.environ.get("GITHUB_SERVER_URL", "https://github.com"), os.environ["GITHUB_REPOSITORY"], os.environ.get("GITHUB_RUN_ID", "")
+        )
+    text = "".join(
+        "#define {} {}\n".format(name, json.dumps(value))
+        for name, value in [("GODOT_GIT_BUILD_VERSION", version), ("GODOT_GIT_BUILD_COMMIT", commit), ("GODOT_GIT_BUILD_URL", url)]
+    )
+    path = os.path.join(Dir("#").abspath, "build", "gen", "build_info.gen.h")
+    old = open(path, encoding="utf-8").read() if os.path.exists(path) else None
+    if old != text:  # Only rewritten when it changes, so it doesn't trigger a rebuild every time.
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+
+
+write_build_info()
+# Its own include path only here: adding it to env would change every godot-cpp compile command too.
+sources.append(env.SharedObject("build/obj/build_info.cpp", CPPPATH=env["CPPPATH"] + [Dir("#build/gen")]))
 
 # Class reference for GitRepository from doc_classes/*.xml (none written yet).
 sources.append(env.GodotCPPDocData("build/gen/doc_data.gen.cpp", source=Glob("doc_classes/*.xml")))
