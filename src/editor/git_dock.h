@@ -16,6 +16,7 @@
 #include <godot_cpp/classes/popup_menu.hpp>
 #include <godot_cpp/classes/progress_bar.hpp>
 #include <godot_cpp/classes/rich_text_label.hpp>
+#include <godot_cpp/classes/style_box_flat.hpp>
 #include <godot_cpp/classes/text_edit.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/texture_rect.hpp>
@@ -257,10 +258,11 @@ class GitDock : public EditorDock {
 	int64_t last_auto_fetch_attempt = 0;
 	bool auto_fetch_failed = false; // The failure is shown once, not every few minutes.
 
-	// git_dock.cpp: building, refreshing, toolbar and action row, local actions.
+	// git_dock.cpp: building, refreshing, the toolbar and action rows, file actions.
 	void _update_icons();
-	void _fill_branches();
 	void _update_actions();
+	void _update_commit_row(bool p_syncing);
+	void _update_sync_row(bool p_busy);
 	void _build_more_menu();
 	void _on_more_menu_id(int p_id);
 	void _check_project_file();
@@ -272,27 +274,34 @@ class GitDock : public EditorDock {
 	String _file_type(const String &p_res_path);
 	Color _status_color(const String &p_state) const;
 	Color _dim_color() const;
+	ConfirmationDialog *_make_confirm(const String &p_title, const String &p_ok_text, const Callable &p_on_confirmed);
 	void _open_path(const String &p_path);
 	void _stage_paths(const PackedStringArray &p_paths, bool p_stage);
 	void _confirm_discard(const PackedStringArray &p_paths);
 	void _on_discard_confirmed();
+
+	// git_dock_branches.cpp: the branch picker.
+	void _fill_branches();
 	void _on_branch_selected(int p_index);
 	String _addon_removed_by(const String &p_branch) const;
 	void _switch_branch(const String &p_branch);
 	void _on_branch_dialog_confirmed();
+
+	// git_dock_commit.cpp: the commit box.
 	void _on_commit_message_input(const Ref<InputEvent> &p_event);
+	void _recall_message(int p_step);
 	void _on_amend_toggled(bool p_on);
 	void _commit();
 	bool _ask_about_large_files();
 	void _on_large_confirmed();
-	void _report_commit(bool p_amended, int p_files, const String &p_old_id);
 	void _after_commit();
-	void _recall_message(int p_step);
 	String _web_commit_url(const String &p_hash) const;
+	void _report_commit(bool p_amended, int p_files, const String &p_old_id);
 
-	// git_dock_lists.cpp: the Staged Changes / Changes / History sections.
+	// git_dock_lists.cpp: the Staged Changes / Changes sections and how rows are drawn.
 	void _build_lists(Control *p_parent);
 	void _make_file_pane(FilePane &r_pane, Control *p_parent, const String &p_title, bool p_staged);
+	void _round_section(FoldableContainer *p_section);
 	Label *_make_body(Control *p_section, Tree *p_tree);
 	void _fill_file_pane(FilePane &p_pane, const Array &p_status);
 	void _start_line_stats();
@@ -301,31 +310,38 @@ class GitDock : public EditorDock {
 	void _on_line_stats_slow();
 	void _show_line_stats(FilePane &p_pane);
 	void _finish_stats_thread();
-	void _fill_history();
-	void _fill_commit(TreeItem *p_item);
-	void _fill_commit_later(uint64_t p_item);
-	void _load_more_commits();
-	void _on_history_item_collapsed(TreeItem *p_item);
-	void _on_history_item_selected();
-	void _draw_file_row(TreeItem *p_item, const Rect2 &p_rect);
 	void _queue_align_header_buttons();
 	void _align_header_buttons();
+	void _draw_file_row(TreeItem *p_item, const Rect2 &p_rect);
+	float _draw_row_buttons(TreeItem *p_item, const FilePane &p_pane, const Rect2 &p_rect, float p_right);
+
+	// git_dock_rows.cpp: what rows do (hover buttons, clicks, selection, right-click menus).
 	FilePane *_pane_for_tree(Object *p_tree);
 	PackedStringArray _selected_paths(Tree *p_tree, bool p_companions = false) const;
 	PackedStringArray _row_paths(TreeItem *p_item) const;
 	PackedStringArray _blocking_paths(TreeItem *p_item) const;
-	void _round_section(FoldableContainer *p_section);
 	Array _row_button_list(const FilePane &p_pane) const;
-	Dictionary _row_button_at(const FilePane &p_pane, const Vector2 &p_position) const;
-	void _click_row_button(uint64_t p_item, int p_id);
 	void _set_hovered(FilePane &p_pane, TreeItem *p_item);
+	Dictionary _row_button_at(const FilePane &p_pane, const Vector2 &p_position) const;
 	void _on_tree_gui_input(const Ref<InputEvent> &p_event, Object *p_tree);
 	void _on_tree_mouse_exited(Object *p_tree);
-	void _on_tree_button_clicked(TreeItem *p_item, int p_column, int p_id, int p_mouse_button);
-	void _on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_button, Object *p_tree);
+	void _click_row_button(uint64_t p_item, int p_id);
 	void _on_file_activated(Object *p_tree);
+	void _on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_button, Object *p_tree);
+	bool _build_commit_menu();
+	bool _build_file_menu(Tree *p_tree);
 	void _on_context_menu_id(int p_id);
 	void _on_file_multi_selected(TreeItem *p_item, int p_column, bool p_selected, Object *p_tree);
+
+	// git_dock_history.cpp: History.
+	void _fill_history();
+	void _fill_commit(TreeItem *p_item);
+	void _on_history_item_collapsed(TreeItem *p_item);
+	void _fill_commit_later(uint64_t p_item);
+	void _load_more_commits();
+	void _on_history_item_selected();
+
+	// git_dock_diff.cpp: which file the Diff panel shows.
 	void _show_diff(const String &p_path, bool p_staged, bool p_focus);
 	void _show_commit_diff(const String &p_hash, const String &p_path, bool p_focus);
 	void _update_diff();
@@ -339,6 +355,7 @@ class GitDock : public EditorDock {
 	void _update_status();
 	void _update_status_style();
 	void _on_status_button();
+	Ref<StyleBoxFlat> _tinted_panel(const Color &p_tint) const;
 	void _build_operation_banner(Control *p_parent);
 	void _update_operation_banner();
 	bool _in_operation() const;

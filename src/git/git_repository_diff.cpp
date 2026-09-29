@@ -5,12 +5,12 @@
 #include "git/git_repository.h"
 
 #include <git2.h>
-#include <cstring>
 
 #include <godot_cpp/classes/file_access.hpp>
-
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
+
+#include <cstring>
 
 #include "git/git_lfs.h"
 #include "git/git_util.h"

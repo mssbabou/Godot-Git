@@ -1,6 +1,6 @@
-// The Git dock: building it, keeping it up to date (refresh), the toolbar and action row, and
-// the local actions (stage, discard, commit, branches). The rest lives in git_dock_lists.cpp,
-// git_dock_status.cpp and git_dock_network.cpp.
+// The Git dock: building it, keeping it up to date (refresh), the toolbar, which actions are
+// enabled, and the file actions (open, stage, discard). The rest is split by area into the other
+// git_dock_*.cpp files (commit box, branches, lists, rows, history, diff, status, network, ...).
 
 #include "editor/git_dock.h"
 
@@ -9,7 +9,6 @@
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/file_access.hpp>
-#include <godot_cpp/classes/input_event_key.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/style_box_empty.hpp>
@@ -150,24 +149,11 @@ GitDock::GitDock() {
 	branch_vb->add_child(branch_name_edit);
 	branch_dialog->register_text_enter(branch_name_edit);
 
-	unsaved_confirm = memnew(ConfirmationDialog);
-	unsaved_confirm->set_title("Unsaved Changes");
-	unsaved_confirm->set_autowrap(true);
-	unsaved_confirm->get_label()->set_custom_minimum_size(Vector2(440 * scale, 0)); // See large_confirm.
-	unsaved_confirm->connect("confirmed", callable_mp(this, &GitDock::_on_unsaved_confirmed));
+	unsaved_confirm = _make_confirm("Unsaved Changes", String(), callable_mp(this, &GitDock::_on_unsaved_confirmed));
 	unsaved_confirm->connect("custom_action", callable_mp(this, &GitDock::_on_unsaved_custom_action));
 	unsaved_skip = unsaved_confirm->add_button("", false, "skip");
-	add_child(unsaved_confirm);
 
-	large_confirm = memnew(ConfirmationDialog);
-	large_confirm->set_title("Large Files");
-	large_confirm->set_ok_button_text("Commit Anyway");
-	large_confirm->set_autowrap(true);
-	// A wrapping label measures its height at its minimum width: without one, the dialog opens
-	// as tall as one word per line.
-	large_confirm->get_label()->set_custom_minimum_size(Vector2(440 * scale, 0));
-	large_confirm->connect("confirmed", callable_mp(this, &GitDock::_on_large_confirmed));
-	add_child(large_confirm);
+	large_confirm = _make_confirm("Large Files", "Commit Anyway", callable_mp(this, &GitDock::_on_large_confirmed));
 
 	filesystem_colors = memnew(GitFileSystemColors);
 	add_child(filesystem_colors);
@@ -472,13 +458,6 @@ void GitDock::_check_git() {
 	}
 }
 
-static String join_list(const PackedStringArray &p_items) {
-	if (p_items.size() <= 1) {
-		return p_items.is_empty() ? String() : p_items[0];
-	}
-	return vformat("%s and %s", String(", ").join(p_items.slice(0, -1)), p_items[p_items.size() - 1]);
-}
-
 // "Git isn't installed, so these won't work:" and a list, naming what this repository needs git
 // for. Empty if nothing: a repository without hooks, LFS or remotes that need git works without it.
 String GitDock::_git_missing_warning() const {
@@ -533,58 +512,9 @@ String GitDock::_needs_git(int p_op) const {
 	return reason.is_empty() ? reason : vformat("%s Git isn't installed (or isn't on the PATH); install it from git-scm.com.", reason);
 }
 
-void GitDock::_fill_branches() {
-	const String current = sync_status.get("branch", String());
-	PackedStringArray local = repo->get_branches();
-	if (!current.is_empty() && !local.has(current)) {
-		// Unborn branch (no commits yet) or detached HEAD.
-		local.push_back(current);
-	}
-	local.sort();
-
-	// Remote branches that don't already have a local branch of the same name.
-	PackedStringArray remote;
-	for (const String &name : repo->get_remote_branches()) {
-		const int slash = name.find("/");
-		if (!local.has(slash >= 0 ? name.substr(slash + 1) : name)) {
-			remote.push_back(name);
-		}
-	}
-	remote.sort();
-
-	const Ref<Texture2D> branch_icon = get_theme_icon("VcsBranches", "EditorIcons");
-	branch_select->clear();
-	for (const String &name : local) {
-		branch_select->add_icon_item(branch_icon, name);
-		const int index = branch_select->get_item_count() - 1;
-		branch_select->set_item_metadata(index, name);
-		if (name == current) {
-			branch_select->select(index);
-		}
-	}
-	if (!remote.is_empty()) {
-		branch_select->add_separator("Remote branches");
-		const Ref<Texture2D> remote_icon = get_theme_icon("ArrowDown", "EditorIcons");
-		for (const String &name : remote) {
-			branch_select->add_icon_item(remote_icon, name);
-			branch_select->set_item_metadata(branch_select->get_item_count() - 1, name);
-			branch_select->set_item_tooltip(branch_select->get_item_count() - 1, "Check out as a local branch tracking " + name);
-		}
-	}
-	branch_select->add_separator();
-	branch_select->add_icon_item(get_theme_icon("Add", "EditorIcons"), "New Branch...");
-	branch_select->set_item_metadata(branch_select->get_item_count() - 1, Variant());
-}
-
-// Updates Commit / Pull / Push. Pull and Push only appear when there's a remote to talk to,
-// show how many commits they'd move, and their tooltips say exactly what they'll do.
+// Enables and labels everything that acts on the repository (the branch picker, the ⋮ menu, the
+// commit and sync rows, the operation banner) for the current state.
 void GitDock::_update_actions() {
-	const bool has_remotes = sync_status.get("has_remotes", false);
-	const String upstream = sync_status.get("upstream", String());
-	const String branch = sync_status.get("branch", String());
-	const int ahead = sync_status.get("ahead", 0);
-	const int behind = sync_status.get("behind", 0);
-	const bool has_message = !commit_message->get_text().strip_edges().is_empty();
 	// A background fetch doesn't count as busy: it only updates remote-tracking refs.
 	const NetworkOp shown = _shown_network_op();
 	// A pull, push or switch rewrites the repository from the worker thread; don't commit meanwhile.
@@ -592,18 +522,34 @@ void GitDock::_update_actions() {
 	// A merge, rebase, ... in progress: committing, pulling or switching would lose it (the
 	// backend refuses too). The banner says what to do instead.
 	const String in_operation = _in_operation() ? vformat("A %s is in progress: finish it or abort it first (see the banner above).", _operation_name()) : String();
-	const bool busy = shown != NETWORK_NONE;
 
 	// The worker rewrites the repository during a pull or push; switching branches or bulk
 	// changes meanwhile would race it.
 	branch_select->set_disabled(syncing);
 	more_menu->set_disabled(syncing);
+	_update_commit_row(syncing);
+	_update_sync_row(shown != NETWORK_NONE);
 
-	sync_row->set_visible(has_remotes);
-	const String fetch_needs_git = _needs_git(NETWORK_FETCH);
-	fetch_button->set_disabled(busy || !fetch_needs_git.is_empty());
-	fetch_button->set_text(shown == NETWORK_FETCH ? String("Fetching...") : String("Fetch"));
-	fetch_button->set_tooltip_text(fetch_needs_git.is_empty() ? String("Fetch: check the remote for new commits, without changing your files.") : fetch_needs_git);
+	// Last, so the reason overrides the others: nothing else matters until it's finished.
+	branch_select->set_tooltip_text(in_operation.is_empty() ? String("Current branch. Pick another to switch to it.") : in_operation);
+	if (!in_operation.is_empty()) {
+		branch_select->set_disabled(true);
+		amend_check->set_disabled(true);
+		amend_check->set_tooltip_text(in_operation);
+		commit_button->set_disabled(true);
+		commit_button->set_tooltip_text(in_operation);
+		pull_button->set_disabled(true);
+		pull_button->set_tooltip_text(in_operation);
+	}
+	_update_operation_banner(); // Its buttons follow the same busy state.
+}
+
+// Amend and Commit: enabled when there's something to commit, and the tooltip says what.
+void GitDock::_update_commit_row(bool p_syncing) {
+	const bool has_remotes = sync_status.get("has_remotes", false);
+	const String branch = sync_status.get("branch", String());
+	const bool has_message = !commit_message->get_text().strip_edges().is_empty();
+	const NetworkOp shown = _shown_network_op();
 
 	// Amend: only while the last commit is yours alone. Once pushed, rewriting it would leave
 	// teammates with a commit that no longer exists here.
@@ -611,7 +557,7 @@ void GitDock::_update_actions() {
 		amend_check->set_pressed(false); // E.g. just pushed. Puts the draft back.
 	}
 	const bool amending = amend_check->is_pressed();
-	amend_check->set_disabled(syncing || !has_commits || last_commit_pushed);
+	amend_check->set_disabled(p_syncing || !has_commits || last_commit_pushed);
 	if (!has_commits) {
 		amend_check->set_tooltip_text("Nothing to amend yet: there are no commits.");
 	} else if (last_commit_pushed) {
@@ -627,7 +573,7 @@ void GitDock::_update_actions() {
 		commit_button->set_text(amending ? "Amend" : "Commit");
 	}
 	if (amending) {
-		commit_button->set_disabled(syncing || !has_message);
+		commit_button->set_disabled(p_syncing || !has_message);
 		if (!has_message) {
 			commit_button->set_tooltip_text("Write a commit message first.");
 		} else if (staged_count == 0) {
@@ -636,7 +582,7 @@ void GitDock::_update_actions() {
 			commit_button->set_tooltip_text(vformat("Replace commit %s with this message, adding %s.", last_commit_id, plural(staged_count, "staged file", "staged files")));
 		}
 	} else {
-		commit_button->set_disabled(syncing || staged_count == 0 || !has_message);
+		commit_button->set_disabled(p_syncing || staged_count == 0 || !has_message);
 		if (staged_count == 0) {
 			commit_button->set_tooltip_text("Stage some changes first.");
 		} else if (!has_message) {
@@ -652,20 +598,37 @@ void GitDock::_update_actions() {
 		commit_button->set_disabled(true);
 		commit_button->set_tooltip_text(vformat("Committing needs git here: %s. Git isn't installed (or isn't on the PATH); install it from git-scm.com.", reason.is_empty() ? String("this repository has a post-rewrite hook") : reason));
 	}
+}
+
+// Fetch, Pull and Push. Pull and Push only appear when there's a remote to talk to, show how many
+// commits they'd move, and their tooltips say exactly what they'll do.
+void GitDock::_update_sync_row(bool p_busy) {
+	const bool has_remotes = sync_status.get("has_remotes", false);
+	const String upstream = sync_status.get("upstream", String());
+	const String branch = sync_status.get("branch", String());
+	const int ahead = sync_status.get("ahead", 0);
+	const int behind = sync_status.get("behind", 0);
+	const NetworkOp shown = _shown_network_op();
+
+	sync_row->set_visible(has_remotes);
+	const String fetch_needs_git = _needs_git(NETWORK_FETCH);
+	fetch_button->set_disabled(p_busy || !fetch_needs_git.is_empty());
+	fetch_button->set_text(shown == NETWORK_FETCH ? String("Fetching...") : String("Fetch"));
+	fetch_button->set_tooltip_text(fetch_needs_git.is_empty() ? String("Fetch: check the remote for new commits, without changing your files.") : fetch_needs_git);
 
 	// Pull: only when the branch tracks a remote branch. The count is as of the last fetch;
 	// pulling always fetches first, so it stays enabled at 0.
 	pull_button->set_visible(has_remotes && !upstream.is_empty());
 	const String pull_needs_git = _needs_git(NETWORK_PULL);
-	pull_button->set_disabled(busy || !pull_needs_git.is_empty());
+	pull_button->set_disabled(p_busy || !pull_needs_git.is_empty());
 	pull_button->set_text(shown == NETWORK_PULL ? String("Pulling...") : (behind > 0 ? vformat("Pull %d", behind) : String("Pull")));
 	if (!pull_needs_git.is_empty()) {
 		pull_button->set_tooltip_text(pull_needs_git);
 	} else if (!pull_blockers.is_empty() && shown != NETWORK_PULL) {
 		// Pull would refuse anyway (see GitRepository::pull): say why before it's pressed.
 		pull_button->set_disabled(true);
-		pull_button->set_tooltip_text(vformat("Pull is waiting: the new commits on %s change %s, which you have uncommitted changes to. Commit or discard your changes to %s first (marked in Changes).",
-				upstream, join_list(pull_blockers.slice(0, 3)) + (pull_blockers.size() > 3 ? vformat(" and %d more", pull_blockers.size() - 3) : String()), pull_blockers.size() == 1 ? "it" : "them"));
+		pull_button->set_tooltip_text(vformat("Pull is waiting: the new commits on %s change %s, and your uncommitted changes there can't be merged in (same lines, or staged, new, deleted or binary). Commit or discard your changes to %s first (marked in Changes).",
+				upstream, join_list(pull_blockers, 3), pull_blockers.size() == 1 ? "it" : "them"));
 	} else {
 		pull_button->set_tooltip_text(behind > 0
 						? vformat("Pull: get %s from %s.", plural(behind, "new commit", "new commits"), upstream)
@@ -677,30 +640,17 @@ void GitDock::_update_actions() {
 	if (upstream.is_empty()) {
 		push_button->set_text(shown == NETWORK_PUSH ? String("Publishing...") : String("Publish"));
 		push_button->set_tooltip_text(vformat("Publish: push %s to the remote and start tracking it.", branch));
-		push_button->set_disabled(busy);
+		push_button->set_disabled(p_busy);
 	} else {
 		push_button->set_text(shown == NETWORK_PUSH ? String("Pushing...") : (ahead > 0 ? vformat("Push %d", ahead) : String("Push")));
 		push_button->set_tooltip_text(ahead > 0 ? vformat("Push: send %s to %s.", plural(ahead, "commit", "commits"), upstream) : vformat("Nothing to push; %s has all your commits.", upstream));
-		push_button->set_disabled(busy || ahead == 0);
+		push_button->set_disabled(p_busy || ahead == 0);
 	}
 	const String push_needs_git = _needs_git(NETWORK_PUSH);
 	if (!push_needs_git.is_empty()) {
 		push_button->set_disabled(true);
 		push_button->set_tooltip_text(push_needs_git);
 	}
-
-	// Last, so the reason overrides the others: nothing else matters until it's finished.
-	branch_select->set_tooltip_text(in_operation.is_empty() ? String("Current branch. Pick another to switch to it.") : in_operation);
-	if (!in_operation.is_empty()) {
-		branch_select->set_disabled(true);
-		amend_check->set_disabled(true);
-		amend_check->set_tooltip_text(in_operation);
-		commit_button->set_disabled(true);
-		commit_button->set_tooltip_text(in_operation);
-		pull_button->set_disabled(true);
-		pull_button->set_tooltip_text(in_operation);
-	}
-	_update_operation_banner(); // Its buttons follow the same busy state.
 }
 
 void GitDock::_on_more_menu_id(int p_id) {
@@ -756,6 +706,22 @@ void GitDock::_on_more_menu_id(int p_id) {
 
 // --- Actions ----------------------------------------------------------------
 
+// A confirmation dialog whose text wraps (added to the dock). A wrapping label measures its
+// height at its minimum width, so the label gets one: without it the dialog opens as tall as one
+// word per line (gotcha 28). An empty p_ok_text keeps "OK".
+ConfirmationDialog *GitDock::_make_confirm(const String &p_title, const String &p_ok_text, const Callable &p_on_confirmed) {
+	ConfirmationDialog *dialog = memnew(ConfirmationDialog);
+	dialog->set_title(p_title);
+	if (!p_ok_text.is_empty()) {
+		dialog->set_ok_button_text(p_ok_text);
+	}
+	dialog->set_autowrap(true);
+	dialog->get_label()->set_custom_minimum_size(Vector2(440 * EditorInterface::get_singleton()->get_editor_scale(), 0));
+	dialog->connect("confirmed", p_on_confirmed);
+	add_child(dialog);
+	return dialog;
+}
+
 void GitDock::_open_path(const String &p_path) {
 	if (p_path.is_empty()) {
 		return;
@@ -809,268 +775,4 @@ void GitDock::_on_discard_confirmed() {
 	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 	refresh();
 	_reload_changed_scenes();
-}
-
-void GitDock::_on_branch_selected(int p_index) {
-	const Variant target = branch_select->get_item_metadata(p_index);
-	if (target.get_type() != Variant::STRING) {
-		// "New Branch..." item: put the picker back and ask for a name.
-		refresh();
-		_on_more_menu_id(MORE_NEW_BRANCH);
-		return;
-	}
-	if (String(target) == repo->get_current_branch()) {
-		return;
-	}
-	const String addon = _addon_removed_by(target);
-	if (!addon.is_empty()) {
-		// Godot unloads an addon whose files disappear, so the panel would close mid-switch.
-		pending_switch = target;
-		_fill_branches(); // Shows the current branch unless the switch goes ahead.
-		switch_confirm->set_text(vformat("\"%s\" doesn't include this Git panel (%s).\nSwitching removes it from the project, so the panel closes.\nSwitch back and restart the editor to get it back.", String(target), addon));
-		switch_confirm->popup_centered();
-		return;
-	}
-	_switch_branch(target);
-}
-
-// The addon's folder ("addons/godot_git") if switching to p_branch would delete it: it's
-// committed on the current branch but missing on p_branch. Empty otherwise.
-String GitDock::_addon_removed_by(const String &p_branch) const {
-	const String manifest = godot_git::addon_manifest_path();
-	if (manifest.is_empty()) {
-		return String();
-	}
-	const String absolute = manifest.simplify_path();
-	const String workdir = repo->get_workdir().simplify_path().trim_suffix("/") + "/";
-	if (!absolute.begins_with(workdir)) {
-		return String();
-	}
-	const String path = absolute.substr(workdir.length());
-	if (!repo->has_file_at("HEAD", path) || repo->has_file_at(p_branch, path)) {
-		return String();
-	}
-	return path.get_base_dir();
-}
-
-// p_branch is empty when it comes from the switch confirmation.
-void GitDock::_switch_branch(const String &p_branch) {
-	const String target = p_branch.is_empty() ? pending_switch : p_branch;
-	pending_switch = String();
-	if (target.is_empty() || !repo.is_valid()) {
-		return;
-	}
-	if (_ask_to_save("Switch", callable_mp(this, &GitDock::_switch_branch).bind(target))) {
-		_fill_branches(); // Shows the current branch until it's answered.
-		return;
-	}
-	if (repo->uses_lfs()) {
-		// May download LFS files: in the background, with progress and Cancel.
-		network_branch = target;
-		_fill_branches(); // Shows the current branch until the switch is done.
-		_start_network(NETWORK_SWITCH);
-		return;
-	}
-	_remember_open_scenes();
-	const Error err = repo->checkout_branch(target);
-	_report(err, "Switch branch");
-	if (err == OK) {
-		EditorInterface::get_singleton()->get_resource_filesystem()->scan();
-	}
-	refresh();
-	if (err == OK) {
-		_set_status(STATUS_SUCCESS, vformat("Switched to %s", repo->get_current_branch()));
-		_reload_changed_scenes(); // After the status: a scene it couldn't reload warns there.
-	}
-}
-
-void GitDock::_on_branch_dialog_confirmed() {
-	const String name = branch_name_edit->get_text().strip_edges();
-	if (name.is_empty()) {
-		return;
-	}
-	_report(repo->create_branch(name), "Create branch");
-	refresh();
-}
-
-void GitDock::_on_commit_message_input(const Ref<InputEvent> &p_event) {
-	Ref<InputEventKey> key = p_event;
-	if (key.is_null() || !key->is_pressed()) {
-		return;
-	}
-	if (!key->is_echo() && key->is_command_or_control_pressed() && (key->get_keycode() == KEY_ENTER || key->get_keycode() == KEY_KP_ENTER)) {
-		commit_message->accept_event();
-		if (!commit_button->is_disabled()) {
-			// With Shift: push right after, if there's a remote to push to.
-			push_after_commit = key->is_shift_pressed() && sync_status.get("has_remotes", false);
-			_commit();
-		}
-		return;
-	}
-	// Up in an empty box (or on a message it put there) brings back your earlier messages.
-	const bool plain = !key->is_command_or_control_pressed() && !key->is_shift_pressed() && !key->is_alt_pressed();
-	const bool recalled = message_history_index >= 0 && message_history_index < message_history.size() && commit_message->get_text() == message_history[message_history_index];
-	if (plain && key->get_keycode() == KEY_UP && (commit_message->get_text().is_empty() || recalled) && commit_message->get_caret_line() == 0) {
-		commit_message->accept_event();
-		if (!recalled) {
-			message_history_index = -1; // An empty box starts again from the newest.
-		}
-		_recall_message(1);
-	} else if (plain && key->get_keycode() == KEY_DOWN && recalled && commit_message->get_caret_line() == commit_message->get_line_count() - 1) {
-		commit_message->accept_event();
-		_recall_message(-1);
-	}
-}
-
-// p_step 1 goes one message further back, -1 one newer (and past the newest, back to empty).
-void GitDock::_recall_message(int p_step) {
-	if (message_history_index < 0 && p_step > 0) {
-		// Your own recent messages, newest first, without repeats. Not merges: git makes up their
-		// messages ("Merge branch 'main'"), which aren't worth bringing back.
-		message_history.clear();
-		const String me = repo->get_identity().get("name", String());
-		const Array commits = repo->get_commits(100);
-		for (int i = 0; i < commits.size() && message_history.size() < 20; i++) {
-			const Dictionary commit = commits[i];
-			const String message = commit["message"];
-			if (String(commit["author"]) == me && !bool(commit["merge"]) && !message.is_empty() && !message_history.has(message)) {
-				message_history.push_back(message);
-			}
-		}
-	}
-	const int index = message_history_index + p_step;
-	if (index >= message_history.size()) {
-		return;
-	}
-	message_history_index = MAX(index, -1);
-	commit_message->set_text(message_history_index >= 0 ? message_history[message_history_index] : String());
-	commit_message->set_caret_line(0);
-	commit_message->set_caret_column(0);
-}
-
-// Ticking Amend fills in the last commit's message to edit; unticking puts back what was
-// there before, unless the message was edited meanwhile.
-void GitDock::_on_amend_toggled(bool p_on) {
-	if (p_on) {
-		amend_saved_draft = commit_message->get_text();
-		commit_message->set_text(last_commit_message);
-		const int last_line = commit_message->get_line_count() - 1;
-		commit_message->set_caret_line(last_line);
-		commit_message->set_caret_column(commit_message->get_line(last_line).length());
-	} else if (commit_message->get_text() == last_commit_message) {
-		commit_message->set_text(amend_saved_draft);
-	}
-	_update_actions();
-}
-
-void GitDock::_commit() {
-	const String message = commit_message->get_text().strip_edges();
-	const bool amending = amend_check->is_pressed();
-	if (message.is_empty() || (staged_count == 0 && !amending)) {
-		return;
-	}
-	if (_ask_identity(NETWORK_COMMIT)) {
-		return; // Commits once the name and email are saved.
-	}
-	if (_ask_about_large_files()) {
-		return; // Commits if confirmed.
-	}
-	const int files = staged_count;
-	const String old_id = last_commit_id;
-	if (repo->commit_runs_git(amending)) {
-		// Hooks or signing: git does it, which may take a while (a hook can run a linter).
-		network_commit_message = message;
-		network_amend = amending;
-		network_commit_files = files;
-		network_amended_id = old_id;
-		_start_network(NETWORK_COMMIT);
-		return;
-	}
-	const Error err = amending ? repo->amend(message) : repo->commit(message);
-	_report(err, amending ? "Amend" : "Commit");
-	if (err == OK) {
-		amend_check->set_pressed_no_signal(false);
-		amend_saved_draft = String();
-		commit_message->clear();
-	}
-	refresh();
-	if (err == OK) {
-		_report_commit(amending, files, old_id);
-		_after_commit();
-	} else {
-		push_after_commit = false;
-	}
-}
-
-// Staged files over 50 MB (where GitHub starts warning; it refuses 100 MB) get a question first:
-// once committed, a file stays in the history for good and every clone downloads it. Returns true
-// if it asked; the commit then happens on "Commit Anyway".
-bool GitDock::_ask_about_large_files() {
-	if (large_checked) {
-		large_checked = false;
-		return false;
-	}
-	const Array large = repo->get_large_staged_files(50 * 1024 * 1024);
-	if (large.is_empty()) {
-		return false;
-	}
-	PackedStringArray lines;
-	for (int i = 0; i < MIN(large.size(), 8); i++) {
-		const Dictionary file = large[i];
-		lines.push_back(vformat(String::utf8("• %s (%s)"), file["path"], String::humanize_size(file["size"])));
-	}
-	if (large.size() > 8) {
-		lines.push_back(vformat("...and %d more", large.size() - 8));
-	}
-	large_confirm->set_text(vformat("%s:\n%s\n\nOnce committed, a file stays in the history for good, and everyone who clones the repository downloads it. GitHub refuses files over 100 MB. Git LFS keeps big files like these out of the history.",
-			large.size() == 1 ? String("This staged file is over 50 MB") : String("These staged files are over 50 MB"), String("\n").join(lines)));
-	large_confirm->popup_centered();
-	push_after_commit = false; // Pushing big files is exactly what to think twice about.
-	return true;
-}
-
-void GitDock::_on_large_confirmed() {
-	large_checked = true;
-	_commit();
-}
-
-// After a successful commit: Ctrl+Shift+Enter pushes it right away.
-void GitDock::_after_commit() {
-	message_history_index = -1;
-	if (push_after_commit) {
-		push_after_commit = false;
-		_start_network(NETWORK_PUSH);
-	}
-}
-
-// The commit's page on GitHub, GitLab or Bitbucket, from the upstream's remote (else origin, else
-// the only remote). Empty for other hosts: no guessing at URLs that may not exist.
-String GitDock::_web_commit_url(const String &p_hash) const {
-	String remote = String(sync_status.get("upstream", String())).get_slice("/", 0);
-	const PackedStringArray remotes = repo->get_remotes();
-	if (remote.is_empty() || !remotes.has(remote)) {
-		remote = remotes.has("origin") || remotes.is_empty() ? String("origin") : remotes[0];
-	}
-	const String site = web_repository_url(repo->get_remote_url(remote));
-	if (site.is_empty()) {
-		return String();
-	}
-	if (site.contains("://gitlab.com/")) {
-		return vformat("%s/-/commit/%s", site, p_hash);
-	}
-	if (site.contains("://bitbucket.org/")) {
-		return vformat("%s/commits/%s", site, p_hash);
-	}
-	return vformat("%s/commit/%s", site, p_hash);
-}
-
-// After refresh(), so last_commit_id is the new commit.
-void GitDock::_report_commit(bool p_amended, int p_files, const String &p_old_id) {
-	if (!p_amended) {
-		_set_status(STATUS_SUCCESS, vformat("Committed %s (%s)", last_commit_id, plural(p_files, "file", "files")));
-	} else if (p_files > 0) {
-		_set_status(STATUS_SUCCESS, vformat("Amended %s, now %s (%s added)", p_old_id, last_commit_id, plural(p_files, "file", "files")));
-	} else {
-		_set_status(STATUS_SUCCESS, vformat("Amended %s, now %s", p_old_id, last_commit_id));
-	}
 }

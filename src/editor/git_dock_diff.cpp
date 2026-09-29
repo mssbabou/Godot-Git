@@ -1,0 +1,118 @@
+// Which file the Diff panel shows, and keeping it up to date (the panel itself is GitDiffDock).
+
+#include "editor/git_dock.h"
+
+#include "editor/git_diff_dock.h"
+#include "editor/git_dock_util.h"
+#include "editor/ui_text.h"
+
+using namespace godot_git;
+
+void GitDock::set_diff_dock(GitDiffDock *p_dock) {
+	diff_dock = p_dock;
+	diff_dock->connect("open_requested", callable_mp(this, &GitDock::_open_path));
+}
+
+// p_focus: also bring the Diff panel up (a click), not just update it (keyboard, right-click).
+void GitDock::_show_diff(const String &p_path, bool p_staged, bool p_focus) {
+	diff_path = p_path;
+	diff_staged = p_staged;
+	diff_commit = String();
+	diff_commit_shown = String();
+	_update_diff();
+	if (p_focus && diff_dock) {
+		diff_dock->make_visible();
+	}
+}
+
+void GitDock::_show_commit_diff(const String &p_hash, const String &p_path, bool p_focus) {
+	diff_path = p_path;
+	diff_commit = p_hash;
+	_update_diff();
+	if (p_focus && diff_dock) {
+		diff_dock->make_visible();
+	}
+}
+
+// Brings the Diff panel up to date after a refresh. A file that was staged or unstaged meanwhile
+// is followed to its other list, so staging the file you're looking at keeps it on screen.
+void GitDock::_update_diff() {
+	if (!diff_dock || diff_path.is_empty() || repo.is_null() || !repo->is_open()) {
+		return;
+	}
+	if (!diff_commit.is_empty()) {
+		const String key = diff_commit + ":" + diff_path;
+		if (key != diff_commit_shown) {
+			diff_commit_shown = key;
+			Dictionary diff = repo->get_commit_diff(diff_commit, diff_path);
+			_add_image_versions(diff, diff_commit + "^1", diff_commit);
+			diff_dock->set_diff(diff, vformat("Commit %s", diff_commit.left(7)), _file_icon(diff_path));
+		}
+		_select_diff_row();
+		return;
+	}
+	Dictionary diff = repo->get_diff(diff_path, diff_staged);
+	if (diff.get("kind", String()) == "unchanged") {
+		const Dictionary other = repo->get_diff(diff_path, !diff_staged);
+		if (other.get("kind", String()) != "unchanged") {
+			diff_staged = !diff_staged;
+			diff = other;
+		}
+	}
+	if (diff.get("kind", String()) != "unchanged") {
+		_add_image_versions(diff, diff_staged ? "HEAD" : "index", diff_staged ? "index" : "workdir");
+		// The companions the file's row stands for (see _fill_file_pane): changed in the same list.
+		Array companions;
+		if (companion_owner(diff_path).is_empty()) {
+			for (const char *suffix : { ".import", ".uid" }) {
+				const Dictionary companion = repo->get_diff(vformat("%s%s", diff_path, suffix), diff_staged);
+				if (companion.get("kind", String()) != "unchanged" && !companion.is_empty()) {
+					companions.push_back(companion);
+				}
+			}
+		}
+		if (!companions.is_empty()) {
+			diff["companions"] = companions;
+		}
+	}
+	diff_dock->set_diff(diff, diff_staged ? "Staged" : "Unstaged", _file_icon(diff_path));
+	_select_diff_row();
+}
+
+// An image's two versions, for the Diff panel's before | after (the old one under its old name,
+// for a rename). Versions as in GitRepository::get_file_bytes.
+void GitDock::_add_image_versions(Dictionary &r_diff, const String &p_old_version, const String &p_new_version) {
+	if (!GitDiffDock::is_image_path(diff_path)) {
+		return;
+	}
+	r_diff["image_old"] = repo->get_file_bytes(p_old_version, r_diff.get("old_path", diff_path));
+	r_diff["image_new"] = repo->get_file_bytes(p_new_version, diff_path);
+}
+
+// Marks the file the Diff panel shows in its list (the lists are rebuilt on every refresh).
+void GitDock::_select_diff_row() {
+	if (!diff_commit.is_empty()) {
+		TreeItem *root = history_tree->get_root();
+		for (TreeItem *commit = root ? root->get_first_child() : nullptr; commit; commit = commit->get_next()) {
+			for (TreeItem *item = commit->get_first_child(); item; item = item->get_next()) {
+				if (item->has_meta("git_hash") && String(item->get_meta("git_hash")) == diff_commit && String(item->get_meta("git_path")) == diff_path) {
+					if (!history_tree->get_selected()) {
+						item->select(0);
+					}
+					return;
+				}
+			}
+		}
+		return;
+	}
+	FilePane &pane = diff_staged ? staged_pane : changes_pane;
+	TreeItem *root = pane.tree->get_root();
+	for (TreeItem *item = root ? root->get_first_child() : nullptr; item; item = item->get_next()) {
+		if (item->get_metadata(COLUMN_NAME).get_type() == Variant::STRING && String(item->get_metadata(COLUMN_NAME)) == diff_path) {
+			if (!pane.tree->get_next_selected(nullptr)) {
+				item->select(COLUMN_NAME); // Doesn't emit multi_selected, so it can't loop back here.
+			}
+			return;
+		}
+	}
+}

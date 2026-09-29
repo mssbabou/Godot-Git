@@ -269,6 +269,58 @@ Error explain_checkout_failure(git_repository *p_repo, const String &p_error, co
 	return fail(vformat("Nothing was changed: %s", reason));
 }
 
+bool read_tree_blob(git_repository *p_repo, git_tree *p_tree, const String &p_path, BlobPtr &r_blob) {
+	TreeEntryPtr entry;
+	if (!p_tree || git_tree_entry_bypath(entry.out(), p_tree, p_path.utf8().get_data()) < 0 || git_tree_entry_type(entry) != GIT_OBJECT_BLOB) {
+		return false;
+	}
+	return git_blob_lookup(r_blob.out(), p_repo, git_tree_entry_id(entry)) == 0;
+}
+
+std::string blob_text(git_blob *p_blob) {
+	return std::string((const char *)git_blob_rawcontent(p_blob), (size_t)git_blob_rawsize(p_blob));
+}
+
+bool apply_filters(git_repository *p_repo, const String &p_path, const char *p_data, size_t p_size, git_filter_mode_t p_mode, std::string &r_out) {
+	git_filter_list *filters = nullptr;
+	if (git_filter_list_load(&filters, p_repo, nullptr, p_path.utf8().get_data(), p_mode, GIT_FILTER_DEFAULT) < 0) {
+		return false;
+	}
+	if (!filters) {
+		r_out.assign(p_data, p_size);
+		return true;
+	}
+	git_buf out = GIT_BUF_INIT;
+	const bool ok = git_filter_list_apply_to_buffer(&out, filters, p_data, p_size) == 0;
+	if (ok) {
+		r_out.assign(out.ptr, out.size);
+	}
+	git_buf_dispose(&out);
+	git_filter_list_free(filters);
+	return ok;
+}
+
+bool write_file(const String &p_path, const char *p_data, size_t p_size) {
+	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::WRITE);
+	if (file.is_null()) {
+		return false;
+	}
+	PackedByteArray bytes;
+	bytes.resize(p_size);
+	if (p_size > 0) {
+		memcpy(bytes.ptrw(), p_data, p_size);
+	}
+	file->store_buffer(bytes);
+	return file->get_error() == OK;
+}
+
+String name_list(const PackedStringArray &p_paths) {
+	if (p_paths.size() > 3) {
+		return vformat("%s and %d more", String(", ").join(p_paths.slice(0, 3)), p_paths.size() - 3);
+	}
+	return String(", ").join(p_paths);
+}
+
 String operation_in_progress(git_repository *p_repo) {
 	switch (git_repository_state(p_repo)) {
 		case GIT_REPOSITORY_STATE_MERGE:

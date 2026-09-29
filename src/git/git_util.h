@@ -4,6 +4,8 @@
 
 #include <git2.h>
 
+#include <string>
+
 #include <initializer_list>
 #include <utility>
 
@@ -154,6 +156,22 @@ PackedStringArray stashed_paths(git_repository *p_repo, const git_oid *p_stash);
 
 // Every path with uncommitted changes: staged, unstaged, or new (untracked) files.
 PackedStringArray uncommitted_paths(git_repository *p_repo);
+
+// p_path's blob in p_tree, if it has one (false for a folder, or no such path).
+bool read_tree_blob(git_repository *p_repo, git_tree *p_tree, const String &p_path, BlobPtr &r_blob);
+
+// A blob's content as bytes in a std::string.
+std::string blob_text(git_blob *p_blob);
+
+// p_data run through the filters git applies to p_path between the file and git's copy:
+// GIT_FILTER_TO_ODB (file -> git: CRLF becomes LF with core.autocrlf) or GIT_FILTER_TO_WORKTREE.
+bool apply_filters(git_repository *p_repo, const String &p_path, const char *p_data, size_t p_size, git_filter_mode_t p_mode, std::string &r_out);
+
+// Writes p_size bytes to the file at p_path (absolute), replacing it. False if it couldn't.
+bool write_file(const String &p_path, const char *p_data, size_t p_size);
+
+// Paths for a message: "a.gd, b.gd, c.gd and 2 more" (at most three named).
+String name_list(const PackedStringArray &p_paths);
 
 // What git operation the repository is in the middle of (usually one started in a terminal and
 // stopped at conflicts): "merge", "rebase", "cherry-pick", "revert", "apply" (git am), "bisect",

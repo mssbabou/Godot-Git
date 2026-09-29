@@ -82,6 +82,22 @@ func _texts(root: Node) -> PackedStringArray:
 	return texts
 
 
+## The index of the menu item called p_text, or -1.
+func _menu_index(menu: PopupMenu, text: String) -> int:
+	for i in menu.item_count:
+		if menu.get_item_text(i) == text:
+			return i
+	return -1
+
+
+## The popup menu under p_root that has an item called p_text (the right-click menu).
+func _menu_with(root: Node, text: String) -> PopupMenu:
+	for menu: PopupMenu in root.find_children("*", "PopupMenu", true, false):
+		if _menu_index(menu, text) >= 0:
+			return menu
+	return null
+
+
 ## The text of the Diff panel's code views (all panes; only the visible view has lines).
 func _diff_code() -> String:
 	var text := ""
@@ -174,10 +190,18 @@ func _run() -> void:
 
 	# Staging the shown file: it moves to Staged Changes, and the Diff panel follows it.
 	player = _file_row("Changes", "player.gd")
+	changes.deselect_all() # Only this file: the images above were selected too.
 	player.select(0)
 	changes.multi_selected.emit(player, 0, true)
 	await _frames()
-	changes.button_clicked.emit(_file_row("Changes", "player.gd"), 0, 0, MOUSE_BUTTON_LEFT) # BUTTON_STAGE
+	# Through the right-click menu (the row's own buttons need a real mouse: see CLAUDE.md, gotcha 41).
+	changes.item_mouse_selected.emit(Vector2(), MOUSE_BUTTON_RIGHT)
+	await _frames()
+	var menu := _menu_with(dock, "Stage")
+	_check(menu != null, "right-clicking a changed file offers Stage")
+	if menu:
+		menu.id_pressed.emit(menu.get_item_id(_menu_index(menu, "Stage")))
+		menu.hide()
 	await _frames()
 	_check(_file_row("Staged Changes", "player.gd") != null, "staging a file")
 	_check(_texts(diff).has("Staged"), "the Diff panel follows the staged file")

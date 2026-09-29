@@ -150,12 +150,24 @@ private:
 	Control *message_view = nullptr;
 	bool syncing_scroll = false;
 
-	void _make_pane(PaneIndex p_index, Control *p_parent, int p_number_gutters);
-	void _make_image_side(int p_index, Control *p_parent);
 	void _update_theme();
 	void _render();
 	View _current_view() const;
 	void _update_header();
+	String _empty_text() const;
+	void _on_view_selected(int p_index);
+	void _on_open_pressed();
+
+	// git_diff_dock_text.cpp
+	void _make_pane(PaneIndex p_index, Control *p_parent, int p_number_gutters);
+	void _build_rows(Rows &r_unified, Rows &r_old, Rows &r_new) const;
+	void _fill_pane(Pane &r_pane, const Rows &p_rows);
+	Ref<SyntaxHighlighter> _make_code_highlighter() const;
+	void _draw_gutter(int p_line, int p_gutter, const Rect2 &p_region, int p_pane);
+	void _on_scrolled(double p_value, int p_from);
+
+	// git_diff_dock_images.cpp
+	void _make_image_side(int p_index, Control *p_parent);
 	void _show_images();
 	void _draw_image_side(int p_index);
 
@@ -164,15 +176,6 @@ private:
 	void _show_settings();
 	void _fill_settings(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_diff);
 	void _fit_companions();
-
-	String _empty_text() const;
-	void _build_rows(Rows &r_unified, Rows &r_old, Rows &r_new) const;
-	void _fill_pane(Pane &r_pane, const Rows &p_rows);
-	Ref<SyntaxHighlighter> _make_code_highlighter() const;
-	void _draw_gutter(int p_line, int p_gutter, const Rect2 &p_region, int p_pane);
-	void _on_scrolled(double p_value, int p_from);
-	void _on_view_selected(int p_index);
-	void _on_open_pressed();
 
 protected:
 	static void _bind_methods();

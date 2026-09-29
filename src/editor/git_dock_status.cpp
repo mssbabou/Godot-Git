@@ -180,12 +180,7 @@ void GitDock::_update_status_style() {
 
 	// Problems sit on a faint tint of their color, so they read as "needs your attention" and
 	// not as just another line of text. Everything else is flush with the rest of the dock.
-	Ref<StyleBoxFlat> panel;
-	panel.instantiate();
-	panel->set_bg_color(Color(tint, tint.a * 0.15));
-	panel->set_corner_radius_all(Math::round(3 * scale));
-	// Text starts where the commit message's text does.
-	panel->set_content_margin(SIDE_LEFT, commit_message->get_theme_stylebox("normal")->get_margin(SIDE_LEFT));
+	const Ref<StyleBoxFlat> panel = _tinted_panel(tint);
 	panel->set_content_margin(SIDE_RIGHT, tint.a > 0 ? Math::round(2 * scale) : 0);
 	panel->set_content_margin(SIDE_TOP, Math::round(2 * scale));
 	panel->set_content_margin(SIDE_BOTTOM, Math::round(2 * scale));
@@ -210,6 +205,18 @@ void GitDock::_on_status_button() {
 	} else {
 		_set_status(STATUS_IDLE, String());
 	}
+}
+
+// The strip's and the operation banner's background: a faint rounded tint of p_tint (transparent
+// for none), with the text starting where the commit message's text does.
+Ref<StyleBoxFlat> GitDock::_tinted_panel(const Color &p_tint) const {
+	const float scale = EditorInterface::get_singleton()->get_editor_scale();
+	Ref<StyleBoxFlat> panel;
+	panel.instantiate();
+	panel->set_bg_color(Color(p_tint, p_tint.a * 0.15));
+	panel->set_corner_radius_all(Math::round(3 * scale));
+	panel->set_content_margin(SIDE_LEFT, commit_message->get_theme_stylebox("normal")->get_margin(SIDE_LEFT));
+	return panel;
 }
 
 // The operation banner: shown while the repository is in the middle of a merge, rebase,
@@ -249,11 +256,8 @@ void GitDock::_build_operation_banner(Control *p_parent) {
 	operation_continue->connect("pressed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_CONTINUE));
 	buttons->add_child(operation_continue);
 
-	abort_confirm = memnew(ConfirmationDialog);
-	abort_confirm->set_autowrap(true);
-	abort_confirm->get_label()->set_custom_minimum_size(Vector2(440 * scale, 0)); // Gotcha 28.
-	abort_confirm->connect("confirmed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_ABORT));
-	add_child(abort_confirm);
+	// Title and button are set when it opens (they name the operation).
+	abort_confirm = _make_confirm(String(), String(), callable_mp(this, &GitDock::_start_network).bind(NETWORK_ABORT));
 }
 
 bool GitDock::_in_operation() const {
@@ -318,11 +322,7 @@ void GitDock::_update_operation_banner() {
 
 	// Warning-tinted like the strip's warnings: it needs attention, but nothing failed.
 	const Color tint = get_theme_color("warning_color", "Editor");
-	Ref<StyleBoxFlat> panel;
-	panel.instantiate();
-	panel->set_bg_color(Color(tint, 0.15));
-	panel->set_corner_radius_all(Math::round(3 * scale));
-	panel->set_content_margin(SIDE_LEFT, commit_message->get_theme_stylebox("normal")->get_margin(SIDE_LEFT)); // Like the strip.
+	const Ref<StyleBoxFlat> panel = _tinted_panel(tint);
 	for (const Side side : { SIDE_TOP, SIDE_RIGHT, SIDE_BOTTOM }) {
 		panel->set_content_margin(side, Math::round(4 * scale));
 	}

@@ -79,6 +79,41 @@ String plural(int p_count, const String &p_singular, const String &p_plural) {
 	return vformat("%d %s", p_count, p_count == 1 ? p_singular : p_plural);
 }
 
+String join_list(const PackedStringArray &p_items, int p_max_shown) {
+	if (p_max_shown > 0 && p_items.size() > p_max_shown) {
+		return vformat("%s and %d more", String(", ").join(p_items.slice(0, p_max_shown)), p_items.size() - p_max_shown);
+	}
+	if (p_items.size() <= 1) {
+		return p_items.is_empty() ? String() : p_items[0];
+	}
+	return vformat("%s and %s", String(", ").join(p_items.slice(0, -1)), p_items[p_items.size() - 1]);
+}
+
+String trim_middle(const String &p_text, const Ref<Font> &p_font, int p_font_size, float p_width) {
+	auto width = [&](const String &p_candidate) {
+		return p_font->get_string_size(p_candidate, HORIZONTAL_ALIGNMENT_LEFT, -1, p_font_size).x;
+	};
+	if (width(p_text) <= p_width) {
+		return p_text;
+	}
+	const String ellipsis = String::utf8("…");
+	auto shortened = [&](int p_kept) {
+		const int head = p_kept * 2 / 5;
+		return p_text.left(head) + ellipsis + p_text.right(p_kept - head);
+	};
+	int low = 0; // The most characters that still fit, found by bisection.
+	int high = p_text.length() - 1;
+	while (low < high) {
+		const int mid = (low + high + 1) / 2;
+		if (width(shortened(mid)) <= p_width) {
+			low = mid;
+		} else {
+			high = mid - 1;
+		}
+	}
+	return low > 0 ? shortened(low) : ellipsis;
+}
+
 String web_repository_url(const String &p_remote_url) {
 	String rest = p_remote_url.strip_edges();
 	// "git@github.com:owner/repo.git" (scp-style) or "ssh://git@github.com/owner/repo.git".

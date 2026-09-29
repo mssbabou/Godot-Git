@@ -1,20 +1,15 @@
-// The dock's lists: Staged Changes, Changes and History, how their rows are drawn, and what
-// clicking, hovering and right-clicking them does.
+// The dock's lists: the Staged Changes and Changes sections, their line counts and header
+// buttons, and how a file row is drawn (History is in git_dock_history.cpp, what rows do on
+// hover and click in git_dock_rows.cpp).
 
 #include "editor/git_dock.h"
 
-#include <godot_cpp/classes/display_server.hpp>
-#include <godot_cpp/classes/editor_file_system.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/font.hpp>
-#include <godot_cpp/classes/input_event_mouse_button.hpp>
-#include <godot_cpp/classes/input_event_mouse_motion.hpp>
-#include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
 #include <godot_cpp/classes/text_line.hpp>
-#include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/classes/v_scroll_bar.hpp>
 #include <godot_cpp/core/math.hpp>
@@ -22,64 +17,10 @@
 #include <godot_cpp/variant/vector2i.hpp>
 
 #include "editor/git_diff_dock.h"
+#include "editor/git_dock_util.h"
 #include "editor/ui_text.h"
 
 using namespace godot_git;
-
-namespace {
-
-// File rows are a single cell (icon, name, folder, status letter, hover buttons) so they highlight as one unit.
-enum FileColumn {
-	COLUMN_NAME,
-	FILE_COLUMN_COUNT,
-};
-
-// What a History row is: "commit", "placeholder" (until the commit is expanded), "note", "file"
-// or "more" (Load More Commits).
-String row_kind(const TreeItem *p_item) {
-	return p_item ? String(p_item->get_meta("git_row", String())) : String();
-}
-
-// The file a Godot companion file belongs to ("player.gd" for "player.gd.uid", "coin.png" for
-// "coin.png.import"), or "" if p_path isn't one.
-String companion_owner(const String &p_path) {
-	for (const char *suffix : { ".uid", ".import" }) {
-		if (p_path.ends_with(suffix)) {
-			const String owner = p_path.trim_suffix(suffix);
-			return owner.get_file().contains(".") ? owner : String();
-		}
-	}
-	return String();
-}
-
-// p_text shortened in the middle ("final_boss…frame_012.png") to fit p_width, keeping a bit more
-// of the end than the start: that's where file names usually differ.
-String trim_middle(const String &p_text, const Ref<Font> &p_font, int p_font_size, float p_width) {
-	auto width = [&](const String &p_candidate) {
-		return p_font->get_string_size(p_candidate, HORIZONTAL_ALIGNMENT_LEFT, -1, p_font_size).x;
-	};
-	if (width(p_text) <= p_width) {
-		return p_text;
-	}
-	const String ellipsis = String::utf8("…");
-	auto shortened = [&](int p_kept) {
-		const int head = p_kept * 2 / 5;
-		return p_text.left(head) + ellipsis + p_text.right(p_kept - head);
-	};
-	int low = 0; // The most characters that still fit, found by bisection.
-	int high = p_text.length() - 1;
-	while (low < high) {
-		const int mid = (low + high + 1) / 2;
-		if (width(shortened(mid)) <= p_width) {
-			low = mid;
-		} else {
-			high = mid - 1;
-		}
-	}
-	return low > 0 ? shortened(low) : ellipsis;
-}
-
-} // namespace
 
 void GitDock::_build_lists(Control *p_parent) {
 	// Staged changes, changes, history: collapsible sections, each exactly as tall as its
@@ -165,7 +106,6 @@ void GitDock::_make_file_pane(FilePane &r_pane, Control *p_parent, const String 
 	tree->set_column_expand(COLUMN_NAME, true);
 	tree->set_column_clip_content(COLUMN_NAME, true);
 	tree->add_theme_constant_override("item_margin", 0); // Flat list: no hierarchy indent.
-	tree->connect("button_clicked", callable_mp(this, &GitDock::_on_tree_button_clicked));
 	tree->connect("item_activated", callable_mp(this, &GitDock::_on_file_activated).bind(tree));
 	tree->connect("item_mouse_selected", callable_mp(this, &GitDock::_on_tree_mouse_selected).bind(tree));
 	tree->connect("multi_selected", callable_mp(this, &GitDock::_on_file_multi_selected).bind(tree));
@@ -382,7 +322,7 @@ void GitDock::_show_line_stats(FilePane &p_pane) {
 		}
 		const PackedStringArray blocking = _blocking_paths(item);
 		if (!blocking.is_empty()) {
-			tooltip += vformat("\n\nThe new commits on %s change %s too, so Pull waits until your changes to it are committed or discarded.", String(sync_status.get("upstream", String())), blocking.size() == 1 && blocking[0] == path ? String("this file") : String(", ").join(blocking));
+			tooltip += vformat("\n\nThe new commits on %s change %s too, in a way your uncommitted changes can't be merged with, so Pull waits until they're committed or discarded.", String(sync_status.get("upstream", String())), blocking.size() == 1 && blocking[0] == path ? String("this file") : String(", ").join(blocking));
 		}
 		item->set_tooltip_text(COLUMN_NAME, tooltip);
 		item->set_meta("git_tooltip", tooltip); // Put back after the tooltip of a row button.
@@ -518,7 +458,7 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 		font->draw_string(canvas, Vector2(letter_x, p_rect.position.y + (p_rect.size.y - font->get_height(font_size)) / 2 + font->get_ascent(font_size)), letter, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color);
 		right -= 6 * scale;
 
-		// A file the new commits change too (Pull waits for it).
+		// A file the new commits change in a way your edit can't be merged with (Pull waits for it).
 		if (!_blocking_paths(p_item).is_empty()) {
 			const Ref<Texture2D> warning = get_theme_icon("StatusWarning", "EditorIcons");
 			right -= warning->get_width();
@@ -526,31 +466,8 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 			right -= 4 * scale;
 		}
 
-		// The hover buttons, like VS Code. Drawn here rather than as the Tree's cell buttons,
-		// which it always puts at the row's right end, pushing the letter aside; clicks on them
-		// are caught in _on_tree_gui_input, which finds their rects on the row.
 		if (p_item->get_instance_id() == pane->hovered_item) {
-			const Ref<StyleBox> hover_style = tree->get_theme_stylebox("button_hover");
-			const Size2 padding = tree->get_theme_stylebox("button_pressed")->get_minimum_size();
-			const float margin = tree->get_theme_constant("button_margin");
-			Array rects;
-			const Array buttons = _row_button_list(*pane);
-			for (int i = buttons.size() - 1; i >= 0; i--) {
-				const Dictionary button = buttons[i];
-				const Ref<Texture2D> icon = button["icon"];
-				const Size2 size = icon->get_size() + padding;
-				const Rect2 rect(right - size.x, p_rect.position.y + (p_rect.size.y - size.y) / 2, size.x, size.y);
-				if ((int)button["id"] == pane->hovered_button) {
-					hover_style->draw(canvas, rect);
-				}
-				icon->draw(canvas, rect.position + padding / 2); // Editor icons come in the theme's colors.
-				Dictionary hit = button.duplicate();
-				hit["rect"] = rect;
-				rects.push_back(hit);
-				right -= size.x + margin;
-			}
-			p_item->set_meta("git_button_rects", rects);
-			right -= 4 * scale;
+			right = _draw_row_buttons(p_item, *pane, p_rect, right) - 4 * scale;
 		}
 	}
 
@@ -598,642 +515,33 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 	}
 }
 
-// History: the latest commits, each expandable to its details and changed files (loaded when
-// first expanded). Rebuilt only when the commits changed, so expanded commits, the selection and
-// the scroll position survive the refresh that every save triggers.
-void GitDock::_fill_history() {
-	Array commits = repo->get_commits(history_limit + 1);
-	const bool more = commits.size() > history_limit;
-	if (more) {
-		commits.resize(history_limit);
-	}
-	has_commits = !commits.is_empty();
-	// For Amend. "unpushed" means on no remote-tracking branch; without remotes it's never set.
-	const Dictionary last = commits.is_empty() ? Dictionary() : Dictionary(commits[0]);
-	last_commit_id = last.get("id", String());
-	last_commit_message = last.get("message", String());
-	last_commit_pushed = has_commits && bool(sync_status.get("has_remotes", false)) && !bool(last.get("unpushed", false));
-
-	TreeItem *root = history_tree->get_root();
-	if (root && commits == history_shown && more == history_more) {
-		// Same commits: only the ages ("5m") move on.
-		for (TreeItem *item = root->get_first_child(); item; item = item->get_next()) {
-			if (row_kind(item) == "commit") {
-				item->set_text(1, relative_time((int64_t)Dictionary(item->get_metadata(0))["time"]));
-			}
+// The hovered row's buttons, like VS Code, ending at p_right; returns where they start. Drawn
+// here rather than as the Tree's cell buttons, which it always puts at the row's right end,
+// pushing the letter aside. Clicks on them are caught in _on_tree_gui_input, which finds their
+// rects on the row (meta "git_button_rects").
+float GitDock::_draw_row_buttons(TreeItem *p_item, const FilePane &p_pane, const Rect2 &p_rect, float p_right) {
+	Tree *tree = p_pane.tree;
+	const RID canvas = tree->get_custom_drawing_canvas_item();
+	const Ref<StyleBox> hover_style = tree->get_theme_stylebox("button_hover");
+	const Size2 padding = tree->get_theme_stylebox("button_pressed")->get_minimum_size();
+	const float margin = tree->get_theme_constant("button_margin");
+	float right = p_right;
+	Array rects;
+	const Array buttons = _row_button_list(p_pane);
+	for (int i = buttons.size() - 1; i >= 0; i--) {
+		const Dictionary button = buttons[i];
+		const Ref<Texture2D> icon = button["icon"];
+		const Size2 size = icon->get_size() + padding;
+		const Rect2 rect(right - size.x, p_rect.position.y + (p_rect.size.y - size.y) / 2, size.x, size.y);
+		if ((int)button["id"] == p_pane.hovered_button) {
+			hover_style->draw(canvas, rect);
 		}
-		return;
+		icon->draw(canvas, rect.position + padding / 2); // Editor icons come in the theme's colors.
+		Dictionary hit = button.duplicate();
+		hit["rect"] = rect;
+		rects.push_back(hit);
+		right -= size.x + margin;
 	}
-	history_shown = commits;
-	history_more = more;
-
-	history_tree->clear();
-	root = history_tree->create_item();
-	history_tree->set_visible(!commits.is_empty());
-	history_empty->get_parent_control()->set_visible(commits.is_empty());
-	history_empty->set_text("No commits yet.");
-	if (commits.is_empty()) {
-		return;
-	}
-
-	const Ref<Texture2D> icon = get_theme_icon("VCSCommit", "EditorIcons");
-	const Color accent = get_theme_color("accent_color", "Editor");
-	const Color dim = _dim_color();
-
-	for (int i = 0; i < commits.size(); i++) {
-		const Dictionary commit = commits[i];
-		const int64_t time = commit["time"];
-		const bool unpushed = commit["unpushed"];
-		const String date = local_date_time(time);
-
-		TreeItem *item = history_tree->create_item(root);
-		item->set_meta("git_row", "commit");
-		item->set_metadata(0, commit);
-		item->set_icon(0, icon);
-		if (unpushed) {
-			item->set_icon_modulate(0, accent);
-		}
-		item->set_text(0, commit["summary"]);
-		item->set_tooltip_text(0, vformat(String::utf8("%s\n\n%s · %s · %s%s"), commit["message"], commit["id"], commit["author"], date, unpushed ? "\nNot pushed yet" : ""));
-		item->set_text(1, relative_time(time));
-		item->set_text_overrun_behavior(1, TextServer::OVERRUN_NO_TRIMMING);
-		item->set_custom_color(1, dim);
-		item->set_text_alignment(1, HORIZONTAL_ALIGNMENT_RIGHT);
-		item->set_tooltip_text(1, date);
-
-		// Collapsed with a placeholder child, so it shows the arrow; the details load on expand.
-		TreeItem *placeholder = history_tree->create_item(item);
-		placeholder->set_meta("git_row", "placeholder");
-		placeholder->set_selectable(0, false);
-		placeholder->set_selectable(1, false);
-		item->set_collapsed(true);
-		if (history_expanded.has(commit["hash"])) {
-			item->set_collapsed(false); // Loads it (item_collapsed).
-		}
-	}
-
-	if (more) {
-		TreeItem *item = history_tree->create_item(root);
-		item->set_meta("git_row", "more");
-		item->set_text(0, "Load More Commits");
-		item->set_custom_color(0, accent);
-		item->set_tooltip_text(0, "Show 50 more commits.");
-		item->set_selectable(1, false);
-	}
-}
-
-// Fills an expanded commit: who and when, the rest of its message, and the files it changed.
-void GitDock::_fill_commit(TreeItem *p_item) {
-	while (p_item->get_first_child()) {
-		memdelete(p_item->get_first_child());
-	}
-	const Dictionary commit = p_item->get_metadata(0);
-	const String hash = commit["hash"];
-	const Color dim = _dim_color();
-	const String date = local_date_time(commit["time"]);
-
-	// Notes are single lines, trimmed to the width with the whole text in the tooltip. Not
-	// wrapped: the tree measures its height before wrapping, so rows below got cut off.
-	const String message = commit["message"];
-	// Notes are information, not buttons. The Tree highlights every row under the mouse, but draws
-	// a row's own background above that highlight, so the section's color covers it.
-	const Ref<StyleBoxFlat> section = history_pane->get_theme_stylebox("panel");
-	const Color background = section.is_valid() ? section->get_bg_color() : Color(0, 0, 0, 0);
-	auto add_note = [&](const String &p_text, const String &p_tooltip) {
-		TreeItem *note = history_tree->create_item(p_item);
-		note->set_meta("git_row", "note");
-		note->set_text(0, p_text);
-		note->set_custom_color(0, dim);
-		note->set_tooltip_text(0, p_tooltip);
-		for (int column = 0; column < 2; column++) {
-			note->set_selectable(column, false);
-			if (background.a > 0) {
-				note->set_custom_bg_color(column, background);
-			}
-		}
-	};
-
-	// The time for today's commits, the date for older ones; both, and the full hash, in the tooltip.
-	const String when = date.left(10) == local_date_time(Time::get_singleton()->get_unix_time_from_system()).left(10) ? date.substr(11, 5) : date.left(10);
-	add_note(vformat(String::utf8("%s · %s"), commit["author"], when), vformat(String::utf8("%s · %s · %s"), commit["author"], date, commit["hash"]));
-	// The rest of the message, a few lines of it.
-	const PackedStringArray body = message.substr(String(commit["summary"]).length()).strip_edges().split("\n", false);
-	for (int i = 0; i < MIN(body.size(), 6); i++) {
-		add_note(i == 5 && body.size() > 6 ? String("...") : body[i].strip_edges(), message);
-	}
-	if (bool(commit.get("merge", false))) {
-		add_note("Merge: what it brought into this branch", "A merge commit. Its files and diffs show what it brought into this branch (compared with its first parent).");
-	}
-
-	if (!commit_files.has(hash)) {
-		commit_files[hash] = repo->get_commit_files(hash);
-	}
-	const Array files = commit_files[hash];
-	if (files.is_empty()) {
-		add_note("No file changes.", String());
-	}
-	// Enough for any real commit; beyond that the tree would only get slow.
-	constexpr int MAX_ROWS = 500;
-	const Callable draw_row = callable_mp(this, &GitDock::_draw_file_row);
-	for (int i = 0; i < MIN((int)files.size(), MAX_ROWS); i++) {
-		const Dictionary file = files[i];
-		const String path = file["path"];
-		const String state = file["status"];
-		TreeItem *item = history_tree->create_item(p_item);
-		item->set_meta("git_row", "file");
-		item->set_meta("git_path", path);
-		item->set_meta("git_state", state);
-		item->set_meta("git_hash", hash);
-		item->set_meta("git_icon", _file_icon(path));
-		item->set_cell_mode(0, TreeItem::CELL_MODE_CUSTOM);
-		item->set_custom_draw_callback(0, draw_row);
-		item->set_text(0, path.get_file());
-		item->set_custom_color(0, Color(0, 0, 0, 0));
-		const int added = file["added"];
-		const int removed = file["removed"];
-		String what = status_name(state);
-		if (String(file["old_path"]) != path) {
-			what += vformat(" from %s", file["old_path"]);
-		}
-		if (added > 0 || removed > 0) {
-			what += vformat(String::utf8(" · +%d %s%d"), added, minus(), removed);
-		}
-		item->set_tooltip_text(0, vformat("%s\n%s", path, what));
-		item->set_selectable(1, false);
-		// The status letter in the ages' column, so it lines up with the letters of the lists
-		// above (at the right edge) instead of stopping short of this column.
-		item->set_text(1, status_letter(state));
-		item->set_custom_color(1, _status_color(state));
-		item->set_text_alignment(1, HORIZONTAL_ALIGNMENT_RIGHT);
-		item->set_tooltip_text(1, what);
-	}
-	if (files.size() > MAX_ROWS) {
-		add_note(vformat("...and %d more files, not listed.", files.size() - MAX_ROWS), String());
-	}
-}
-
-void GitDock::_on_history_item_collapsed(TreeItem *p_item) {
-	if (row_kind(p_item) != "commit") {
-		return;
-	}
-	const String hash = Dictionary(p_item->get_metadata(0))["hash"];
-	if (p_item->is_collapsed()) {
-		history_expanded.erase(hash);
-		return;
-	}
-	history_expanded[hash] = true;
-	// Not now: a click (on the row or its arrow) expands it while the Tree is handling that click,
-	// and then the Tree refuses to create rows (create_item() returns null) and crashed us.
-	callable_mp(this, &GitDock::_fill_commit_later).call_deferred(p_item->get_instance_id());
-}
-
-void GitDock::_fill_commit_later(uint64_t p_item) {
-	TreeItem *item = Object::cast_to<TreeItem>(ObjectDB::get_instance(ObjectID(p_item)));
-	TreeItem *first = item ? item->get_first_child() : nullptr;
-	if (!item || item->is_collapsed() || !first || row_kind(first) != "placeholder") {
-		return; // Gone (rebuilt), collapsed again, or already filled.
-	}
-	_fill_commit(item);
-	_select_diff_row();
-}
-
-void GitDock::_load_more_commits() {
-	history_limit += 50;
-	_fill_history();
-}
-
-// Selecting a commit's file (by mouse or keyboard) shows its change in the Diff panel.
-void GitDock::_on_history_item_selected() {
-	TreeItem *item = history_tree->get_selected();
-	if (row_kind(item) != "file") {
-		return;
-	}
-	staged_pane.tree->deselect_all();
-	changes_pane.tree->deselect_all();
-	_show_commit_diff(item->get_meta("git_hash"), item->get_meta("git_path"), false);
-}
-
-GitDock::FilePane *GitDock::_pane_for_tree(Object *p_tree) {
-	if (p_tree == staged_pane.tree) {
-		return &staged_pane;
-	}
-	if (p_tree == changes_pane.tree) {
-		return &changes_pane;
-	}
-	return nullptr;
-}
-
-// p_companions: with the companion files shown on the rows (for stage, unstage and discard,
-// which act on a file together with them), not for opening or copying paths.
-PackedStringArray GitDock::_selected_paths(Tree *p_tree, bool p_companions) const {
-	PackedStringArray paths;
-	for (TreeItem *item = p_tree->get_next_selected(nullptr); item; item = p_tree->get_next_selected(item)) {
-		if (item->get_metadata(COLUMN_NAME).get_type() == Variant::STRING) {
-			paths.append_array(p_companions ? _row_paths(item) : PackedStringArray({ item->get_metadata(COLUMN_NAME) }));
-		}
-	}
-	return paths;
-}
-
-// A file row's path and its companions' (see _fill_file_pane).
-PackedStringArray GitDock::_row_paths(TreeItem *p_item) const {
-	PackedStringArray paths;
-	paths.push_back(p_item->get_metadata(COLUMN_NAME));
-	paths.append_array(p_item->get_meta("git_companions", PackedStringArray()));
-	return paths;
-}
-
-// Which of a row's files the new commits change too (Pull waits for them).
-PackedStringArray GitDock::_blocking_paths(TreeItem *p_item) const {
-	PackedStringArray blocking;
-	for (const String &path : _row_paths(p_item)) {
-		if (pull_blockers.has(path)) {
-			blocking.push_back(path);
-		}
-	}
-	return blocking;
-}
-
-// A list's row buttons, left to right: [{id, icon, tooltip}].
-Array GitDock::_row_button_list(const FilePane &p_pane) const {
-	auto button = [&](int p_id, const char *p_icon, const char *p_tooltip) {
-		Dictionary entry;
-		entry["id"] = p_id;
-		entry["icon"] = get_theme_icon(p_icon, "EditorIcons");
-		entry["tooltip"] = p_tooltip;
-		return entry;
-	};
-	if (p_pane.staged) {
-		return Array::make(button(BUTTON_UNSTAGE, "ZoomLess", "Unstage"));
-	}
-	return Array::make(button(BUTTON_DISCARD, "UndoRedo", "Discard changes"), button(BUTTON_STAGE, "ZoomMore", "Stage"));
-}
-
-// Row buttons only show on the row under the mouse, to keep the list calm (drawn by _draw_file_row).
-void GitDock::_set_hovered(FilePane &p_pane, TreeItem *p_item) {
-	TreeItem *previous = Object::cast_to<TreeItem>(ObjectDB::get_instance(p_pane.hovered_item));
-	if (previous == p_item) {
-		return;
-	}
-	if (previous) {
-		previous->remove_meta("git_button_rects");
-		previous->set_tooltip_text(COLUMN_NAME, previous->get_meta("git_tooltip", String()));
-	}
-	p_pane.hovered_item = 0;
-	p_pane.hovered_button = -1;
-	if (p_item && p_item->get_metadata(COLUMN_NAME).get_type() == Variant::STRING) {
-		p_pane.hovered_item = p_item->get_instance_id();
-	}
-	p_pane.tree->queue_redraw();
-}
-
-// Which of the hovered row's buttons is at p_position: its {id, icon, tooltip, rect}, or empty.
-Dictionary GitDock::_row_button_at(const FilePane &p_pane, const Vector2 &p_position) const {
-	TreeItem *item = Object::cast_to<TreeItem>(ObjectDB::get_instance(p_pane.hovered_item));
-	if (!item) {
-		return Dictionary();
-	}
-	const Array rects = item->get_meta("git_button_rects", Array());
-	for (int i = 0; i < rects.size(); i++) {
-		const Dictionary button = rects[i];
-		if (Rect2(button["rect"]).has_point(p_position)) {
-			return button;
-		}
-	}
-	return Dictionary();
-}
-
-void GitDock::_on_tree_gui_input(const Ref<InputEvent> &p_event, Object *p_tree) {
-	FilePane *pane = _pane_for_tree(p_tree);
-	if (!pane) {
-		return;
-	}
-	Ref<InputEventMouseMotion> motion = p_event;
-	if (motion.is_valid()) {
-		_set_hovered(*pane, pane->tree->get_item_at_position(motion->get_position()));
-		const Dictionary button = _row_button_at(*pane, motion->get_position());
-		const int id = button.get("id", -1);
-		if (id != pane->hovered_button) {
-			pane->hovered_button = id;
-			pane->tree->queue_redraw();
-			// The Tree shows the row's tooltip; over a button, that's the button's.
-			TreeItem *item = Object::cast_to<TreeItem>(ObjectDB::get_instance(pane->hovered_item));
-			if (item) {
-				item->set_tooltip_text(COLUMN_NAME, id >= 0 ? String(button["tooltip"]) : String(item->get_meta("git_tooltip", String())));
-			}
-		}
-		return;
-	}
-	// A click on a row button: taken before the Tree sees it (Godot emits gui_input first for
-	// this), so it doesn't also select the row. The action runs deferred, outside this event.
-	Ref<InputEventMouseButton> click = p_event;
-	if (click.is_valid() && click->get_button_index() == MOUSE_BUTTON_LEFT) {
-		const Dictionary button = _row_button_at(*pane, click->get_position());
-		if (!button.is_empty()) {
-			pane->tree->accept_event();
-			if (click->is_pressed()) {
-				callable_mp(this, &GitDock::_click_row_button).call_deferred(pane->hovered_item, (int)button["id"]);
-			}
-		}
-	}
-}
-
-void GitDock::_on_tree_mouse_exited(Object *p_tree) {
-	FilePane *pane = _pane_for_tree(p_tree);
-	if (pane) {
-		_set_hovered(*pane, nullptr);
-	}
-}
-
-// A click on one of the buttons _draw_file_row draws (by the row's instance id: it runs deferred).
-void GitDock::_click_row_button(uint64_t p_item, int p_id) {
-	TreeItem *item = Object::cast_to<TreeItem>(ObjectDB::get_instance(p_item));
-	if (item) {
-		_on_tree_button_clicked(item, COLUMN_NAME, p_id, MOUSE_BUTTON_LEFT);
-	}
-}
-
-void GitDock::_on_tree_button_clicked(TreeItem *p_item, int p_column, int p_id, int p_mouse_button) {
-	const PackedStringArray paths = _row_paths(p_item);
-
-	switch (p_id) {
-		case BUTTON_STAGE: {
-			_stage_paths(paths, true);
-		} break;
-		case BUTTON_UNSTAGE: {
-			_stage_paths(paths, false);
-		} break;
-		case BUTTON_DISCARD: {
-			_confirm_discard(paths);
-		} break;
-	}
-}
-
-void GitDock::_on_file_activated(Object *p_tree) {
-	Tree *tree = Object::cast_to<Tree>(p_tree);
-	TreeItem *item = tree ? tree->get_selected() : nullptr;
-	if (item) {
-		_open_path(item->get_metadata(COLUMN_NAME));
-	}
-}
-
-void GitDock::_on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_button, Object *p_tree) {
-	if (p_mouse_button == MOUSE_BUTTON_LEFT && p_tree == history_tree) {
-		TreeItem *item = history_tree->get_item_at_position(p_position);
-		const String row = row_kind(item);
-		if (row == "commit") {
-			item->set_collapsed(!item->is_collapsed()); // Like VS Code: a click opens or closes it.
-		} else if (row == "file") {
-			_show_commit_diff(item->get_meta("git_hash"), item->get_meta("git_path"), true);
-		} else if (row == "more") {
-			// Deferred for the same reason as filling a commit: no clearing the tree mid-click.
-			callable_mp(this, &GitDock::_load_more_commits).call_deferred();
-		}
-		return;
-	}
-	if (p_mouse_button == MOUSE_BUTTON_LEFT) {
-		// A click on a file brings up the Diff panel (the selection already put the file in it).
-		const FilePane *pane = _pane_for_tree(p_tree);
-		TreeItem *item = pane ? pane->tree->get_item_at_position(p_position) : nullptr;
-		if (item && item->get_metadata(COLUMN_NAME).get_type() == Variant::STRING) {
-			_show_diff(item->get_metadata(COLUMN_NAME), pane->staged, true);
-		}
-		return;
-	}
-	if (p_mouse_button != MOUSE_BUTTON_RIGHT) {
-		return;
-	}
-	Tree *tree = Object::cast_to<Tree>(p_tree);
-	context_tree = tree;
-	context_menu->clear();
-
-	if (tree == history_tree) {
-		const String row = row_kind(tree->get_selected());
-		if (row == "commit") {
-			context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Commit Hash", MENU_COPY_HASH);
-			context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Commit Message", MENU_COPY_MESSAGE);
-			const Dictionary commit = tree->get_selected()->get_metadata(0);
-			const String url = _web_commit_url(commit["hash"]);
-			if (!url.is_empty()) {
-				// Only offered for GitHub, GitLab and Bitbucket; before it's pushed there's no page yet.
-				context_menu->add_separator();
-				context_menu->add_icon_item(get_theme_icon("ExternalLink", "EditorIcons"), vformat("Open on %s", web_host_name(url)), MENU_OPEN_ON_WEB);
-				if (commit["unpushed"]) {
-					context_menu->set_item_disabled(-1, true);
-					context_menu->set_item_tooltip(-1, "This commit isn't pushed yet, so it isn't there.");
-				}
-			}
-		} else if (row == "file") {
-			context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Path", MENU_COPY_PATH);
-			context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Relative Path", MENU_COPY_RELATIVE_PATH);
-		} else {
-			return;
-		}
-	} else {
-		const FilePane *pane = _pane_for_tree(tree);
-		const PackedStringArray paths = _selected_paths(tree);
-		if (!pane || paths.is_empty()) {
-			return;
-		}
-		const bool single = paths.size() == 1;
-		const String count = single ? String() : vformat(" (%d)", paths.size());
-
-		if (single) {
-			context_menu->add_icon_item(get_theme_icon("Load", "EditorIcons"), "Open", MENU_OPEN);
-			context_menu->add_separator();
-		}
-		if (pane->staged) {
-			context_menu->add_icon_item(get_theme_icon("ZoomLess", "EditorIcons"), "Unstage" + count, MENU_UNSTAGE);
-		} else {
-			context_menu->add_icon_item(get_theme_icon("ZoomMore", "EditorIcons"), "Stage" + count, MENU_STAGE);
-			context_menu->add_icon_item(get_theme_icon("UndoRedo", "EditorIcons"), "Discard Changes..." + count, MENU_DISCARD);
-		}
-		if (single) {
-			context_menu->add_separator();
-			if (_to_res_path(paths[0]).begins_with("res://")) {
-				context_menu->add_icon_item(get_theme_icon("Filesystem", "EditorIcons"), "Show in FileSystem", MENU_SHOW_IN_FILESYSTEM);
-			}
-			context_menu->add_icon_item(get_theme_icon("Folder", "EditorIcons"), "Show in File Manager", MENU_SHOW_IN_FILE_MANAGER);
-		}
-		context_menu->add_separator();
-		context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), single ? "Copy Path" : "Copy Paths", MENU_COPY_PATH);
-		context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), single ? "Copy Relative Path" : "Copy Relative Paths", MENU_COPY_RELATIVE_PATH);
-	}
-
-	context_menu->set_position(Vector2i(tree->get_screen_position() + p_position));
-	context_menu->reset_size();
-	context_menu->popup();
-}
-
-void GitDock::_on_context_menu_id(int p_id) {
-	if (!context_tree) {
-		return;
-	}
-	PackedStringArray paths;
-	if (context_tree != history_tree) {
-		paths = _selected_paths(context_tree);
-	} else if (history_tree->get_selected() && history_tree->get_selected()->has_meta("git_path")) {
-		paths.push_back(history_tree->get_selected()->get_meta("git_path"));
-	}
-
-	switch (p_id) {
-		case MENU_OPEN: {
-			if (!paths.is_empty()) {
-				_open_path(paths[0]);
-			}
-		} break;
-		case MENU_STAGE: {
-			_stage_paths(_selected_paths(context_tree, true), true);
-		} break;
-		case MENU_UNSTAGE: {
-			_stage_paths(_selected_paths(context_tree, true), false);
-		} break;
-		case MENU_DISCARD: {
-			_confirm_discard(_selected_paths(context_tree, true));
-		} break;
-		case MENU_SHOW_IN_FILESYSTEM: {
-			EditorInterface::get_singleton()->select_file(_to_res_path(paths[0]));
-		} break;
-		case MENU_SHOW_IN_FILE_MANAGER: {
-			OS::get_singleton()->shell_show_in_file_manager(repo->get_workdir().path_join(paths[0]), false);
-		} break;
-		case MENU_COPY_PATH:
-		case MENU_COPY_RELATIVE_PATH: {
-			PackedStringArray lines;
-			for (const String &path : paths) {
-				lines.push_back(p_id == MENU_COPY_PATH ? repo->get_workdir().path_join(path) : path);
-			}
-			DisplayServer::get_singleton()->clipboard_set(String("\n").join(lines));
-		} break;
-		case MENU_COPY_HASH:
-		case MENU_COPY_MESSAGE: {
-			const Dictionary commit = history_tree->get_selected()->get_metadata(0);
-			DisplayServer::get_singleton()->clipboard_set(commit[p_id == MENU_COPY_HASH ? "hash" : "message"]);
-		} break;
-		case MENU_OPEN_ON_WEB: {
-			const Dictionary commit = history_tree->get_selected()->get_metadata(0);
-			OS::get_singleton()->shell_open(_web_commit_url(commit["hash"]));
-		} break;
-	}
-}
-
-// Selecting a file (by mouse or keyboard) shows its changes in the Diff panel.
-void GitDock::_on_file_multi_selected(TreeItem *p_item, int p_column, bool p_selected, Object *p_tree) {
-	const FilePane *pane = _pane_for_tree(p_tree);
-	if (!p_selected || !pane || !p_item || p_item->get_metadata(COLUMN_NAME).get_type() != Variant::STRING) {
-		return;
-	}
-	// One file at a time is shown, so only one list keeps a selection.
-	(pane->staged ? changes_pane : staged_pane).tree->deselect_all();
-	history_tree->deselect_all();
-	_show_diff(p_item->get_metadata(COLUMN_NAME), pane->staged, false);
-}
-
-void GitDock::set_diff_dock(GitDiffDock *p_dock) {
-	diff_dock = p_dock;
-	diff_dock->connect("open_requested", callable_mp(this, &GitDock::_open_path));
-}
-
-// p_focus: also bring the Diff panel up (a click), not just update it (keyboard, right-click).
-void GitDock::_show_diff(const String &p_path, bool p_staged, bool p_focus) {
-	diff_path = p_path;
-	diff_staged = p_staged;
-	diff_commit = String();
-	diff_commit_shown = String();
-	_update_diff();
-	if (p_focus && diff_dock) {
-		diff_dock->make_visible();
-	}
-}
-
-void GitDock::_show_commit_diff(const String &p_hash, const String &p_path, bool p_focus) {
-	diff_path = p_path;
-	diff_commit = p_hash;
-	_update_diff();
-	if (p_focus && diff_dock) {
-		diff_dock->make_visible();
-	}
-}
-
-// Brings the Diff panel up to date after a refresh. A file that was staged or unstaged meanwhile
-// is followed to its other list, so staging the file you're looking at keeps it on screen.
-void GitDock::_update_diff() {
-	if (!diff_dock || diff_path.is_empty() || repo.is_null() || !repo->is_open()) {
-		return;
-	}
-	if (!diff_commit.is_empty()) {
-		const String key = diff_commit + ":" + diff_path;
-		if (key != diff_commit_shown) {
-			diff_commit_shown = key;
-			Dictionary diff = repo->get_commit_diff(diff_commit, diff_path);
-			_add_image_versions(diff, diff_commit + "^1", diff_commit);
-			diff_dock->set_diff(diff, vformat("Commit %s", diff_commit.left(7)), _file_icon(diff_path));
-		}
-		_select_diff_row();
-		return;
-	}
-	Dictionary diff = repo->get_diff(diff_path, diff_staged);
-	if (diff.get("kind", String()) == "unchanged") {
-		const Dictionary other = repo->get_diff(diff_path, !diff_staged);
-		if (other.get("kind", String()) != "unchanged") {
-			diff_staged = !diff_staged;
-			diff = other;
-		}
-	}
-	if (diff.get("kind", String()) != "unchanged") {
-		_add_image_versions(diff, diff_staged ? "HEAD" : "index", diff_staged ? "index" : "workdir");
-		// The companions the file's row stands for (see _fill_file_pane): changed in the same list.
-		Array companions;
-		if (companion_owner(diff_path).is_empty()) {
-			for (const char *suffix : { ".import", ".uid" }) {
-				const Dictionary companion = repo->get_diff(vformat("%s%s", diff_path, suffix), diff_staged);
-				if (companion.get("kind", String()) != "unchanged" && !companion.is_empty()) {
-					companions.push_back(companion);
-				}
-			}
-		}
-		if (!companions.is_empty()) {
-			diff["companions"] = companions;
-		}
-	}
-	diff_dock->set_diff(diff, diff_staged ? "Staged" : "Unstaged", _file_icon(diff_path));
-	_select_diff_row();
-}
-
-// An image's two versions, for the Diff panel's before | after (the old one under its old name,
-// for a rename). Versions as in GitRepository::get_file_bytes.
-void GitDock::_add_image_versions(Dictionary &r_diff, const String &p_old_version, const String &p_new_version) {
-	if (!GitDiffDock::is_image_path(diff_path)) {
-		return;
-	}
-	r_diff["image_old"] = repo->get_file_bytes(p_old_version, r_diff.get("old_path", diff_path));
-	r_diff["image_new"] = repo->get_file_bytes(p_new_version, diff_path);
-}
-
-// Marks the file the Diff panel shows in its list (the lists are rebuilt on every refresh).
-void GitDock::_select_diff_row() {
-	if (!diff_commit.is_empty()) {
-		TreeItem *root = history_tree->get_root();
-		for (TreeItem *commit = root ? root->get_first_child() : nullptr; commit; commit = commit->get_next()) {
-			for (TreeItem *item = commit->get_first_child(); item; item = item->get_next()) {
-				if (item->has_meta("git_hash") && String(item->get_meta("git_hash")) == diff_commit && String(item->get_meta("git_path")) == diff_path) {
-					if (!history_tree->get_selected()) {
-						item->select(0);
-					}
-					return;
-				}
-			}
-		}
-		return;
-	}
-	FilePane &pane = diff_staged ? staged_pane : changes_pane;
-	TreeItem *root = pane.tree->get_root();
-	for (TreeItem *item = root ? root->get_first_child() : nullptr; item; item = item->get_next()) {
-		if (item->get_metadata(COLUMN_NAME).get_type() == Variant::STRING && String(item->get_metadata(COLUMN_NAME)) == diff_path) {
-			if (!pane.tree->get_next_selected(nullptr)) {
-				item->select(COLUMN_NAME); // Doesn't emit multi_selected, so it can't loop back here.
-			}
-			return;
-		}
-	}
+	p_item->set_meta("git_button_rects", rects);
+	return right;
 }

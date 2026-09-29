@@ -246,12 +246,16 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		} break;
 		case NETWORK_PULL: {
 			const int commits = p_pull_result.get("commits", 0);
+			// Files whose uncommitted edits were merged into the new versions: say so, since
+			// those files changed under the user's edits.
+			const PackedStringArray carried = p_pull_result.get("carried", PackedStringArray());
+			const String kept = carried.is_empty() ? String() : vformat(". Your uncommitted edits to %s are kept on top", join_list(carried, 3));
 			if (commits == 0) {
 				_set_status(STATUS_SUCCESS, vformat("Already up to date with %s", p_upstream));
 			} else if (p_pull_result.get("merged", false)) {
-				_set_status(STATUS_SUCCESS, vformat("Pulled and merged %s from %s", plural(commits, "commit", "commits"), p_upstream));
+				_set_status(STATUS_SUCCESS, vformat("Pulled and merged %s from %s%s", plural(commits, "commit", "commits"), p_upstream, kept));
 			} else {
-				_set_status(STATUS_SUCCESS, vformat("Pulled %s from %s", plural(commits, "commit", "commits"), p_upstream));
+				_set_status(STATUS_SUCCESS, vformat("Pulled %s from %s%s", plural(commits, "commit", "commits"), p_upstream, kept));
 			}
 			_reload_changed_scenes(); // After the status: a scene it couldn't reload warns there.
 		} break;

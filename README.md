@@ -13,7 +13,7 @@ Godot Git adds a **Git** dock next to the Inspector and a **Diff** panel at the 
 
 **Sign in from the panel.** Pull or push a private repository and, with Git Credential Manager (included with Git for Windows), your browser opens to sign in once. No terminal, no tokens to paste. SSH uses your own keys and config, and hooks, commit signing and Git LFS work as they do in a terminal.
 
-**It won't leave you in a mess.** A pull either completes with your uncommitted work untouched, or refuses up front and names the files in the way. It never hides your changes in a stash. A branch switch that can't finish (a file open in another program, say) puts everything back, and conflicting merges are fully undone.
+**It won't leave you in a mess.** A pull keeps your uncommitted work: if a teammate changed a file you're editing, your edit is merged into their version when the lines don't overlap, and if they do, the pull refuses up front and names the files. It never hides your changes in a stash or leaves conflict markers in them. A branch switch that can't finish (a file open in another program, say) puts everything back, and conflicting merges are fully undone.
 
 **Native and fast.** Built in C++ on [libgit2](https://libgit2.org/): no git process per click, no polling, and it stays quick with thousands of changed files. Stage, commit, branch and history work even without git installed; the panel tells you when something needs it.
 

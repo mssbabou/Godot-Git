@@ -122,8 +122,7 @@ Error GitRepository::continue_operation() {
 	}
 	const PackedStringArray conflicts = get_operation()["conflicts"];
 	if (!conflicts.is_empty()) {
-		const String names = String(", ").join(conflicts.slice(0, 3)) + (conflicts.size() > 3 ? String(", ...") : String());
-		return fail(vformat("%s still %s conflicts. Fix the conflict markers, then stage the file to mark it resolved.", names, conflicts.size() == 1 ? "has" : "have"));
+		return fail(vformat("%s still %s conflicts. Fix the conflict markers, then stage the file to mark it resolved.", name_list(conflicts), conflicts.size() == 1 ? "has" : "have"));
 	}
 	if (require_identity(repo, "Nothing was continued.") != OK) {
 		return FAILED;

@@ -24,6 +24,7 @@ class GitRepository : public RefCounted {
 	String notice;
 	int pulled_commits = 0;
 	bool pull_merged = false;
+	PackedStringArray pull_carried;
 	Callable progress_callback;
 	// get_commits' last result, and what it depended on (HEAD and every branch's commit): reading
 	// history is slow in big repositories (150 ms in Godot's own), and most refreshes change neither.

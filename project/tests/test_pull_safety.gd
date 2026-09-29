@@ -10,6 +10,85 @@ func run() -> void:
 	_refused_on_fast_forward_too()
 	_unrelated_edits_survive_a_merge()
 	_unrelated_edits_survive_a_refused_conflict()
+	_edit_on_other_lines_carried_on_fast_forward()
+	_edit_on_other_lines_carried_through_a_merge()
+	_carried_edit_restored_when_the_merge_conflicts()
+	_carried_edit_keeps_crlf()
+
+
+const DOC := "a\nb\nc\nd\ne\nf\ng\n"
+
+
+## Both sides have doc.txt (seven lines); the teammate then changes its first line.
+func _shared_doc(name: String) -> Dictionary:
+	var s := make_shared(name)
+	teammate_pushes(s, "doc.txt", DOC, "Add doc")
+	git(s.mine, ["pull", "-q", "--no-rebase"])
+	teammate_pushes(s, "doc.txt", DOC.replace("a\n", "A-theirs\n"), "Change doc's first line")
+	return s
+
+
+# The teammate's change and your uncommitted edit are in the same file but on different lines:
+# pull merges your edit into the new version instead of refusing (Godit's "stash, pull,
+# re-apply", without its risks: checked in memory first, never markers or a leftover stash).
+func _edit_on_other_lines_carried_on_fast_forward() -> void:
+	var s := _shared_doc("carry-ff")
+	write(s.mine.path_join("doc.txt"), DOC.replace("g\n", "G-mine\n"))
+	var r := open(s.mine)
+	check("carry: fetch", r.fetch() == OK, GitRepository.get_last_error())
+	check("carry: no blockers for an edit on other lines", r.get_pull_blockers().is_empty(), r.get_pull_blockers())
+	check("carry: pull goes ahead", r.pull() == OK, GitRepository.get_last_error())
+	check("carry: both changes in the file", read(s.mine.path_join("doc.txt")) == DOC.replace("a\n", "A-theirs\n").replace("g\n", "G-mine\n"), read(s.mine.path_join("doc.txt")))
+	check("carry: HEAD is the teammate's commit", git(s.mine, ["rev-parse", "HEAD"]) == git(s.mine, ["rev-parse", "origin/main"]))
+	check("carry: my edit is still uncommitted, unstaged", git(s.mine, ["status", "--porcelain"]) == "M doc.txt", git(s.mine, ["status", "--porcelain"]))
+	check("carry: git sees only my line as changed", git(s.mine, ["diff", "--numstat"]) == "1\t1\tdoc.txt", git(s.mine, ["diff", "--numstat"]))
+	check("carry: the pull says so", Array(r.get_pull_result().get("carried", [])) == ["doc.txt"], r.get_pull_result())
+	check("carry: no stash, no backups left", git(s.mine, ["stash", "list"]) == "" and not DirAccess.dir_exists_absolute(s.mine.path_join(".git/godot-git-pull")))
+
+
+func _edit_on_other_lines_carried_through_a_merge() -> void:
+	var s := _shared_doc("carry-merge")
+	write(s.mine.path_join("y.txt"), "y-mine\n")
+	commit_all(s.mine, "My y") # Diverged: the pull makes a merge commit.
+	write(s.mine.path_join("doc.txt"), DOC.replace("g\n", "G-mine\n"))
+	var r := open(s.mine)
+	check("carry merge: pull goes ahead", r.pull() == OK, GitRepository.get_last_error())
+	check("carry merge: a merge commit", git(s.mine, ["rev-list", "--parents", "-n", "1", "HEAD"]).split(" ").size() == 3)
+	check("carry merge: both changes in the file", read(s.mine.path_join("doc.txt")) == DOC.replace("a\n", "A-theirs\n").replace("g\n", "G-mine\n"), read(s.mine.path_join("doc.txt")))
+	check("carry merge: my edit is still uncommitted", git(s.mine, ["status", "--porcelain"]) == "M doc.txt", git(s.mine, ["status", "--porcelain"]))
+	check("carry merge: no stash left", git(s.mine, ["stash", "list"]) == "")
+
+
+# The edit merges fine, but the pull itself can't (both committed y.txt's line): nothing may
+# change, and the carried file must be back exactly as it was.
+func _carried_edit_restored_when_the_merge_conflicts() -> void:
+	var s := _shared_doc("carry-conflict")
+	teammate_pushes(s, "y.txt", "y-theirs\n")
+	write(s.mine.path_join("y.txt"), "y-mine\n")
+	commit_all(s.mine, "My y")
+	var mine := DOC.replace("g\n", "G-mine\n")
+	write(s.mine.path_join("doc.txt"), mine)
+	var head := git(s.mine, ["rev-parse", "HEAD"])
+	var r := open(s.mine)
+	check("carry conflict: refused", r.pull() != OK and GitRepository.get_last_error().contains("conflict"), GitRepository.get_last_error())
+	check("carry conflict: HEAD unchanged", git(s.mine, ["rev-parse", "HEAD"]) == head)
+	check("carry conflict: my file exactly as it was", FileAccess.get_file_as_string(s.mine.path_join("doc.txt")) == mine, FileAccess.get_file_as_string(s.mine.path_join("doc.txt")))
+	check("carry conflict: no stash, no backups left", git(s.mine, ["stash", "list"]) == "" and not DirAccess.dir_exists_absolute(s.mine.path_join(".git/godot-git-pull")))
+
+
+# With core.autocrlf the file on disk has CRLF and git's copy LF: the merged file must come out
+# with CRLF like every other checked-out file, not LF, and not as a whole-file change.
+func _carried_edit_keeps_crlf() -> void:
+	var s := _shared_doc("carry-crlf")
+	git(s.mine, ["config", "core.autocrlf", "true"])
+	DirAccess.remove_absolute(s.mine.path_join("doc.txt"))
+	git(s.mine, ["checkout", "--", "doc.txt"]) # Checked out again, now with CRLF.
+	write(s.mine.path_join("doc.txt"), DOC.replace("g\n", "G-mine\n").replace("\n", "\r\n"))
+	var r := open(s.mine)
+	check("carry crlf: pull goes ahead", r.pull() == OK, GitRepository.get_last_error())
+	var raw := FileAccess.get_file_as_string(s.mine.path_join("doc.txt"))
+	check("carry crlf: CRLF throughout", raw == DOC.replace("a\n", "A-theirs\n").replace("g\n", "G-mine\n").replace("\n", "\r\n"), raw.c_escape())
+	check("carry crlf: only my line differs", git(s.mine, ["diff", "--numstat"]) == "1\t1\tdoc.txt", git(s.mine, ["diff", "--numstat"]))
 
 
 func _refused_when_incoming_touches_uncommitted_edit() -> void:
