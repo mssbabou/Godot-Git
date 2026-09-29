@@ -17,8 +17,8 @@
 
 namespace {
 
-// A wrapping label. In a dialog, give it p_width: a wrapping label measures its height at its
-// minimum width, and at 0 that's one word per line, which makes the dialog as tall as the screen.
+// A wrapping label. Give it p_width: a wrapping label measures its height at its minimum width,
+// and at 0 that's one word per line, which makes a dialog (or a dock) as tall as the screen.
 Label *make_label(Control *p_parent, const String &p_text, float p_width = 0) {
 	Label *label = memnew(Label);
 	label->set_text(p_text);
@@ -98,9 +98,16 @@ void GitDock::_build_setup(Control *p_parent) {
 	VBoxContainer *empty_vb = memnew(VBoxContainer);
 	empty_vb->add_theme_constant_override("separation", Math::round(8 * scale));
 	empty->add_child(empty_vb);
-	Label *title = make_label(empty_vb, "This project isn't in a git repository yet.");
+	// A minimum width here too, not only in dialogs: while the dock is a tab behind another one,
+	// it has no width yet, and the dock slot still sizes itself to it (Godot's dock tabs count
+	// hidden tabs). Measured one word per line, these labels asked for more height than the
+	// window had, which pushed the FileSystem dock and the bottom panel off the screen until
+	// the Git tab was clicked (seen right after installing the addon into a project without a
+	// repository, 2026-09-29).
+	const float min_width = 160 * scale;
+	Label *title = make_label(empty_vb, "This project isn't in a git repository yet.", min_width);
 	title->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
-	no_repo_hint = make_label(empty_vb, "Start one to keep a history of your changes: commit them, go back to earlier versions and share them.");
+	no_repo_hint = make_label(empty_vb, "Start one to keep a history of your changes: commit them, go back to earlier versions and share them.", min_width);
 	no_repo_hint->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 	Button *init_button = memnew(Button);
 	init_button->set_text("Initialize Repository...");

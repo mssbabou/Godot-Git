@@ -6,7 +6,9 @@
 #include <godot_cpp/classes/display_server.hpp>
 #include <godot_cpp/classes/editor_file_system.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
+#include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/font.hpp>
+#include <godot_cpp/classes/input_event_mouse_button.hpp>
 #include <godot_cpp/classes/input_event_mouse_motion.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/scroll_container.hpp>
@@ -16,6 +18,7 @@
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/classes/v_scroll_bar.hpp>
 #include <godot_cpp/core/math.hpp>
+#include <godot_cpp/templates/hash_set.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
 #include "editor/git_diff_dock.h"
@@ -25,8 +28,7 @@ using namespace godot_git;
 
 namespace {
 
-// File rows are a single cell (status letter, icon, name, folder, hover buttons) so they highlight as one unit.
-// The letter leads, so the buttons end flush right and line up with the section header's button.
+// File rows are a single cell (icon, name, folder, status letter, hover buttons) so they highlight as one unit.
 enum FileColumn {
 	COLUMN_NAME,
 	FILE_COLUMN_COUNT,
@@ -36,6 +38,45 @@ enum FileColumn {
 // or "more" (Load More Commits).
 String row_kind(const TreeItem *p_item) {
 	return p_item ? String(p_item->get_meta("git_row", String())) : String();
+}
+
+// The file a Godot companion file belongs to ("player.gd" for "player.gd.uid", "coin.png" for
+// "coin.png.import"), or "" if p_path isn't one.
+String companion_owner(const String &p_path) {
+	for (const char *suffix : { ".uid", ".import" }) {
+		if (p_path.ends_with(suffix)) {
+			const String owner = p_path.trim_suffix(suffix);
+			return owner.get_file().contains(".") ? owner : String();
+		}
+	}
+	return String();
+}
+
+// p_text shortened in the middle ("final_boss…frame_012.png") to fit p_width, keeping a bit more
+// of the end than the start: that's where file names usually differ.
+String trim_middle(const String &p_text, const Ref<Font> &p_font, int p_font_size, float p_width) {
+	auto width = [&](const String &p_candidate) {
+		return p_font->get_string_size(p_candidate, HORIZONTAL_ALIGNMENT_LEFT, -1, p_font_size).x;
+	};
+	if (width(p_text) <= p_width) {
+		return p_text;
+	}
+	const String ellipsis = String::utf8("…");
+	auto shortened = [&](int p_kept) {
+		const int head = p_kept * 2 / 5;
+		return p_text.left(head) + ellipsis + p_text.right(p_kept - head);
+	};
+	int low = 0; // The most characters that still fit, found by bisection.
+	int high = p_text.length() - 1;
+	while (low < high) {
+		const int mid = (low + high + 1) / 2;
+		if (width(shortened(mid)) <= p_width) {
+			low = mid;
+		} else {
+			high = mid - 1;
+		}
+	}
+	return low > 0 ? shortened(low) : ellipsis;
 }
 
 } // namespace
@@ -134,6 +175,35 @@ void GitDock::_make_file_pane(FilePane &r_pane, Control *p_parent, const String 
 	r_pane.empty_label = _make_body(r_pane.container, tree);
 }
 
+// Rounds a section's corners like the editor's other panels (the theme's corner radius): the
+// header's top corners and the content's bottom corners, all four while folded. The editor theme
+// gives FoldableContainer square ones. Re-done on every theme change, from the theme's own styles.
+void GitDock::_round_section(FoldableContainer *p_section) {
+	const int radius = Math::round((int)EditorInterface::get_singleton()->get_editor_settings()->get_setting("interface/theme/corner_radius") * EditorInterface::get_singleton()->get_editor_scale());
+	auto rounded = [&](const char *p_name, bool p_top, bool p_bottom) {
+		const Ref<StyleBoxFlat> style = get_theme_stylebox(p_name, "FoldableContainer");
+		if (style.is_null()) {
+			return; // Some other kind of style: left as the theme has it.
+		}
+		Ref<StyleBoxFlat> copy = style->duplicate();
+		copy->set_corner_radius(CORNER_TOP_LEFT, p_top ? radius : 0);
+		copy->set_corner_radius(CORNER_TOP_RIGHT, p_top ? radius : 0);
+		copy->set_corner_radius(CORNER_BOTTOM_LEFT, p_bottom ? radius : 0);
+		copy->set_corner_radius(CORNER_BOTTOM_RIGHT, p_bottom ? radius : 0);
+		// The theme's square styles come with the lowest corner detail (it's derived from their
+		// corner width, 0): one straight segment per corner, which draws a rounded corner as a
+		// chamfer. Same formula the editor uses for its rounded styles (make_flat_stylebox).
+		copy->set_corner_detail(MAX(1, (int)Math::ceil(0.8 * radius)));
+		copy->set_anti_aliased(true);
+		p_section->add_theme_stylebox_override(p_name, copy);
+	};
+	rounded("title_panel", true, false);
+	rounded("title_hover_panel", true, false);
+	rounded("title_collapsed_panel", true, true);
+	rounded("title_collapsed_hover_panel", true, true);
+	rounded("panel", false, true);
+}
+
 // A section's content: the tree, and a plain label shown instead when the tree is empty.
 Label *GitDock::_make_body(Control *p_section, Tree *p_tree) {
 	VBoxContainer *body = memnew(VBoxContainer);
@@ -153,14 +223,37 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status) {
 	Tree *tree = p_pane.tree;
 	tree->clear();
 	p_pane.hovered_item = 0;
+	p_pane.hovered_button = -1;
 	TreeItem *root = tree->create_item();
 
 	const String key = p_pane.staged ? "index" : "worktree";
 	const Callable draw_row = callable_mp(this, &GitDock::_draw_file_row);
 
 	int files = 0;
+	int rows = 0;
 	if (!p_pane.staged) {
 		unstaged_paths.clear();
+	}
+
+	// Godot's companion files (player.gd.uid, coin.png.import) go with their file: when both are
+	// in this list, the companion gets no row of its own; the file's row says "+uid" / "+import"
+	// and its actions include it. A companion whose file didn't change stays a row: then it's the
+	// change (new import settings, say). Without this, adding assets filled the list with them.
+	HashSet<String> listed;
+	for (int i = 0; i < p_status.size(); i++) {
+		const Dictionary entry = p_status[i];
+		if (!String(entry[key]).is_empty()) {
+			listed.insert(entry["path"]);
+		}
+	}
+	Dictionary companions; // File -> PackedStringArray of its companions in this list.
+	for (const String &path : listed) {
+		const String owner = companion_owner(path);
+		if (!owner.is_empty() && listed.has(owner)) {
+			PackedStringArray of = companions.get(owner, PackedStringArray());
+			of.push_back(path);
+			companions[owner] = of;
+		}
 	}
 
 	for (int i = 0; i < p_status.size(); i++) {
@@ -174,8 +267,16 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status) {
 		if (!p_pane.staged) {
 			unstaged_paths.push_back(path);
 		}
+		const String owner = companion_owner(path);
+		if (!owner.is_empty() && listed.has(owner)) {
+			continue; // Shown on its file's row.
+		}
+		rows++;
 
 		TreeItem *item = tree->create_item(root);
+		if (companions.has(path)) {
+			item->set_meta("git_companions", companions[path]);
+		}
 		item->set_metadata(COLUMN_NAME, path);
 		item->set_meta("git_path", path);
 		item->set_meta("git_state", state);
@@ -194,8 +295,9 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status) {
 	p_pane.empty_label->get_parent_control()->set_visible(files == 0);
 	p_pane.empty_label->set_text(p_pane.staged ? "Nothing staged." : "No changes.");
 
+	// The title counts the rows you see; commits and their messages count every file.
 	p_pane.file_count = files;
-	p_pane.container->set_title(files > 0 ? vformat("%s (%d)", p_pane.title, files) : p_pane.title);
+	p_pane.container->set_title(files > 0 ? vformat("%s (%d)", p_pane.title, rows) : p_pane.title);
 	_show_line_stats(p_pane); // The last counts, until the new ones arrive.
 	p_pane.action->set_disabled(files == 0);
 	if (p_pane.discard) {
@@ -274,10 +376,16 @@ void GitDock::_show_line_stats(FilePane &p_pane) {
 		}
 		// The row itself stays calm (totals are in the header); the tooltip has this file's counts.
 		String tooltip = lines.is_empty() ? vformat("%s\n%s", path, status_name(state)) : vformat(String::utf8("%s\n%s · %s"), path, status_name(state), lines);
-		if (pull_blockers.has(path)) {
-			tooltip += vformat("\n\nThe new commits on %s change this file too, so Pull waits until your changes to it are committed or discarded.", String(sync_status.get("upstream", String())));
+		const PackedStringArray with = item->get_meta("git_companions", PackedStringArray());
+		if (!with.is_empty()) {
+			tooltip += vformat("\nWith %s, which Godot keeps next to it: staged, unstaged and discarded together.", String(", ").join(with));
+		}
+		const PackedStringArray blocking = _blocking_paths(item);
+		if (!blocking.is_empty()) {
+			tooltip += vformat("\n\nThe new commits on %s change %s too, so Pull waits until your changes to it are committed or discarded.", String(sync_status.get("upstream", String())), blocking.size() == 1 && blocking[0] == path ? String("this file") : String(", ").join(blocking));
 		}
 		item->set_tooltip_text(COLUMN_NAME, tooltip);
+		item->set_meta("git_tooltip", tooltip); // Put back after the tooltip of a row button.
 	}
 
 	// Header: "Changes (27)  +1204 −35  [⊖]".
@@ -306,8 +414,8 @@ void GitDock::_queue_align_header_buttons() {
 	}
 }
 
-// Shifts each header's "all" buttons so they end exactly where the Tree draws the rows' buttons
-// (the right edge of the file column), whatever the theme margins and editor scale are.
+// Shifts each header's "all" buttons so they end exactly where the rows' status letters end (the
+// right edge of the file column), whatever the theme margins and editor scale are.
 void GitDock::_align_header_buttons() {
 	align_queued = false;
 	for (FilePane *pane : { &staged_pane, &changes_pane }) {
@@ -347,7 +455,12 @@ void GitDock::_align_header_buttons() {
 		if (!first || !tree->is_visible_in_tree()) {
 			continue;
 		}
-		const float rows_right = tree->get_global_position().x + tree->get_item_area_rect(first, COLUMN_NAME).get_end().x;
+		// Flush with the rows' right edge, above the status letters (see _draw_file_row), known
+		// once a row has been drawn.
+		if (!first->has_meta("git_row_right")) {
+			continue;
+		}
+		const float rows_right = tree->get_global_position().x + float(first->get_meta("git_row_right"));
 		const float buttons_right = pane->buttons->get_global_position().x + pane->buttons->get_size().x;
 		const int margin = pane->buttons_margin->get_theme_constant("margin_right");
 		const int aligned = MAX(0, (int)Math::round(margin + buttons_right - rows_right));
@@ -357,9 +470,9 @@ void GitDock::_align_header_buttons() {
 	}
 }
 
-// Paints a file row: file icon, name in its status color, the folder dimmed after the name, and
-// the status letter at the far right (like VS Code), text trimmed with an ellipsis when space runs out. p_rect is the cell's
-// content area, which the Tree has already shrunk to leave room for the hover buttons.
+// Paints a file row: file icon, name, "+uid"/"+import" and the folder dimmed after it, the status
+// letter at the far right and, on the hovered row, its buttons just left of the letter (like VS
+// Code). Text is trimmed when space runs out. p_rect is the cell's content area.
 void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 	Tree *tree = p_item->get_tree();
 	const FilePane *pane = _pane_for_tree(tree); // Null for a commit's files in History.
@@ -386,23 +499,59 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 		return p_x + MIN(line->get_size().x, right - p_x);
 	};
 
-	// The status letter at the far right, in a fixed-width slot so the letters line up down the
-	// list (the FileSystem dock shows the same letter the same way; see filesystem_colors.cpp).
-	// Hover buttons shrink p_rect, so on hover the letter moves left of them.
+	// From the right: the status letter in a fixed-width slot so the letters line up down the list
+	// (the FileSystem dock shows the same letter the same way; see filesystem_colors.cpp), a
+	// pull warning next to it, and on the hovered row its buttons left of those, so neither the
+	// letter nor the warning moves. A commit's files in History have the letter in the ages'
+	// column instead (set in _fill_commit).
 	const Color color = _status_color(state);
-	const float letter_width = font->get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
-	const String letter = status_letter(state);
-	right -= letter_width;
-	const float letter_x = right + (letter_width - font->get_string_size(letter, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x) / 2;
-	font->draw_string(canvas, Vector2(letter_x, p_rect.position.y + (p_rect.size.y - font->get_height(font_size)) / 2 + font->get_ascent(font_size)), letter, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color);
-	right -= 6 * scale;
+	if (pane) {
+		// The header's "all" buttons end where the letters do (see _align_header_buttons).
+		if (float(p_item->get_meta("git_row_right", -1.0f)) != right) {
+			p_item->set_meta("git_row_right", right);
+			_queue_align_header_buttons(); // Depends only on the tree's width, so it settles.
+		}
+		const float letter_width = font->get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+		const String letter = status_letter(state);
+		right -= letter_width;
+		const float letter_x = right + (letter_width - font->get_string_size(letter, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x) / 2;
+		font->draw_string(canvas, Vector2(letter_x, p_rect.position.y + (p_rect.size.y - font->get_height(font_size)) / 2 + font->get_ascent(font_size)), letter, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color);
+		right -= 6 * scale;
 
-	// A file the new commits change too (Pull waits for it): a warning sign next to the letter.
-	if (pane && pull_blockers.has(path)) {
-		const Ref<Texture2D> warning = get_theme_icon("StatusWarning", "EditorIcons");
-		right -= warning->get_width();
-		warning->draw(canvas, Vector2(right, p_rect.position.y + (p_rect.size.y - warning->get_height()) / 2));
-		right -= 4 * scale;
+		// A file the new commits change too (Pull waits for it).
+		if (!_blocking_paths(p_item).is_empty()) {
+			const Ref<Texture2D> warning = get_theme_icon("StatusWarning", "EditorIcons");
+			right -= warning->get_width();
+			warning->draw(canvas, Vector2(right, p_rect.position.y + (p_rect.size.y - warning->get_height()) / 2));
+			right -= 4 * scale;
+		}
+
+		// The hover buttons, like VS Code. Drawn here rather than as the Tree's cell buttons,
+		// which it always puts at the row's right end, pushing the letter aside; clicks on them
+		// are caught in _on_tree_gui_input, which finds their rects on the row.
+		if (p_item->get_instance_id() == pane->hovered_item) {
+			const Ref<StyleBox> hover_style = tree->get_theme_stylebox("button_hover");
+			const Size2 padding = tree->get_theme_stylebox("button_pressed")->get_minimum_size();
+			const float margin = tree->get_theme_constant("button_margin");
+			Array rects;
+			const Array buttons = _row_button_list(*pane);
+			for (int i = buttons.size() - 1; i >= 0; i--) {
+				const Dictionary button = buttons[i];
+				const Ref<Texture2D> icon = button["icon"];
+				const Size2 size = icon->get_size() + padding;
+				const Rect2 rect(right - size.x, p_rect.position.y + (p_rect.size.y - size.y) / 2, size.x, size.y);
+				if ((int)button["id"] == pane->hovered_button) {
+					hover_style->draw(canvas, rect);
+				}
+				icon->draw(canvas, rect.position + padding / 2); // Editor icons come in the theme's colors.
+				Dictionary hit = button.duplicate();
+				hit["rect"] = rect;
+				rects.push_back(hit);
+				right -= size.x + margin;
+			}
+			p_item->set_meta("git_button_rects", rects);
+			right -= 4 * scale;
+		}
 	}
 
 	float x = p_rect.position.x;
@@ -429,7 +578,19 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 	if (deleted) {
 		name_color.a *= 0.5;
 	}
-	x = draw_text(path.get_file(), x, name_color);
+	// Too long a name loses its middle, not its end: files often differ only at the end
+	// ("..._frame_012_variant_b.png"), and 500 rows of "final_boss_phase_two_attack_..." looked
+	// identical. The folder then has no room and is left out (it's in the tooltip).
+	// Companions shown on this row ("+import"), dimmed like the folder; see _fill_file_pane.
+	String extras;
+	for (const String &companion : PackedStringArray(p_item->get_meta("git_companions", PackedStringArray()))) {
+		extras += (extras.is_empty() ? "+" : " +") + companion.get_extension();
+	}
+	const float extras_width = extras.is_empty() ? 0.0f : font->get_string_size(extras, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x + 6 * scale;
+	x = draw_text(trim_middle(path.get_file(), font, font_size, right - x - extras_width), x, name_color);
+	if (!extras.is_empty()) {
+		x = draw_text(extras, x + 6 * scale, _dim_color());
+	}
 
 	const String folder = path.get_base_dir();
 	if (!folder.is_empty()) {
@@ -599,6 +760,12 @@ void GitDock::_fill_commit(TreeItem *p_item) {
 		}
 		item->set_tooltip_text(0, vformat("%s\n%s", path, what));
 		item->set_selectable(1, false);
+		// The status letter in the ages' column, so it lines up with the letters of the lists
+		// above (at the right edge) instead of stopping short of this column.
+		item->set_text(1, status_letter(state));
+		item->set_custom_color(1, _status_color(state));
+		item->set_text_alignment(1, HORIZONTAL_ALIGNMENT_RIGHT);
+		item->set_tooltip_text(1, what);
 	}
 	if (files.size() > MAX_ROWS) {
 		add_note(vformat("...and %d more files, not listed.", files.size() - MAX_ROWS), String());
@@ -656,45 +823,118 @@ GitDock::FilePane *GitDock::_pane_for_tree(Object *p_tree) {
 	return nullptr;
 }
 
-PackedStringArray GitDock::_selected_paths(Tree *p_tree) const {
+// p_companions: with the companion files shown on the rows (for stage, unstage and discard,
+// which act on a file together with them), not for opening or copying paths.
+PackedStringArray GitDock::_selected_paths(Tree *p_tree, bool p_companions) const {
 	PackedStringArray paths;
 	for (TreeItem *item = p_tree->get_next_selected(nullptr); item; item = p_tree->get_next_selected(item)) {
-		const String path = item->get_metadata(COLUMN_NAME);
-		if (!path.is_empty()) {
-			paths.push_back(path);
+		if (item->get_metadata(COLUMN_NAME).get_type() == Variant::STRING) {
+			paths.append_array(p_companions ? _row_paths(item) : PackedStringArray({ item->get_metadata(COLUMN_NAME) }));
 		}
 	}
 	return paths;
 }
 
-// Row buttons only show on the row under the mouse, to keep the list calm.
+// A file row's path and its companions' (see _fill_file_pane).
+PackedStringArray GitDock::_row_paths(TreeItem *p_item) const {
+	PackedStringArray paths;
+	paths.push_back(p_item->get_metadata(COLUMN_NAME));
+	paths.append_array(p_item->get_meta("git_companions", PackedStringArray()));
+	return paths;
+}
+
+// Which of a row's files the new commits change too (Pull waits for them).
+PackedStringArray GitDock::_blocking_paths(TreeItem *p_item) const {
+	PackedStringArray blocking;
+	for (const String &path : _row_paths(p_item)) {
+		if (pull_blockers.has(path)) {
+			blocking.push_back(path);
+		}
+	}
+	return blocking;
+}
+
+// A list's row buttons, left to right: [{id, icon, tooltip}].
+Array GitDock::_row_button_list(const FilePane &p_pane) const {
+	auto button = [&](int p_id, const char *p_icon, const char *p_tooltip) {
+		Dictionary entry;
+		entry["id"] = p_id;
+		entry["icon"] = get_theme_icon(p_icon, "EditorIcons");
+		entry["tooltip"] = p_tooltip;
+		return entry;
+	};
+	if (p_pane.staged) {
+		return Array::make(button(BUTTON_UNSTAGE, "ZoomLess", "Unstage"));
+	}
+	return Array::make(button(BUTTON_DISCARD, "UndoRedo", "Discard changes"), button(BUTTON_STAGE, "ZoomMore", "Stage"));
+}
+
+// Row buttons only show on the row under the mouse, to keep the list calm (drawn by _draw_file_row).
 void GitDock::_set_hovered(FilePane &p_pane, TreeItem *p_item) {
 	TreeItem *previous = Object::cast_to<TreeItem>(ObjectDB::get_instance(p_pane.hovered_item));
 	if (previous == p_item) {
 		return;
 	}
 	if (previous) {
-		previous->clear_buttons();
+		previous->remove_meta("git_button_rects");
+		previous->set_tooltip_text(COLUMN_NAME, previous->get_meta("git_tooltip", String()));
 	}
 	p_pane.hovered_item = 0;
-	if (!p_item || p_item->get_metadata(COLUMN_NAME).get_type() != Variant::STRING) {
-		return;
+	p_pane.hovered_button = -1;
+	if (p_item && p_item->get_metadata(COLUMN_NAME).get_type() == Variant::STRING) {
+		p_pane.hovered_item = p_item->get_instance_id();
 	}
+	p_pane.tree->queue_redraw();
+}
 
-	if (p_pane.staged) {
-		p_item->add_button(COLUMN_NAME, get_theme_icon("ZoomLess", "EditorIcons"), BUTTON_UNSTAGE, false, "Unstage");
-	} else {
-		p_item->add_button(COLUMN_NAME, get_theme_icon("UndoRedo", "EditorIcons"), BUTTON_DISCARD, false, "Discard changes");
-		p_item->add_button(COLUMN_NAME, get_theme_icon("ZoomMore", "EditorIcons"), BUTTON_STAGE, false, "Stage");
+// Which of the hovered row's buttons is at p_position: its {id, icon, tooltip, rect}, or empty.
+Dictionary GitDock::_row_button_at(const FilePane &p_pane, const Vector2 &p_position) const {
+	TreeItem *item = Object::cast_to<TreeItem>(ObjectDB::get_instance(p_pane.hovered_item));
+	if (!item) {
+		return Dictionary();
 	}
-	p_pane.hovered_item = p_item->get_instance_id();
+	const Array rects = item->get_meta("git_button_rects", Array());
+	for (int i = 0; i < rects.size(); i++) {
+		const Dictionary button = rects[i];
+		if (Rect2(button["rect"]).has_point(p_position)) {
+			return button;
+		}
+	}
+	return Dictionary();
 }
 
 void GitDock::_on_tree_gui_input(const Ref<InputEvent> &p_event, Object *p_tree) {
-	Ref<InputEventMouseMotion> motion = p_event;
 	FilePane *pane = _pane_for_tree(p_tree);
-	if (motion.is_valid() && pane) {
+	if (!pane) {
+		return;
+	}
+	Ref<InputEventMouseMotion> motion = p_event;
+	if (motion.is_valid()) {
 		_set_hovered(*pane, pane->tree->get_item_at_position(motion->get_position()));
+		const Dictionary button = _row_button_at(*pane, motion->get_position());
+		const int id = button.get("id", -1);
+		if (id != pane->hovered_button) {
+			pane->hovered_button = id;
+			pane->tree->queue_redraw();
+			// The Tree shows the row's tooltip; over a button, that's the button's.
+			TreeItem *item = Object::cast_to<TreeItem>(ObjectDB::get_instance(pane->hovered_item));
+			if (item) {
+				item->set_tooltip_text(COLUMN_NAME, id >= 0 ? String(button["tooltip"]) : String(item->get_meta("git_tooltip", String())));
+			}
+		}
+		return;
+	}
+	// A click on a row button: taken before the Tree sees it (Godot emits gui_input first for
+	// this), so it doesn't also select the row. The action runs deferred, outside this event.
+	Ref<InputEventMouseButton> click = p_event;
+	if (click.is_valid() && click->get_button_index() == MOUSE_BUTTON_LEFT) {
+		const Dictionary button = _row_button_at(*pane, click->get_position());
+		if (!button.is_empty()) {
+			pane->tree->accept_event();
+			if (click->is_pressed()) {
+				callable_mp(this, &GitDock::_click_row_button).call_deferred(pane->hovered_item, (int)button["id"]);
+			}
+		}
 	}
 }
 
@@ -705,10 +945,16 @@ void GitDock::_on_tree_mouse_exited(Object *p_tree) {
 	}
 }
 
+// A click on one of the buttons _draw_file_row draws (by the row's instance id: it runs deferred).
+void GitDock::_click_row_button(uint64_t p_item, int p_id) {
+	TreeItem *item = Object::cast_to<TreeItem>(ObjectDB::get_instance(p_item));
+	if (item) {
+		_on_tree_button_clicked(item, COLUMN_NAME, p_id, MOUSE_BUTTON_LEFT);
+	}
+}
+
 void GitDock::_on_tree_button_clicked(TreeItem *p_item, int p_column, int p_id, int p_mouse_button) {
-	const String path = p_item->get_metadata(COLUMN_NAME);
-	PackedStringArray paths;
-	paths.push_back(path);
+	const PackedStringArray paths = _row_paths(p_item);
 
 	switch (p_id) {
 		case BUTTON_STAGE: {
@@ -837,13 +1083,13 @@ void GitDock::_on_context_menu_id(int p_id) {
 			}
 		} break;
 		case MENU_STAGE: {
-			_stage_paths(paths, true);
+			_stage_paths(_selected_paths(context_tree, true), true);
 		} break;
 		case MENU_UNSTAGE: {
-			_stage_paths(paths, false);
+			_stage_paths(_selected_paths(context_tree, true), false);
 		} break;
 		case MENU_DISCARD: {
-			_confirm_discard(paths);
+			_confirm_discard(_selected_paths(context_tree, true));
 		} break;
 		case MENU_SHOW_IN_FILESYSTEM: {
 			EditorInterface::get_singleton()->select_file(_to_res_path(paths[0]));
@@ -936,6 +1182,19 @@ void GitDock::_update_diff() {
 	}
 	if (diff.get("kind", String()) != "unchanged") {
 		_add_image_versions(diff, diff_staged ? "HEAD" : "index", diff_staged ? "index" : "workdir");
+		// The companions the file's row stands for (see _fill_file_pane): changed in the same list.
+		Array companions;
+		if (companion_owner(diff_path).is_empty()) {
+			for (const char *suffix : { ".import", ".uid" }) {
+				const Dictionary companion = repo->get_diff(vformat("%s%s", diff_path, suffix), diff_staged);
+				if (companion.get("kind", String()) != "unchanged" && !companion.is_empty()) {
+					companions.push_back(companion);
+				}
+			}
+		}
+		if (!companions.is_empty()) {
+			diff["companions"] = companions;
+		}
 	}
 	diff_dock->set_diff(diff, diff_staged ? "Staged" : "Unstaged", _file_icon(diff_path));
 	_select_diff_row();

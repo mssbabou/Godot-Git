@@ -7,9 +7,11 @@
 #include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/option_button.hpp>
 #include <godot_cpp/classes/panel_container.hpp>
+#include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/syntax_highlighter.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/texture_rect.hpp>
+#include <godot_cpp/classes/tree.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
 using namespace godot;
@@ -55,6 +57,7 @@ private:
 		VIEW_UNIFIED,
 		VIEW_SPLIT,
 		VIEW_IMAGE, // Before | after, for images. Not saved: images always open this way.
+		VIEW_SETTINGS, // Setting by setting, for `.import` and `.uid` files. Not saved either.
 	};
 
 	enum PaneIndex {
@@ -129,13 +132,20 @@ private:
 	Control *header = nullptr;
 
 	View text_view = VIEW_UNIFIED; // Unified or side by side, saved per project.
-	bool images_as_text = false; // An SVG (an image that's also text) shown as text, by choice.
+	bool as_text = false; // A file with a view of its own (an SVG, a `.import`) shown as text, by choice.
 
 	Control *unified_view = nullptr;
 	Control *split_view = nullptr;
 	Control *image_view = nullptr;
 	Pane panes[PANE_COUNT];
 	ImageSide image_sides[2];
+	Control *settings_view = nullptr;
+	Tree *settings_tree = nullptr;
+	// Under any view: the settings of the file's companions (`player.png.import`, `player.gd.uid`),
+	// which the Git dock lists on the file's row.
+	Control *companion_view = nullptr;
+	ScrollContainer *companion_scroll = nullptr;
+	Tree *companion_tree = nullptr;
 	Label *message_label = nullptr;
 	Control *message_view = nullptr;
 	bool syncing_scroll = false;
@@ -148,6 +158,13 @@ private:
 	void _update_header();
 	void _show_images();
 	void _draw_image_side(int p_index);
+
+	// git_diff_dock_settings.cpp
+	Tree *_make_settings_tree(Control *p_parent);
+	void _show_settings();
+	void _fill_settings(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_diff);
+	void _fit_companions();
+
 	String _empty_text() const;
 	void _build_rows(Rows &r_unified, Rows &r_old, Rows &r_new) const;
 	void _fill_pane(Pane &r_pane, const Rows &p_rows);
@@ -166,7 +183,8 @@ public:
 	// "Staged", "Commit 4dff129"). Does nothing when it's what's already shown, so a refresh keeps
 	// the scroll position and selection; a changed diff of the same file keeps the scroll position.
 	// For images, p_diff also holds both versions ("image_old", "image_new":
-	// GitRepository::get_file_bytes), shown before | after instead of "binary file".
+	// GitRepository::get_file_bytes), shown before | after instead of "binary file". "companions":
+	// the diffs of the file's `.import` / `.uid` companions, shown setting by setting under it.
 	void set_diff(const Dictionary &p_diff, const String &p_source, const Ref<Texture2D> &p_icon);
 
 	// Whether the Diff panel shows p_path as an image (by its extension).

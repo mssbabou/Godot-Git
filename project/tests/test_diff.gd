@@ -8,6 +8,7 @@ func run() -> void:
 	_untracked_file()
 	_staged_changes()
 	_special_files()
+	_settings_files()
 	_line_endings()
 	_commits()
 	_history_order()
@@ -147,6 +148,38 @@ func _special_files() -> void:
 	var r := open(repo)
 	check("binary file", r.get_diff("icon.png", false).get("kind") == "binary", r.get_diff("icon.png", false))
 	check("file over 2 MB", r.get_diff("big.txt", false).get("kind") == "too_large", r.get_diff("big.txt", false).get("kind"))
+
+
+## `.import` and `.uid` files: which settings changed, for the Diff panel's settings view.
+func _settings_files() -> void:
+	var repo := make_repo("settings")
+	var import_text := "[remap]\n\nimporter=\"texture\"\nuid=\"uid://aaa\"\npath=\"res://.godot/imported/a.png-1.ctex\"\nmetadata={\n\"vram_texture\": false\n}\n\n[deps]\n\nsource_file=\"res://a.png\"\n\n[params]\n\ncompress/mode=0\nmipmaps/generate=false\nold/option=1\n"
+	write(repo.path_join("a.png.import"), import_text)
+	write(repo.path_join("a.gd.uid"), "uid://first\n")
+	commit_all(repo, "first")
+	write(repo.path_join("a.png.import"), import_text.replace("compress/mode=0", "compress/mode=2").replace("\"vram_texture\": false", "\"vram_texture\": true").replace("old/option=1\n", "new/option=3\n"))
+	write(repo.path_join("a.gd.uid"), "uid://second\n")
+	var r := open(repo)
+
+	var diff := r.get_diff("a.png.import", false)
+	var found := {}
+	for change: Dictionary in diff.get("settings", []):
+		found[change.section + "/" + change.key] = [change.get("old"), change.get("new")]
+	check("settings: importer", diff.get("importer") == "texture", diff.get("importer"))
+	check("settings: changed value", found.get("params/compress/mode") == ["0", "2"], found)
+	check("settings: multi-line value", found.get("remap/metadata") == ["{\n\"vram_texture\": false\n}", "{\n\"vram_texture\": true\n}"], found.get("remap/metadata"))
+	check("settings: added and removed keys", found.get("params/new/option") == [null, "3"] and found.get("params/old/option") == ["1", null], found)
+	check("settings: unchanged keys left out", found.size() == 4, found.keys())
+
+	var uid := r.get_diff("a.gd.uid", false)
+	check("settings: uid", uid.get("settings") == [{ "section": "", "key": "uid", "old": "uid://first", "new": "uid://second" }], uid.get("settings"))
+	check("settings: not for other files", not r.get_diff("a.gd.uid", true).has("settings") and not diff.is_empty(), "")
+
+	git(repo, ["add", "-A"])
+	git(repo, ["commit", "-q", "-m", "second"])
+	r = open(repo)
+	var in_commit := r.get_commit_diff(git(repo, ["rev-parse", "HEAD"]), "a.gd.uid")
+	check("settings: in a commit", in_commit.get("settings") == uid.get("settings"), in_commit.get("settings"))
 
 
 # Files checked out with CRLF (core.autocrlf on Windows) must not show "\r" at line ends.

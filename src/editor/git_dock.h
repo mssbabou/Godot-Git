@@ -102,6 +102,7 @@ class GitDock : public EditorDock {
 		bool staged = false;
 		int file_count = 0;
 		uint64_t hovered_item = 0;
+		int hovered_button = -1; // ItemButton under the mouse on the hovered row, or -1.
 	};
 
 	Ref<GitRepository> repo;
@@ -296,7 +297,13 @@ class GitDock : public EditorDock {
 	void _queue_align_header_buttons();
 	void _align_header_buttons();
 	FilePane *_pane_for_tree(Object *p_tree);
-	PackedStringArray _selected_paths(Tree *p_tree) const;
+	PackedStringArray _selected_paths(Tree *p_tree, bool p_companions = false) const;
+	PackedStringArray _row_paths(TreeItem *p_item) const;
+	PackedStringArray _blocking_paths(TreeItem *p_item) const;
+	void _round_section(FoldableContainer *p_section);
+	Array _row_button_list(const FilePane &p_pane) const;
+	Dictionary _row_button_at(const FilePane &p_pane, const Vector2 &p_position) const;
+	void _click_row_button(uint64_t p_item, int p_id);
 	void _set_hovered(FilePane &p_pane, TreeItem *p_item);
 	void _on_tree_gui_input(const Ref<InputEvent> &p_event, Object *p_tree);
 	void _on_tree_mouse_exited(Object *p_tree);

@@ -14,6 +14,7 @@
 
 #include "git/git_lfs.h"
 #include "git/git_util.h"
+#include "git/settings_text.h"
 
 using namespace godot_git;
 
@@ -201,6 +202,20 @@ String lfs_pointer_oid(const PackedByteArray &p_bytes) {
 	return String();
 }
 
+// For a settings file (`.import`, `.uid`): which settings changed, read from both versions'
+// whole text ("settings", see settings_changes), and the importer ("importer", for naming values).
+void add_settings(const GitRepository *p_repo, Dictionary &r_diff, const String &p_old_version, const String &p_new_version) {
+	const String path = r_diff["path"];
+	if (!is_settings_path(path) || String(r_diff["kind"]) != "text") {
+		return;
+	}
+	const String old_text = PackedByteArray(Dictionary(p_repo->get_file_bytes(p_old_version, r_diff["old_path"]))["bytes"]).get_string_from_utf8();
+	const String new_text = PackedByteArray(Dictionary(p_repo->get_file_bytes(p_new_version, path))["bytes"]).get_string_from_utf8();
+	r_diff["settings"] = settings_changes(path, old_text, new_text);
+	const String importer = settings_value(new_text.is_empty() ? old_text : new_text, "remap", "importer");
+	r_diff["importer"] = importer.trim_prefix("\"").trim_suffix("\"");
+}
+
 } // namespace
 
 // The uncommitted change to one file, for the diff view. p_staged: HEAD vs index (what the next
@@ -211,6 +226,7 @@ String lfs_pointer_oid(const PackedByteArray &p_bytes) {
 // "old_lines", "new_start", "new_lines", "context" (the function or section it's in, if git found
 // one), and one entry per line in "origins" ('+', '-' or ' '), "old_numbers", "new_numbers" (-1
 // where the line doesn't exist on that side) and "text" (without the line ending) }.
+// A `.import` or `.uid` file also has "settings" and "importer" (see add_settings).
 Dictionary GitRepository::get_diff(const String &p_path, bool p_staged) const {
 	ERR_FAIL_NULL_V_MSG(repo, Dictionary(), "Repository is not open.");
 
@@ -238,7 +254,9 @@ Dictionary GitRepository::get_diff(const String &p_path, bool p_staged) const {
 	if (err < 0) {
 		return Dictionary();
 	}
-	return describe_file_diff(repo, diff, p_path);
+	Dictionary result = describe_file_diff(repo, diff, p_path);
+	add_settings(this, result, p_staged ? "HEAD" : "index", p_staged ? "index" : "workdir");
+	return result;
 }
 
 // The files commit p_hash changed (see commit_diff), in git's order:
@@ -282,7 +300,9 @@ Dictionary GitRepository::get_commit_diff(const String &p_hash, const String &p_
 	if (commit_diff(repo, p_hash, diff.out()) < 0) {
 		return Dictionary();
 	}
-	return describe_file_diff(repo, diff, p_path);
+	Dictionary result = describe_file_diff(repo, diff, p_path);
+	add_settings(this, result, vformat("%s^1", p_hash), p_hash);
+	return result;
 }
 
 // A file's content in one version: p_version is "workdir" (the file on disk), "index" (what's

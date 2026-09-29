@@ -167,9 +167,12 @@ GitDiffDock::GitDiffDock() {
 	add_child(main_vb);
 
 	// Header: which file, which changes, how many lines; the view and Open on the right.
+	// In a MarginContainer for its left inset (see _update_theme).
+	MarginContainer *header_margin = memnew(MarginContainer);
+	main_vb->add_child(header_margin);
+	header = header_margin;
 	HBoxContainer *header_hb = memnew(HBoxContainer);
-	main_vb->add_child(header_hb);
-	header = header_hb;
+	header_margin->add_child(header_hb);
 
 	icon_rect = memnew(TextureRect);
 	icon_rect->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
@@ -235,6 +238,12 @@ GitDiffDock::GitDiffDock() {
 	_make_image_side(0, images);
 	_make_image_side(1, images);
 
+	PanelContainer *settings_frame = memnew(PanelContainer);
+	settings_frame->set_v_size_flags(SIZE_EXPAND_FILL);
+	body->add_child(settings_frame);
+	settings_view = settings_frame;
+	settings_tree = _make_settings_tree(settings_frame);
+
 	CenterContainer *center = memnew(CenterContainer);
 	center->set_v_size_flags(SIZE_EXPAND_FILL);
 	body->add_child(center);
@@ -242,6 +251,16 @@ GitDiffDock::GitDiffDock() {
 	message_label = memnew(Label);
 	message_label->set_horizontal_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 	center->add_child(message_label);
+
+	// As tall as its rows, up to a limit (see _fit_companions), so the file's own view keeps the room.
+	PanelContainer *companion_frame = memnew(PanelContainer);
+	main_vb->add_child(companion_frame);
+	companion_view = companion_frame;
+	companion_scroll = memnew(ScrollContainer);
+	companion_frame->add_child(companion_scroll);
+	companion_tree = _make_settings_tree(companion_scroll);
+	companion_tree->set_v_scroll_enabled(false); // Reports its full height; the ScrollContainer scrolls.
+	companion_tree->set_h_size_flags(SIZE_EXPAND_FILL);
 }
 
 void GitDiffDock::_make_pane(PaneIndex p_index, Control *p_parent, int p_number_gutters) {
@@ -259,6 +278,10 @@ void GitDiffDock::_make_pane(PaneIndex p_index, Control *p_parent, int p_number_
 	edit->set_highlight_current_line(false);
 	edit->set_highlight_all_occurrences(true);
 	edit->set_deselect_on_focus_loss_enabled(true);
+	// The gutters (tint, numbers, +/−) are drawn on the CodeEdit's own canvas item, which isn't
+	// clipped, while TextEdit draws its rows on an inner one clipped to the control. A row cut off
+	// at the bottom then had its gutter part hang out past the code, into the frame's padding.
+	edit->set_clip_contents(true);
 	// Line numbers (old and new in the unified view), then the +/− column. Drawn by _draw_gutter.
 	pane.number_gutters = p_number_gutters;
 	pane.first_gutter = edit->get_gutter_count();
@@ -346,10 +369,30 @@ void GitDiffDock::_update_theme() {
 	theme.scale = EditorInterface::get_singleton()->get_editor_scale();
 
 	open_button->set_button_icon(get_theme_icon("Load", "EditorIcons"));
+	// The file icon starts as far in as the captions below it (a Label's padding) and as "Open"
+	// ends on the right (the button's padding); flush with the edge, it looked lopsided.
+	const Ref<StyleBox> label_box = get_theme_stylebox("normal", "Label");
+	const int inset = label_box.is_valid() ? (int)label_box->get_margin(SIDE_LEFT) : 0;
+	for (const char *side : { "margin_top", "margin_right", "margin_bottom" }) {
+		header->add_theme_constant_override(side, 0);
+	}
+	header->add_theme_constant_override("margin_left", inset);
 	for (ImageSide &side : image_sides) {
 		side.frame->add_theme_stylebox_override("panel", get_theme_stylebox("read_only", "CodeEdit"));
 		side.caption->add_theme_color_override("font_color", theme.dim);
 		side.note->add_theme_color_override("font_color", theme.dim);
+	}
+	Ref<StyleBoxEmpty> no_box;
+	no_box.instantiate();
+	for (Control *frame : { settings_view, companion_view }) {
+		frame->add_theme_stylebox_override("panel", get_theme_stylebox("read_only", "CodeEdit"));
+	}
+	// Nothing in these lists can be clicked, so nothing highlights: a Tree draws its hover box
+	// over rows even when they can't be selected.
+	for (Tree *tree : { settings_tree, companion_tree }) {
+		for (const char *name : { "panel", "focus", "hovered", "hovered_dimmed", "hovered_selected", "hovered_selected_focus", "selected", "selected_focus", "cursor", "cursor_unfocused" }) {
+			tree->add_theme_stylebox_override(name, no_box);
+		}
 	}
 	for (Label *label : { folder_label, source_label, message_label }) {
 		label->add_theme_color_override("font_color", theme.dim);
@@ -390,18 +433,21 @@ void GitDiffDock::_render() {
 	_update_header();
 
 	const View view = _current_view();
-	const String text = view == VIEW_IMAGE ? String() : _empty_text();
+	const bool own_view = view == VIEW_IMAGE || view == VIEW_SETTINGS;
+	const String text = own_view ? String() : _empty_text();
 	message_label->set_text(text);
 	message_view->set_visible(!text.is_empty());
 	const bool split = view == VIEW_SPLIT;
 	unified_view->set_visible(text.is_empty() && view == VIEW_UNIFIED);
 	split_view->set_visible(text.is_empty() && split);
 	image_view->set_visible(view == VIEW_IMAGE);
+	settings_view->set_visible(view == VIEW_SETTINGS);
 	_show_images();
+	_show_settings();
 
 	// Only the visible view holds lines; the others are emptied.
 	Rows unified, old_side, new_side;
-	if (text.is_empty() && view != VIEW_IMAGE) {
+	if (text.is_empty() && !own_view) {
 		_build_rows(unified, old_side, new_side);
 	}
 	_fill_pane(panes[PANE_UNIFIED], split ? Rows() : unified);
@@ -409,11 +455,15 @@ void GitDiffDock::_render() {
 	_fill_pane(panes[PANE_NEW], split ? new_side : Rows());
 }
 
-// Images open as images; an SVG (also text) can be switched to its text diff.
+// Images open as images and settings files setting by setting; both can be switched to their
+// text diff when they have one (an SVG is also text).
 GitDiffDock::View GitDiffDock::_current_view() const {
 	const bool has_lines = diff.get("kind", String()) == "text" && !Array(diff.get("hunks", Array())).is_empty();
-	if (diff.has("image_new") && (!has_lines || !images_as_text)) {
+	if (diff.has("image_new") && (!has_lines || !as_text)) {
 		return VIEW_IMAGE;
+	}
+	if (diff.has("settings") && (!has_lines || !as_text)) {
+		return VIEW_SETTINGS;
 	}
 	return text_view;
 }
@@ -443,6 +493,9 @@ void GitDiffDock::_update_header() {
 	view_select->clear();
 	if (diff.has("image_new") && has_lines) {
 		view_select->add_item("Image", VIEW_IMAGE);
+	}
+	if (diff.has("settings") && has_lines) {
+		view_select->add_item("Settings", VIEW_SETTINGS);
 	}
 	if (has_lines) {
 		view_select->add_item("Unified", VIEW_UNIFIED);
@@ -637,14 +690,25 @@ void GitDiffDock::_draw_gutter(int p_line, int p_gutter, const Rect2 &p_region, 
 	}
 	const RowKind kind = (RowKind)pane.kinds[p_line];
 	const RID canvas = pane.edit->get_canvas_item();
+	const int gutter = p_gutter - pane.first_gutter;
 	const Color &background = theme.row_background[kind];
 	if (background.a > 0) {
-		RenderingServer::get_singleton()->canvas_item_add_rect(canvas, p_region, background);
+		Rect2 tint = p_region;
+		if (gutter == pane.number_gutters) {
+			// TextEdit leaves a gap (gutter_padding, 2 px in 4.7.2) between the last gutter and
+			// the text, which nobody tints: a dark seam through every tinted row. The last
+			// column's tint covers it.
+			int drawn = 0;
+			for (int g = 0; g < pane.edit->get_gutter_count(); g++) {
+				drawn += pane.edit->is_gutter_drawn(g) ? pane.edit->get_gutter_width(g) : 0;
+			}
+			tint.size.x += pane.edit->get_total_gutter_width() - drawn;
+		}
+		RenderingServer::get_singleton()->canvas_item_add_rect(canvas, tint, background);
 	}
 	const Color color = kind == ROW_ADDED ? theme.added : (kind == ROW_REMOVED ? theme.removed : theme.line_number);
 	const float y = p_region.position.y + (p_region.size.y - theme.height) / 2 + theme.ascent;
 
-	const int gutter = p_gutter - pane.first_gutter;
 	if (gutter < pane.number_gutters) {
 		// Unified: old, then new. Split: each side has one, for its own numbers.
 		const bool new_side = p_pane == PANE_NEW || gutter == 1;
@@ -671,10 +735,11 @@ void GitDiffDock::_on_scrolled(double p_value, int p_from) {
 
 void GitDiffDock::_on_view_selected(int p_index) {
 	const View view = (View)view_select->get_item_id(p_index);
-	if (diff.has("image_new")) {
-		images_as_text = view != VIEW_IMAGE; // Only a choice made on an image counts for images.
+	const bool own_view = view == VIEW_IMAGE || view == VIEW_SETTINGS;
+	if (diff.has("image_new") || diff.has("settings")) {
+		as_text = !own_view; // Only a choice made on such a file counts for them.
 	}
-	if (view != VIEW_IMAGE) {
+	if (!own_view) {
 		text_view = view;
 		editor_settings()->set_project_metadata("godot_git", "diff_view", (int)view);
 	}

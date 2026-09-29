@@ -54,6 +54,8 @@ GitDock::GitDock() {
 	branch_select = memnew(OptionButton);
 	branch_select->set_h_size_flags(SIZE_EXPAND_FILL);
 	branch_select->set_clip_text(true);
+	// "feature/inventory-system-re…", not cut off mid-letter.
+	branch_select->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	branch_select->set_fit_to_longest_item(false);
 	branch_select->set_tooltip_text("Current branch. Pick another to switch to it.");
 	branch_select->connect("item_selected", callable_mp(this, &GitDock::_on_branch_selected));
@@ -185,6 +187,10 @@ void GitDock::_notification(int p_what) {
 	switch (p_what) {
 		case NOTIFICATION_THEME_CHANGED: {
 			file_icons.clear();
+			// History's rows carry the theme's colors from when they were built, and it's rebuilt
+			// only when the commits change: without this, a light theme kept the dark theme's
+			// colors (white ages, black note bars). Expanded commits are re-expanded.
+			history_shown.clear();
 			_update_icons();
 		} break;
 
@@ -280,6 +286,10 @@ void GitDock::_update_icons() {
 	status_progress->add_theme_stylebox_override("background", track);
 	status_progress->add_theme_stylebox_override("fill", fill);
 	_update_status_style();
+
+	for (FoldableContainer *section : { staged_pane.container, changes_pane.container, history_pane }) {
+		_round_section(section);
+	}
 
 	for (FilePane *pane : { &staged_pane, &changes_pane }) {
 		pane->added->add_theme_color_override("font_color", get_theme_color("success_color", "Editor"));
