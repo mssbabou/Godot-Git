@@ -32,6 +32,30 @@ static PackedStringArray unsaved_files() {
 // Before a pull or a branch switch: files open with unsaved edits would be out of step with what's
 // on disk afterwards, and saving them later would quietly undo what the operation changed. So it
 // offers to save them first. Returns true if it asked; p_then runs once answered (not on Cancel).
+namespace {
+
+// "Pulling", for the save offer's explanation of p_verb (its button says "Save and Pull").
+String doing(const String &p_verb) {
+	if (p_verb == "Pull") {
+		return "Pulling";
+	}
+	if (p_verb == "Switch") {
+		return "Switching branches";
+	}
+	if (p_verb == "Stash") {
+		return "Stashing";
+	}
+	if (p_verb == "Restore") {
+		return "Restoring a stash";
+	}
+	if (p_verb == "Abort") {
+		return "Aborting";
+	}
+	return "Continuing";
+}
+
+} // namespace
+
 bool GitDock::_ask_to_save(const String &p_verb, const Callable &p_then) {
 	if (unsaved_checked) {
 		unsaved_checked = false;
@@ -50,7 +74,7 @@ bool GitDock::_ask_to_save(const String &p_verb, const Callable &p_then) {
 	}
 	unsaved_then = p_then;
 	unsaved_confirm->set_text(vformat("%s unsaved changes in the editor:\n%s\n\n%s can change files on disk. Save first, so the editor doesn't hold an older version: saving it afterwards would undo the change.",
-			files.size() == 1 ? String("This file has") : String("These files have"), String("\n").join(names), p_verb == "Pull" ? String("Pulling") : String("Switching branches")));
+			files.size() == 1 ? String("This file has") : String("These files have"), String("\n").join(names), doing(p_verb)));
 	unsaved_confirm->set_ok_button_text(vformat("Save and %s", p_verb));
 	unsaved_skip->set_text(vformat("%s Without Saving", p_verb));
 	unsaved_confirm->popup_centered();
@@ -135,7 +159,11 @@ void GitDock::_update_filesystem_colors(const Array &p_status) {
 			if (state.is_empty() || !path.begins_with("res://")) {
 				continue;
 			}
-			colors[path] = _status_color(state);
+			// Names a quarter of the way to the normal text color: the full status colors read too
+			// saturated for whole names (the maintainer, 2026-09-29). Folders go further (below), so
+			// a changed file still stands out from the folders holding it. The letters keep the
+			// full color: they're small, and they carry the status.
+			colors[path] = _status_color(state).lerp(text, 0.25);
 			badges[path] = Array::make(status_letter(state), _status_color(state));
 			const int rank = (state == "new" || state == "untracked") ? 1 : (state == "deleted" || state == "conflicted") ? 3
 																														  : 2;

@@ -9,6 +9,8 @@
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/image.hpp>
+#include <godot_cpp/classes/image_texture.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/style_box_empty.hpp>
@@ -216,14 +218,16 @@ void GitDock::_update_icons() {
 	more_menu->set_button_icon(get_theme_icon("GuiTabMenuHl", "EditorIcons"));
 	pull_button->set_button_icon(get_theme_icon("MoveDown", "EditorIcons"));
 	push_button->set_button_icon(get_theme_icon("MoveUp", "EditorIcons"));
-	staged_pane.action->set_button_icon(get_theme_icon("ZoomLess", "EditorIcons"));
-	changes_pane.action->set_button_icon(get_theme_icon("ZoomMore", "EditorIcons"));
+	_draw_own_icons();
+	staged_pane.action->set_button_icon(_icon("GitMinus"));
+	staged_pane.stash->set_button_icon(_icon("GitStash"));
+	changes_pane.action->set_button_icon(_icon("Add"));
 	changes_pane.discard->set_button_icon(get_theme_icon("UndoRedo", "EditorIcons"));
 
 	// The trees sit inside the panes' own panels; drop their frames so it's one surface.
 	Ref<StyleBoxEmpty> empty;
 	empty.instantiate();
-	for (Tree *tree : { staged_pane.tree, changes_pane.tree, history_tree }) {
+	for (Tree *tree : { staged_pane.tree, changes_pane.tree, stashes_tree, history_tree }) {
 		tree->add_theme_stylebox_override("panel", empty);
 		tree->add_theme_stylebox_override("focus", empty);
 	}
@@ -239,7 +243,7 @@ void GitDock::_update_icons() {
 	}
 	for (FilePane *pane : { &staged_pane, &changes_pane }) {
 		pane->buttons->add_theme_constant_override("separation", pane->tree->get_theme_constant("button_margin"));
-		for (Button *button : { pane->discard, pane->action }) {
+		for (Button *button : { pane->discard, pane->stash, pane->action }) {
 			if (!button) {
 				continue;
 			}
@@ -275,7 +279,7 @@ void GitDock::_update_icons() {
 	status_progress->add_theme_stylebox_override("fill", fill);
 	_update_status_style();
 
-	for (FoldableContainer *section : { staged_pane.container, changes_pane.container, history_pane }) {
+	for (FoldableContainer *section : { staged_pane.container, changes_pane.container, stashes_pane, history_pane }) {
 		_round_section(section);
 	}
 
@@ -298,12 +302,15 @@ void GitDock::_build_more_menu() {
 	PopupMenu *more = more_menu->get_popup();
 	more->clear();
 
-	more->add_icon_item(get_theme_icon("ZoomMore", "EditorIcons"), "Stage All Changes", MORE_STAGE_ALL);
+	more->add_icon_item(_icon("Add"), "Stage All Changes", MORE_STAGE_ALL);
 	more->set_item_disabled(more->get_item_count() - 1, unstaged_paths.is_empty());
-	more->add_icon_item(get_theme_icon("ZoomLess", "EditorIcons"), "Unstage All Changes", MORE_UNSTAGE_ALL);
+	more->add_icon_item(_icon("GitMinus"), "Unstage All Changes", MORE_UNSTAGE_ALL);
 	more->set_item_disabled(more->get_item_count() - 1, staged_count == 0);
 	more->add_icon_item(get_theme_icon("UndoRedo", "EditorIcons"), "Discard All Changes...", MORE_DISCARD_ALL);
 	more->set_item_disabled(more->get_item_count() - 1, unstaged_paths.is_empty());
+	more->add_icon_item(_icon("GitStash"), "Stash All Changes", MORE_STASH_ALL);
+	more->set_item_disabled(more->get_item_count() - 1, unstaged_paths.is_empty() && staged_count == 0);
+	more->set_item_tooltip(more->get_item_count() - 1, "Set every change aside, new files included, in a stash you can restore later (under Stashes).");
 	more->add_separator();
 	if (has_commits) {
 		more->add_icon_item(get_theme_icon("VcsBranches", "EditorIcons"), "New Branch...", MORE_NEW_BRANCH);
@@ -350,6 +357,40 @@ String GitDock::_to_res_path(const String &p_path) const {
 		return "res://" + absolute.substr(project.length());
 	}
 	return ProjectSettings::get_singleton()->localize_path(absolute);
+}
+
+// An icon by name: ours (see _draw_own_icons) or the editor's own.
+Ref<Texture2D> GitDock::_icon(const String &p_name) const {
+	return own_icons.has(p_name) ? Ref<Texture2D>(own_icons[p_name]) : get_theme_icon(p_name, "EditorIcons");
+}
+
+// Icons the editor doesn't have, drawn in its style (16 px, 2 px strokes, its icon grey): a plain
+// minus to go with its plain plus ("Add"; its zoom icons, circled, looked out of place next to
+// the thin undo arrow), and a filled tray with an arrow coming out (stash, the maintainer's pick)
+// or going in (restore), since nothing of Godot's says "set aside". In the color of the editor's
+// own icons in this theme (read from "Add"), so they match in the light theme too.
+void GitDock::_draw_own_icons() {
+	static const char *const svgs[][2] = {
+		{ "GitMinus", "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><path fill='#e0e0e0' d='M1 7h14v2H1z'/></svg>" },
+		{ "GitStash", "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><path fill='#e0e0e0' d='M1 8h4l1 2h4l1-2h4v6a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1zm6-0.5h2v-3.5h2L8 0.5 5 4h2z'/></svg>" },
+		{ "GitRestore", "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><path fill='#e0e0e0' d='M1 8h4l1 2h4l1-2h4v6a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1zm6-7h2v4h2l-3 3.5L5 5h2z'/></svg>" },
+	};
+	const float scale = EditorInterface::get_singleton()->get_editor_scale();
+	Color color(0.878f, 0.878f, 0.878f);
+	const Ref<Texture2D> add = get_theme_icon("Add", "EditorIcons");
+	const Ref<Image> add_image = add.is_valid() ? add->get_image() : Ref<Image>();
+	if (add_image.is_valid() && !add_image->is_empty()) {
+		color = add_image->get_pixel(add_image->get_width() / 2, add_image->get_height() / 2); // The plus's middle.
+		color.a = 1;
+	}
+	own_icons.clear();
+	for (const auto &svg : svgs) {
+		Ref<Image> image;
+		image.instantiate();
+		if (image->load_svg_from_string(String(svg[1]).replace("#e0e0e0", "#" + color.to_html(false)), scale) == OK) {
+			own_icons[svg[0]] = ImageTexture::create_from_image(image);
+		}
+	}
 }
 
 Ref<Texture2D> GitDock::_file_icon(const String &p_path) {
@@ -434,6 +475,7 @@ void GitDock::refresh() {
 
 	_update_filesystem_colors(status);
 	_fill_history();
+	_fill_stashes();
 	_update_actions();
 	_update_status();
 	_update_diff();
@@ -529,6 +571,18 @@ void GitDock::_update_actions() {
 	more_menu->set_disabled(syncing);
 	_update_commit_row(syncing);
 	_update_sync_row(shown != NETWORK_NONE);
+
+	// Stash what's staged: goes through git (git stash --staged; see GitRepository::stash).
+	String stash_reason;
+	if (!in_operation.is_empty()) {
+		stash_reason = in_operation;
+	} else if (git_missing) {
+		stash_reason = "Stashing what's staged needs git, which isn't installed (or isn't on the PATH). Install it from git-scm.com, or use Stash All Changes in the menu.";
+	} else if (staged_count == 0) {
+		stash_reason = "Stash: stage the changes you want to set aside, then stash them here. Stash All Changes in the menu takes everything.";
+	}
+	staged_pane.stash->set_disabled(syncing || !stash_reason.is_empty());
+	staged_pane.stash->set_tooltip_text(stash_reason.is_empty() ? vformat("Stash the %s: set %s aside, to restore later from Stashes.", plural(staged_count, "staged file", "staged files"), staged_count == 1 ? "it" : "them") : stash_reason);
 
 	// Last, so the reason overrides the others: nothing else matters until it's finished.
 	branch_select->set_tooltip_text(in_operation.is_empty() ? String("Current branch. Pick another to switch to it.") : in_operation);
@@ -665,6 +719,9 @@ void GitDock::_on_more_menu_id(int p_id) {
 		case MORE_UNSTAGE_ALL: {
 			_report(repo->unstage_all(), "Unstage all");
 			refresh();
+		} break;
+		case MORE_STASH_ALL: {
+			_stash(false);
 		} break;
 		case MORE_DISCARD_ALL: {
 			if (!unstaged_paths.is_empty()) {

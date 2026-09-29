@@ -62,14 +62,14 @@ Array GitDock::_row_button_list(const FilePane &p_pane) const {
 	auto button = [&](int p_id, const char *p_icon, const char *p_tooltip) {
 		Dictionary entry;
 		entry["id"] = p_id;
-		entry["icon"] = get_theme_icon(p_icon, "EditorIcons");
+		entry["icon"] = _icon(p_icon);
 		entry["tooltip"] = p_tooltip;
 		return entry;
 	};
 	if (p_pane.staged) {
-		return Array::make(button(BUTTON_UNSTAGE, "ZoomLess", "Unstage"));
+		return Array::make(button(BUTTON_UNSTAGE, "GitMinus", "Unstage"));
 	}
-	return Array::make(button(BUTTON_DISCARD, "UndoRedo", "Discard changes"), button(BUTTON_STAGE, "ZoomMore", "Stage"));
+	return Array::make(button(BUTTON_DISCARD, "UndoRedo", "Discard changes"), button(BUTTON_STAGE, "Add", "Stage"));
 }
 
 // Row buttons only show on the row under the mouse, to keep the list calm (drawn by _draw_file_row).
@@ -177,6 +177,16 @@ void GitDock::_on_file_activated(Object *p_tree) {
 }
 
 void GitDock::_on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_button, Object *p_tree) {
+	if (p_mouse_button == MOUSE_BUTTON_LEFT && p_tree == stashes_tree) {
+		TreeItem *item = stashes_tree->get_item_at_position(p_position);
+		const String row = row_kind(item);
+		if (row == "stash" && stashes_tree->get_button_id_at_position(p_position) < 0) {
+			item->set_collapsed(!item->is_collapsed()); // Like a commit; not when a button was hit.
+		} else if (row == "file") {
+			_show_commit_diff(item->get_meta("git_hash"), item->get_meta("git_path"), true, true);
+		}
+		return;
+	}
 	if (p_mouse_button == MOUSE_BUTTON_LEFT && p_tree == history_tree) {
 		TreeItem *item = history_tree->get_item_at_position(p_position);
 		const String row = row_kind(item);
@@ -205,7 +215,8 @@ void GitDock::_on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_but
 	Tree *tree = Object::cast_to<Tree>(p_tree);
 	context_tree = tree;
 	context_menu->clear();
-	if (!(tree == history_tree ? _build_commit_menu() : _build_file_menu(tree))) {
+	const bool built = tree == history_tree ? _build_commit_menu() : (tree == stashes_tree ? _build_stash_menu() : _build_file_menu(tree));
+	if (!built) {
 		return; // Nothing to offer for this row.
 	}
 	context_menu->set_position(Vector2i(tree->get_screen_position() + p_position));
@@ -257,9 +268,9 @@ bool GitDock::_build_file_menu(Tree *p_tree) {
 		context_menu->add_separator();
 	}
 	if (pane->staged) {
-		context_menu->add_icon_item(get_theme_icon("ZoomLess", "EditorIcons"), "Unstage" + count, MENU_UNSTAGE);
+		context_menu->add_icon_item(_icon("GitMinus"), "Unstage" + count, MENU_UNSTAGE);
 	} else {
-		context_menu->add_icon_item(get_theme_icon("ZoomMore", "EditorIcons"), "Stage" + count, MENU_STAGE);
+		context_menu->add_icon_item(_icon("Add"), "Stage" + count, MENU_STAGE);
 		context_menu->add_icon_item(get_theme_icon("UndoRedo", "EditorIcons"), "Discard Changes..." + count, MENU_DISCARD);
 	}
 	if (single) {
@@ -286,6 +297,18 @@ void GitDock::_on_context_menu_id(int p_id) {
 		paths.push_back(history_tree->get_selected()->get_meta("git_path"));
 	}
 
+	if (p_id == MENU_RESTORE_STASH || p_id == MENU_DELETE_STASH) {
+		TreeItem *stash = stashes_tree->get_selected();
+		if (row_kind(stash) == "stash") {
+			const String hash = Dictionary(stash->get_metadata(0))["hash"];
+			if (p_id == MENU_RESTORE_STASH) {
+				_restore_stash(hash);
+			} else {
+				_confirm_delete_stash(hash);
+			}
+		}
+		return;
+	}
 	switch (p_id) {
 		case MENU_OPEN: {
 			if (!paths.is_empty()) {
@@ -336,5 +359,6 @@ void GitDock::_on_file_multi_selected(TreeItem *p_item, int p_column, bool p_sel
 	// One file at a time is shown, so only one list keeps a selection.
 	(pane->staged ? changes_pane : staged_pane).tree->deselect_all();
 	history_tree->deselect_all();
+	stashes_tree->deselect_all();
 	_show_diff(p_item->get_metadata(COLUMN_NAME), pane->staged, false);
 }

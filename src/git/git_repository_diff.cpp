@@ -149,10 +149,14 @@ Dictionary describe_file_diff(git_repository *p_repo, git_diff *p_diff, const St
 	return result;
 }
 
+Array list_files(git_repository *repo, git_diff *diff); // Below, with get_commit_files.
+
 // What p_hash (a commit, full or short hash) changed: the diff from its first parent (or from
 // nothing, for the first commit) to it, with renames found. A merge is compared with its first
 // parent, like `git log --first-parent`: what merging brought into the branch.
-int commit_diff(git_repository *p_repo, const String &p_hash, git_diff **r_diff) {
+// p_stash: p_hash is a stash, whose first parent is the commit it was made on and whose third
+// parent (if any) holds the new, untracked files it took along; those are added as new files.
+int commit_diff(git_repository *p_repo, const String &p_hash, git_diff **r_diff, bool p_stash = false) {
 	ObjectPtr object;
 	int err = git_revparse_single(object.out(), p_repo, p_hash.utf8().get_data());
 	CommitPtr commit;
@@ -179,6 +183,15 @@ int commit_diff(git_repository *p_repo, const String &p_hash, git_diff **r_diff)
 	err = git_diff_tree_to_tree(r_diff, p_repo, parent_tree, tree, &opts);
 	if (err >= 0) {
 		git_diff_find_similar(*r_diff, nullptr);
+	}
+	if (err >= 0 && p_stash && git_commit_parentcount(commit) > 2) {
+		CommitPtr untracked;
+		TreePtr untracked_tree;
+		DiffPtr added;
+		if (git_commit_parent(untracked.out(), commit, 2) == 0 && git_commit_tree(untracked_tree.out(), untracked) == 0 &&
+				git_diff_tree_to_tree(added.out(), p_repo, nullptr, untracked_tree, &opts) == 0) {
+			err = git_diff_merge(*r_diff, added);
+		}
 	}
 	return err;
 }
@@ -264,12 +277,43 @@ Dictionary GitRepository::get_diff(const String &p_path, bool p_staged) const {
 // "removed" are -1 for binary, LFS and very large files, and for every file of a commit that
 // changed more than 300 (counting lines means diffing each one, and nobody reads that many).
 Array GitRepository::get_commit_files(const String &p_hash) const {
-	Array result;
-	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+	ERR_FAIL_NULL_V_MSG(repo, Array(), "Repository is not open.");
 	DiffPtr diff;
 	if (commit_diff(repo, p_hash, diff.out()) < 0) {
-		return result;
+		return Array();
 	}
+	return list_files(repo, diff);
+}
+
+// The files stash p_hash changed, in the same form as get_commit_files; the new files it took
+// along are "untracked".
+Array GitRepository::get_stash_files(const String &p_hash) const {
+	ERR_FAIL_NULL_V_MSG(repo, Array(), "Repository is not open.");
+	DiffPtr diff;
+	if (commit_diff(repo, p_hash, diff.out(), true) < 0) {
+		return Array();
+	}
+	return list_files(repo, diff);
+}
+
+// How stash p_hash changes one file, in the same form as get_diff.
+Dictionary GitRepository::get_stash_diff(const String &p_hash, const String &p_path) const {
+	ERR_FAIL_NULL_V_MSG(repo, Dictionary(), "Repository is not open.");
+	DiffPtr diff;
+	if (commit_diff(repo, p_hash, diff.out(), true) < 0) {
+		return Dictionary();
+	}
+	Dictionary result = describe_file_diff(repo, diff, p_path);
+	// A new file the stash took along is in its third parent, not in the stash itself.
+	add_settings(this, result, vformat("%s^1", p_hash), has_file_at(p_hash, p_path) ? p_hash : vformat("%s^3", p_hash));
+	return result;
+}
+
+namespace {
+
+// The files in p_diff with their line counts, for History and Stashes (see get_commit_files).
+Array list_files(git_repository *repo, git_diff *diff) {
+	Array result;
 	const bool uses_lfs = repo_uses_lfs(repo); // See get_line_stats.
 	const size_t count = git_diff_num_deltas(diff);
 	for (size_t i = 0; i < count; i++) {
@@ -292,6 +336,8 @@ Array GitRepository::get_commit_files(const String &p_hash) const {
 	}
 	return result;
 }
+
+} // namespace
 
 // How commit p_hash changed one file, in the same form as get_diff.
 Dictionary GitRepository::get_commit_diff(const String &p_hash, const String &p_path) const {

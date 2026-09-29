@@ -119,6 +119,13 @@ void GitDock::_switch_branch(const String &p_branch) {
 	}
 	_remember_open_scenes();
 	const Error err = repo->checkout_branch(target);
+	if (err == ERR_BUSY) {
+		// Your changes are in the way: offer to set them aside (they wait under Stashes).
+		pending_switch = target;
+		stash_switch_confirm->set_text(vformat("%s\n\nStash them and switch to %s? They'll wait under Stashes, where you can restore them when you come back.", GitRepository::get_last_error(), target));
+		stash_switch_confirm->popup_centered();
+		return;
+	}
 	_report(err, "Switch branch");
 	if (err == OK) {
 		EditorInterface::get_singleton()->get_resource_filesystem()->scan();

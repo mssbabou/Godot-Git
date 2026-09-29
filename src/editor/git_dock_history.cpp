@@ -149,42 +149,47 @@ void GitDock::_fill_commit(TreeItem *p_item) {
 	}
 	// Enough for any real commit; beyond that the tree would only get slow.
 	constexpr int MAX_ROWS = 500;
-	const Callable draw_row = callable_mp(this, &GitDock::_draw_file_row);
 	for (int i = 0; i < MIN((int)files.size(), MAX_ROWS); i++) {
-		const Dictionary file = files[i];
-		const String path = file["path"];
-		const String state = file["status"];
-		TreeItem *item = history_tree->create_item(p_item);
-		item->set_meta("git_row", "file");
-		item->set_meta("git_path", path);
-		item->set_meta("git_state", state);
-		item->set_meta("git_hash", hash);
-		item->set_meta("git_icon", _file_icon(path));
-		item->set_cell_mode(0, TreeItem::CELL_MODE_CUSTOM);
-		item->set_custom_draw_callback(0, draw_row);
-		item->set_text(0, path.get_file());
-		item->set_custom_color(0, Color(0, 0, 0, 0));
-		const int added = file["added"];
-		const int removed = file["removed"];
-		String what = status_name(state);
-		if (String(file["old_path"]) != path) {
-			what += vformat(" from %s", file["old_path"]);
-		}
-		if (added > 0 || removed > 0) {
-			what += vformat(String::utf8(" · +%d %s%d"), added, minus(), removed);
-		}
-		item->set_tooltip_text(0, vformat("%s\n%s", path, what));
-		item->set_selectable(1, false);
-		// The status letter in the ages' column, so it lines up with the letters of the lists
-		// above (at the right edge) instead of stopping short of this column.
-		item->set_text(1, status_letter(state));
-		item->set_custom_color(1, _status_color(state));
-		item->set_text_alignment(1, HORIZONTAL_ALIGNMENT_RIGHT);
-		item->set_tooltip_text(1, what);
+		_add_commit_file_row(history_tree, p_item, files[i], hash);
 	}
 	if (files.size() > MAX_ROWS) {
 		add_note(vformat("...and %d more files, not listed.", files.size() - MAX_ROWS), String());
 	}
+}
+
+// A row for one file of a commit or stash (p_hash; see GitRepository::get_commit_files), drawn
+// like the change lists' rows, with the status letter in the second (ages') column.
+TreeItem *GitDock::_add_commit_file_row(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_file, const String &p_hash) {
+	const String path = p_file["path"];
+	const String state = p_file["status"];
+	TreeItem *item = p_tree->create_item(p_parent);
+	item->set_meta("git_row", "file");
+	item->set_meta("git_path", path);
+	item->set_meta("git_state", state);
+	item->set_meta("git_hash", p_hash);
+	item->set_meta("git_icon", _file_icon(path));
+	item->set_cell_mode(0, TreeItem::CELL_MODE_CUSTOM);
+	item->set_custom_draw_callback(0, callable_mp(this, &GitDock::_draw_file_row));
+	item->set_text(0, path.get_file());
+	item->set_custom_color(0, Color(0, 0, 0, 0));
+	const int added = p_file["added"];
+	const int removed = p_file["removed"];
+	String what = status_name(state);
+	if (String(p_file["old_path"]) != path) {
+		what += vformat(" from %s", p_file["old_path"]);
+	}
+	if (added > 0 || removed > 0) {
+		what += vformat(String::utf8(" · +%d %s%d"), added, minus(), removed);
+	}
+	item->set_tooltip_text(0, vformat("%s\n%s", path, what));
+	item->set_selectable(1, false);
+	// The status letter in the ages' column, so it lines up with the letters of the lists
+	// above (at the right edge) instead of stopping short of this column.
+	item->set_text(1, status_letter(state));
+	item->set_custom_color(1, _status_color(state));
+	item->set_text_alignment(1, HORIZONTAL_ALIGNMENT_RIGHT);
+	item->set_tooltip_text(1, what);
+	return item;
 }
 
 void GitDock::_on_history_item_collapsed(TreeItem *p_item) {
@@ -225,5 +230,6 @@ void GitDock::_on_history_item_selected() {
 	}
 	staged_pane.tree->deselect_all();
 	changes_pane.tree->deselect_all();
+	stashes_tree->deselect_all();
 	_show_commit_diff(item->get_meta("git_hash"), item->get_meta("git_path"), false);
 }

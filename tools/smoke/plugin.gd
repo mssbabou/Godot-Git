@@ -243,8 +243,103 @@ func _run() -> void:
 			break
 	_check(counted, "line counts arrive after an edit")
 
-	if failures == 0:
+	# Stash last, and driven by timers, not await: stashing changes files on disk, scripts among
+	# them, and Godot then reloads scripts, which cancels every await in progress (this script's
+	# too; it then spun on "Object was deleted while awaiting a callback" until the editor crashed).
+	get_tree().root.set_meta("smoke_failures", failures)
+	_stash_press()
+
+
+func _smoke_check(ok: bool, what: String) -> void:
+	var root := get_tree().root
+	if not ok:
+		root.set_meta("smoke_failures", int(root.get_meta("smoke_failures", 0)) + 1)
+	print("SMOKE: %s %s" % ["ok  " if ok else "FAIL", what])
+
+
+func _smoke_dock() -> Control:
+	return EditorInterface.get_base_control().find_children("*", "GitDock", true, false)[0]
+
+
+func _smoke_section(title: String) -> FoldableContainer:
+	for f: FoldableContainer in _smoke_dock().find_children("*", "FoldableContainer", true, false):
+		if f.title == title or f.title.begins_with(title + " ("):
+			return f
+	return null
+
+
+func _smoke_rows(title: String, kind: String) -> Array[TreeItem]:
+	var rows: Array[TreeItem] = []
+	var section := _smoke_section(title)
+	if not section:
+		return rows
+	var tree: Tree = section.find_children("*", "Tree", true, false)[0]
+	var stack: Array[TreeItem] = [tree.get_root()]
+	while not stack.is_empty():
+		var item: TreeItem = stack.pop_back()
+		if item == null:
+			continue
+		if kind == "" or item.get_meta("git_row", "") == kind:
+			rows.append(item)
+		stack.append_array(item.get_children())
+	return rows
+
+
+# Stash: set what's staged aside, see it under Stashes, look inside, restore it.
+func _stash_press() -> void:
+	var stash_button: Button = null
+	var nodes: Array[Node] = [_smoke_section("Staged Changes")] # Header buttons are internal children.
+	while not nodes.is_empty():
+		var node: Node = nodes.pop_back()
+		if node is Button and node.tooltip_text.begins_with("Stash the"):
+			stash_button = node
+		nodes.append_array(node.get_children(true))
+	_smoke_check(stash_button != null and not stash_button.disabled, "Staged Changes offers to stash what's staged")
+	if stash_button:
+		stash_button.pressed.emit()
+	# It asks first, showing what goes; Stash (confirmed) goes ahead.
+	var dialog: ConfirmationDialog = null
+	for d: ConfirmationDialog in _smoke_dock().find_children("*", "ConfirmationDialog", true, false):
+		if d.title == "Stash Changes":
+			dialog = d
+	var lists_file := false
+	if dialog:
+		for label: Label in dialog.find_children("*", "Label", true, false):
+			lists_file = lists_file or label.text.contains("player.gd")
+	_smoke_check(dialog != null and dialog.visible and lists_file, "stashing asks first, listing what goes")
+	if dialog:
+		dialog.confirmed.emit()
+		dialog.hide()
+	get_tree().create_timer(3.0).timeout.connect(_stash_look)
+
+
+func _stash_look() -> void:
+	var stashes := _smoke_rows("Stashes", "stash")
+	var staged_left := _smoke_rows("Staged Changes", "").filter(func(item: TreeItem) -> bool: return item.get_meta("git_path", "") == "player.gd")
+	_smoke_check(_smoke_section("Stashes").visible and stashes.size() == 1 and staged_left.is_empty(), "stashing moves what's staged into Stashes")
+	if stashes.size() == 1:
+		stashes[0].collapsed = false
+	get_tree().create_timer(1.0).timeout.connect(_stash_restore)
+
+
+func _stash_restore() -> void:
+	var files := _smoke_rows("Stashes", "file").filter(func(item: TreeItem) -> bool: return item.get_meta("git_path", "") == "player.gd")
+	_smoke_check(files.size() == 1, "an expanded stash lists its files")
+	var stashes := _smoke_rows("Stashes", "stash")
+	if stashes.size() == 1:
+		stashes[0].get_tree().button_clicked.emit(stashes[0], 1, 0, MOUSE_BUTTON_LEFT) # Restore.
+	get_tree().create_timer(3.0).timeout.connect(_stash_done)
+
+
+func _stash_done() -> void:
+	var staged := _smoke_rows("Staged Changes", "").filter(func(item: TreeItem) -> bool: return item.get_meta("git_path", "") == "player.gd")
+	var strip := ""
+	for label: RichTextLabel in _smoke_dock().find_children("*", "RichTextLabel", true, false):
+		strip += label.get_parsed_text()
+	_smoke_check(staged.size() == 1 and not _smoke_section("Stashes").visible, "restoring puts it back, staged, and the section goes away (strip: %s)" % strip)
+	var failed := int(get_tree().root.get_meta("smoke_failures", 0))
+	if failed == 0:
 		print("SMOKE: OK")
 	else:
-		print("SMOKE: %d FAILED" % failures)
-	get_tree().quit(1 if failures else 0)
+		print("SMOKE: %d FAILED" % failed)
+	get_tree().quit(1 if failed else 0)

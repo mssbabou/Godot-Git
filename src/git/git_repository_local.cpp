@@ -277,7 +277,22 @@ Error GitRepository::checkout_branch(const String &p_branch) {
 		opts.checkout_strategy = GIT_CHECKOUT_SAFE;
 		err = checkout_all_or_nothing(repo, target, opts);
 		if (err == GIT_ECONFLICT) {
-			fail("Your local changes would be overwritten by switching branches. Commit or discard them first.");
+			// ERR_BUSY: your changes are in the way (the panel offers to stash them). Named when
+			// they're the files the branches differ in; libgit2 also refuses for a few others.
+			PackedStringArray in_way;
+			ReferencePtr head;
+			if (git_repository_head(head.out(), repo) == 0) {
+				const HashSet<String> differ = changed_paths(repo, git_reference_target(head), git_object_id(target));
+				for (const String &path : uncommitted_paths(repo)) {
+					if (differ.has(path) && !in_way.has(path)) {
+						in_way.push_back(path);
+					}
+				}
+			}
+			in_way.sort();
+			fail(in_way.is_empty() ? String("Your local changes would be overwritten by switching branches. Commit, stash or discard them first.")
+								   : vformat("Your changes to %s would be overwritten by switching branches. Commit, stash or discard them first.", name_list(in_way)));
+			return ERR_BUSY;
 		}
 	}
 	if (err >= 0) {

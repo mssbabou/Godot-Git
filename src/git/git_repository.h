@@ -58,6 +58,9 @@ public:
 	Dictionary get_diff(const String &p_path, bool p_staged) const;
 	Array get_commit_files(const String &p_hash) const;
 	Dictionary get_commit_diff(const String &p_hash, const String &p_path) const;
+	Array get_stashes() const;
+	Array get_stash_files(const String &p_hash) const;
+	Dictionary get_stash_diff(const String &p_hash, const String &p_path) const;
 	Dictionary get_file_bytes(const String &p_version, const String &p_path) const;
 	Array get_commits(int p_max_count) const;
 	bool uses_lfs() const;
@@ -75,6 +78,9 @@ public:
 	Error discard(const String &p_path);
 	Error commit(const String &p_message);
 	Error amend(const String &p_message);
+	Error stash(bool p_staged, const String &p_message = String());
+	Error restore_stash(const String &p_hash);
+	Error delete_stash(const String &p_hash);
 	bool commit_runs_git(bool p_amend) const;
 	bool is_head_pushed() const;
 	Error checkout_branch(const String &p_branch);

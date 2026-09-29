@@ -8,6 +8,7 @@ Godot Git adds a **Git** dock next to the Inspector and a **Diff** panel at the 
 
 - **Changes**: see what's staged and unstaged, stage or discard files, commit and amend.
 - **Sync**: fetch, pull and push, with progress, Cancel, and a clear result or error that stays visible.
+- **Stash**: set what's staged (or everything) aside, see your stashes and what's in them, and restore one with a click. A restore either applies completely or refuses and names the files; it never leaves conflict markers.
 - **Diff panel**: click a file to see what changed, with syntax highlighting, unified or side by side. Images show before and after.
 - **History**: click a commit to see its message and changed files, and each file's diff.
 

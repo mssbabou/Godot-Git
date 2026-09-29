@@ -32,8 +32,8 @@ class GitFileSystemColors;
 
 using namespace godot;
 
-// The "Git" panel shown on the right side of the editor. Its implementation is split over
-// git_dock.cpp, git_dock_lists.cpp, git_dock_status.cpp and git_dock_network.cpp (see below).
+// The "Git" panel shown on the right side of the editor. Its implementation is split by area over
+// git_dock.cpp and the git_dock_*.cpp files (see the method list below).
 class GitDock : public EditorDock {
 	GDCLASS(GitDock, EditorDock)
 
@@ -56,6 +56,8 @@ class GitDock : public EditorDock {
 		MENU_COPY_HASH,
 		MENU_COPY_MESSAGE,
 		MENU_OPEN_ON_WEB,
+		MENU_RESTORE_STASH,
+		MENU_DELETE_STASH,
 		// "More" (⋮) menu.
 		MORE_REFRESH,
 		MORE_STAGE_ALL,
@@ -67,6 +69,13 @@ class GitDock : public EditorDock {
 		MORE_ADD_REMOTE,
 		MORE_BUILD_INFO,
 		MORE_FILESYSTEM_COLORS,
+		MORE_STASH_ALL,
+	};
+
+	// The buttons on a hovered stash row.
+	enum StashButton {
+		STASH_RESTORE,
+		STASH_DELETE,
 	};
 
 	enum NetworkOp {
@@ -102,6 +111,7 @@ class GitDock : public EditorDock {
 		HBoxContainer *buttons = nullptr;
 		Button *action = nullptr; // Stage all / unstage all.
 		Button *discard = nullptr; // Discard all (unstaged pane only).
+		Button *stash = nullptr; // Stash what's staged (staged pane only).
 		bool staged = false;
 		int file_count = 0;
 		uint64_t hovered_item = 0;
@@ -168,6 +178,21 @@ class GitDock : public EditorDock {
 	bool history_more = false;
 	Dictionary history_expanded; // Hashes of expanded commits, kept across rebuilds.
 	Dictionary commit_files; // Hash -> get_commit_files(). Commits never change, so it's kept.
+
+	// Stashes: a section that only shows while there are stashes (git_dock_stashes.cpp).
+	FoldableContainer *stashes_pane = nullptr;
+	Tree *stashes_tree = nullptr;
+	Array stashes_shown; // GitRepository::get_stashes(), as the section shows them.
+	Dictionary stashes_expanded; // Hashes of expanded stashes, kept across rebuilds.
+	Dictionary stash_files; // Hash -> get_stash_files(). A stash never changes.
+	uint64_t stash_hovered = 0; // The stash row showing Restore and Delete.
+	ConfirmationDialog *stash_delete_confirm = nullptr;
+	String pending_stash_delete;
+	ConfirmationDialog *stash_switch_confirm = nullptr; // Offered when changes are in a switch's way.
+	ConfirmationDialog *stash_dialog = nullptr; // What a stash takes, and an optional name.
+	Label *stash_files_label = nullptr;
+	LineEdit *stash_name_edit = nullptr;
+	bool stash_dialog_staged = false;
 
 	Control *no_repo_ui = nullptr; // "Not a git repository yet", with Initialize Repository.
 	Label *no_repo_hint = nullptr;
@@ -240,6 +265,7 @@ class GitDock : public EditorDock {
 	String diff_path;
 	bool diff_staged = false;
 	String diff_commit; // Set when the file shown is from a commit (History), not uncommitted.
+	bool diff_stash = false; // diff_commit is a stash (Stashes), not a commit.
 	String diff_commit_shown; // "hash:path" already in the panel; commit diffs never change.
 
 	// Line counts (+/-) for the two lists. Counted on a worker thread with its own GitRepository:
@@ -250,6 +276,7 @@ class GitDock : public EditorDock {
 	bool stats_slow = false; // Counting for a while already: the totals are dimmed and say so.
 	Timer *stats_slow_timer = nullptr;
 	Dictionary file_icons; // File type -> its editor icon, for _file_icon; cleared with the theme.
+	Dictionary own_icons; // Our drawn icons ("GitMinus", ...), for _icon; redrawn with the theme.
 	Dictionary folder_types; // res:// folder -> { file name: type }, for _file_type; cleared on refresh.
 	Dictionary staged_stats; // {path: Vector2i(added, removed)}; Vector2i(-1, -1) for binary.
 	Dictionary unstaged_stats;
@@ -271,6 +298,8 @@ class GitDock : public EditorDock {
 	String _needs_git(int p_op) const;
 	String _to_res_path(const String &p_path) const;
 	Ref<Texture2D> _file_icon(const String &p_path);
+	Ref<Texture2D> _icon(const String &p_name) const;
+	void _draw_own_icons();
 	String _file_type(const String &p_res_path);
 	Color _status_color(const String &p_state) const;
 	Color _dim_color() const;
@@ -336,14 +365,34 @@ class GitDock : public EditorDock {
 	// git_dock_history.cpp: History.
 	void _fill_history();
 	void _fill_commit(TreeItem *p_item);
+	TreeItem *_add_commit_file_row(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_file, const String &p_hash);
 	void _on_history_item_collapsed(TreeItem *p_item);
 	void _fill_commit_later(uint64_t p_item);
 	void _load_more_commits();
 	void _on_history_item_selected();
 
+	// git_dock_stashes.cpp: stashing, and the Stashes section.
+	void _build_stashes(Control *p_parent);
+	void _fill_stashes();
+	void _fill_stash(TreeItem *p_item);
+	void _fill_stash_later(uint64_t p_item);
+	void _on_stash_item_collapsed(TreeItem *p_item);
+	void _on_stash_item_selected();
+	void _on_stashes_gui_input(const Ref<InputEvent> &p_event);
+	void _set_stash_hovered(TreeItem *p_item);
+	void _on_stash_button_clicked(TreeItem *p_item, int p_column, int p_id, int p_mouse_button);
+	bool _build_stash_menu();
+	void _stash(bool p_staged);
+	void _on_stash_dialog_confirmed();
+	Error _run_stash(bool p_staged, const String &p_name = String());
+	void _stash_and_switch();
+	void _restore_stash(const String &p_hash);
+	void _confirm_delete_stash(const String &p_hash);
+	void _on_stash_delete_confirmed();
+
 	// git_dock_diff.cpp: which file the Diff panel shows.
 	void _show_diff(const String &p_path, bool p_staged, bool p_focus);
-	void _show_commit_diff(const String &p_hash, const String &p_path, bool p_focus);
+	void _show_commit_diff(const String &p_hash, const String &p_path, bool p_focus, bool p_stash = false);
 	void _update_diff();
 	void _add_image_versions(Dictionary &r_diff, const String &p_old_version, const String &p_new_version);
 	void _select_diff_row();

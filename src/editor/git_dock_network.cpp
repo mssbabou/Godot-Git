@@ -223,6 +223,13 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		_set_status(STATUS_NEUTRAL, vformat("%s canceled. Nothing was changed.", names[p_op]));
 		return;
 	}
+	if (p_op == NETWORK_SWITCH && p_err == ERR_BUSY) {
+		// Changes in the way (see _switch_branch): offer to stash them.
+		pending_switch = network_branch;
+		stash_switch_confirm->set_text(vformat("%s\n\nStash them and switch to %s? They'll wait under Stashes, where you can restore them when you come back.", p_message, network_branch));
+		stash_switch_confirm->popup_centered();
+		return;
+	}
 	if (p_err != OK) {
 		const String message = p_message.is_empty() ? UtilityFunctions::error_string((Error)p_err) : p_message;
 		_set_status(STATUS_ERROR, vformat("%s failed. %s", names[p_op], message));

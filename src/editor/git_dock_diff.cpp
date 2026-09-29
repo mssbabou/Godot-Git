@@ -19,15 +19,18 @@ void GitDock::_show_diff(const String &p_path, bool p_staged, bool p_focus) {
 	diff_staged = p_staged;
 	diff_commit = String();
 	diff_commit_shown = String();
+	diff_stash = false;
 	_update_diff();
 	if (p_focus && diff_dock) {
 		diff_dock->make_visible();
 	}
 }
 
-void GitDock::_show_commit_diff(const String &p_hash, const String &p_path, bool p_focus) {
+// A commit's file (History), or with p_stash a stash's file (Stashes).
+void GitDock::_show_commit_diff(const String &p_hash, const String &p_path, bool p_focus, bool p_stash) {
 	diff_path = p_path;
 	diff_commit = p_hash;
+	diff_stash = p_stash;
 	_update_diff();
 	if (p_focus && diff_dock) {
 		diff_dock->make_visible();
@@ -44,9 +47,16 @@ void GitDock::_update_diff() {
 		const String key = diff_commit + ":" + diff_path;
 		if (key != diff_commit_shown) {
 			diff_commit_shown = key;
-			Dictionary diff = repo->get_commit_diff(diff_commit, diff_path);
-			_add_image_versions(diff, diff_commit + "^1", diff_commit);
-			diff_dock->set_diff(diff, vformat("Commit %s", diff_commit.left(7)), _file_icon(diff_path));
+			if (diff_stash) {
+				// A new file the stash took along is in its third parent (see get_stash_files).
+				Dictionary diff = repo->get_stash_diff(diff_commit, diff_path);
+				_add_image_versions(diff, diff_commit + "^1", repo->has_file_at(diff_commit, diff_path) ? diff_commit : diff_commit + "^3");
+				diff_dock->set_diff(diff, "Stash", _file_icon(diff_path));
+			} else {
+				Dictionary diff = repo->get_commit_diff(diff_commit, diff_path);
+				_add_image_versions(diff, diff_commit + "^1", diff_commit);
+				diff_dock->set_diff(diff, vformat("Commit %s", diff_commit.left(7)), _file_icon(diff_path));
+			}
 		}
 		_select_diff_row();
 		return;
@@ -92,11 +102,12 @@ void GitDock::_add_image_versions(Dictionary &r_diff, const String &p_old_versio
 // Marks the file the Diff panel shows in its list (the lists are rebuilt on every refresh).
 void GitDock::_select_diff_row() {
 	if (!diff_commit.is_empty()) {
-		TreeItem *root = history_tree->get_root();
-		for (TreeItem *commit = root ? root->get_first_child() : nullptr; commit; commit = commit->get_next()) {
-			for (TreeItem *item = commit->get_first_child(); item; item = item->get_next()) {
+		Tree *tree = diff_stash ? stashes_tree : history_tree; // Both: parent rows with file rows under them.
+		TreeItem *root = tree->get_root();
+		for (TreeItem *parent = root ? root->get_first_child() : nullptr; parent; parent = parent->get_next()) {
+			for (TreeItem *item = parent->get_first_child(); item; item = item->get_next()) {
 				if (item->has_meta("git_hash") && String(item->get_meta("git_hash")) == diff_commit && String(item->get_meta("git_path")) == diff_path) {
-					if (!history_tree->get_selected()) {
+					if (!tree->get_selected()) {
 						item->select(0);
 					}
 					return;

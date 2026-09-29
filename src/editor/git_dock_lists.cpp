@@ -36,6 +36,7 @@ void GitDock::_build_lists(Control *p_parent) {
 
 	_make_file_pane(staged_pane, panes, "Staged Changes", true);
 	_make_file_pane(changes_pane, panes, "Changes", false);
+	_build_stashes(panes);
 
 	history_pane = memnew(FoldableContainer);
 	history_pane->set_title("History");
@@ -84,6 +85,12 @@ void GitDock::_make_file_pane(FilePane &r_pane, Control *p_parent, const String 
 		r_pane.discard->set_tooltip_text("Discard all changes");
 		r_pane.discard->connect("pressed", callable_mp(this, &GitDock::_on_more_menu_id).bind(MORE_DISCARD_ALL));
 		r_pane.buttons->add_child(r_pane.discard);
+	}
+	if (p_staged) {
+		// Staging is how you pick what to stash: this sets aside exactly what's staged.
+		r_pane.stash = memnew(Button);
+		r_pane.stash->connect("pressed", callable_mp(this, &GitDock::_stash).bind(true));
+		r_pane.buttons->add_child(r_pane.stash);
 	}
 	r_pane.action = memnew(Button);
 	r_pane.action->set_tooltip_text(p_staged ? "Unstage all" : "Stage all");

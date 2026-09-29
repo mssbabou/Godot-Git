@@ -86,6 +86,12 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_remote_url", "remote"), &GitRepository::get_remote_url);
 	ClassDB::bind_method(D_METHOD("get_large_staged_files", "min_size"), &GitRepository::get_large_staged_files);
 	ClassDB::bind_method(D_METHOD("get_pull_blockers"), &GitRepository::get_pull_blockers);
+	ClassDB::bind_method(D_METHOD("get_stashes"), &GitRepository::get_stashes);
+	ClassDB::bind_method(D_METHOD("get_stash_files", "hash"), &GitRepository::get_stash_files);
+	ClassDB::bind_method(D_METHOD("get_stash_diff", "hash", "path"), &GitRepository::get_stash_diff);
+	ClassDB::bind_method(D_METHOD("stash", "staged", "message"), &GitRepository::stash, DEFVAL(String()));
+	ClassDB::bind_method(D_METHOD("restore_stash", "hash"), &GitRepository::restore_stash);
+	ClassDB::bind_method(D_METHOD("delete_stash", "hash"), &GitRepository::delete_stash);
 	ClassDB::bind_method(D_METHOD("get_operation"), &GitRepository::get_operation);
 
 	ClassDB::bind_method(D_METHOD("stage", "path"), &GitRepository::stage);
