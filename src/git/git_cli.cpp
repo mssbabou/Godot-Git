@@ -157,7 +157,7 @@ bool commit_needs_git(git_repository *p_repo, CommitKind p_kind) {
 	return !commit_git_reason(p_repo, p_kind).is_empty();
 }
 
-Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const PackedStringArray &p_args, const String &p_step, String &r_output, int &r_exit_code) {
+Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const PackedStringArray &p_args, const String &p_step, String &r_output, int &r_exit_code, bool p_no_editor) {
 	// Callers say what needed git; this is the backstop.
 	const Error missing = require_git("This needs git.");
 	if (missing != OK) {
@@ -193,11 +193,14 @@ Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const Packed
 	report_progress(&p_ctx, p_step, String(), -1);
 	OS *os = OS::get_singleton();
 	Dictionary process;
-	{
+	if (p_no_editor) {
+		// No terminal to ask anything in, or to edit a message in ("true" accepts it as it is).
+		const ScopedEnvironment environment({ { "GIT_TERMINAL_PROMPT", "0" }, { "GIT_EDITOR", "true" } });
+		process = os->execute_with_pipe(program, args, false); // Non-blocking: see the loop below.
+	} else {
 		// No terminal to ask anything in.
 		const ScopedEnvironment environment({ { "GIT_TERMINAL_PROMPT", "0" } });
-		// Non-blocking: see the loop below.
-		process = os->execute_with_pipe(program, args, false);
+		process = os->execute_with_pipe(program, args, false); // Non-blocking: see the loop below.
 	}
 	Ref<FileAccess> io = process.get("stdio", Variant());
 	if (io.is_null()) {

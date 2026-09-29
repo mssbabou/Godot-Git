@@ -211,3 +211,131 @@ void GitDock::_on_status_button() {
 		_set_status(STATUS_IDLE, String());
 	}
 }
+
+// The operation banner: shown while the repository is in the middle of a merge, rebase,
+// cherry-pick, revert, `git am` or bisect (usually one a terminal stopped at conflicts). Without
+// it the panel would show the conflicted files as ordinary changes, and a plain commit would
+// quietly drop the merge; Commit, Pull and switching branches refuse meanwhile.
+void GitDock::_build_operation_banner(Control *p_parent) {
+	const float scale = EditorInterface::get_singleton()->get_editor_scale();
+	operation_banner = memnew(PanelContainer);
+	operation_banner->hide();
+	p_parent->add_child(operation_banner);
+
+	VBoxContainer *vb = memnew(VBoxContainer);
+	operation_banner->add_child(vb);
+
+	HBoxContainer *text_hb = memnew(HBoxContainer);
+	vb->add_child(text_hb);
+	TextureRect *icon = memnew(TextureRect);
+	icon->set_name("Icon");
+	icon->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
+	icon->set_v_size_flags(SIZE_SHRINK_BEGIN);
+	text_hb->add_child(icon);
+	operation_label = memnew(Label);
+	operation_label->set_h_size_flags(SIZE_EXPAND_FILL);
+	operation_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	// A wrapping label needs a minimum width, even in a hidden dock (gotcha 45).
+	operation_label->set_custom_minimum_size(Vector2(160 * scale, 0));
+	text_hb->add_child(operation_label);
+
+	HBoxContainer *buttons = memnew(HBoxContainer);
+	buttons->set_alignment(BoxContainer::ALIGNMENT_END);
+	vb->add_child(buttons);
+	operation_abort = memnew(Button);
+	operation_abort->connect("pressed", callable_mp(this, &GitDock::_on_operation_abort));
+	buttons->add_child(operation_abort);
+	operation_continue = memnew(Button);
+	operation_continue->connect("pressed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_CONTINUE));
+	buttons->add_child(operation_continue);
+
+	abort_confirm = memnew(ConfirmationDialog);
+	abort_confirm->set_autowrap(true);
+	abort_confirm->get_label()->set_custom_minimum_size(Vector2(440 * scale, 0)); // Gotcha 28.
+	abort_confirm->connect("confirmed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_ABORT));
+	add_child(abort_confirm);
+}
+
+bool GitDock::_in_operation() const {
+	return !String(operation.get("kind", String())).is_empty();
+}
+
+// "merge", "rebase", "cherry-pick", "revert", "git am", "bisect".
+String GitDock::_operation_name() const {
+	const String kind = operation.get("kind", String());
+	return kind == "apply" ? String("git am") : kind;
+}
+
+void GitDock::_update_operation_banner() {
+	operation_banner->set_visible(_in_operation());
+	if (!_in_operation()) {
+		return;
+	}
+	const float scale = EditorInterface::get_singleton()->get_editor_scale();
+	const String kind = operation["kind"];
+	const String name = _operation_name();
+	const String subject = operation.get("subject", String());
+	const PackedStringArray conflicts = operation.get("conflicts", PackedStringArray());
+
+	String text;
+	if (kind == "apply") {
+		text = "Applying patches with git am is in progress.";
+	} else if (kind == "bisect") {
+		text = "A git bisect is in progress: the files are those of the commit it's testing.";
+	} else if (subject.is_empty()) {
+		text = vformat("A %s is in progress.", name);
+	} else if (kind == "merge") {
+		text = vformat("A merge is in progress: %s.", subject);
+	} else {
+		text = vformat("A %s of %s is in progress.", name, subject);
+	}
+	if (!conflicts.is_empty()) {
+		text += vformat(" %s: fix the conflict markers, then stage each file to mark it resolved.", plural(conflicts.size(), "file has conflicts", "files have conflicts"));
+	} else if (kind == "merge") {
+		text += " No conflicts left: commit the merge to finish it.";
+	} else if (kind != "bisect") {
+		text += " No conflicts left: continue to finish it.";
+	}
+	operation_label->set_text(text);
+	operation_label->set_tooltip_text(conflicts.is_empty() ? String() : vformat("Conflicted (marked ! in Changes):\n%s", String("\n").join(conflicts)));
+
+	const bool busy = _shown_network_op() != NETWORK_NONE;
+	const String needs_git = git_missing ? vformat("Finishing or aborting the %s needs git, which isn't installed (or isn't on the PATH). Install it from git-scm.com.", name) : String();
+	operation_abort->set_text(kind == "bisect" ? String("End Bisect") : (kind == "apply" ? String("Abort") : vformat("Abort %s", name.capitalize().replace(" ", "-"))));
+	operation_abort->set_disabled(busy || !needs_git.is_empty());
+	operation_abort->set_tooltip_text(!needs_git.is_empty() ? needs_git : (kind == "bisect" ? String("End the bisect: go back to the branch you started it on.") : vformat("Undo the %s: the branch and files go back to how they were before it started.", name)));
+
+	operation_continue->set_visible(kind != "bisect");
+	operation_continue->set_text(kind == "merge" ? String("Commit Merge") : String("Continue"));
+	operation_continue->set_disabled(busy || !conflicts.is_empty() || !needs_git.is_empty());
+	if (!needs_git.is_empty()) {
+		operation_continue->set_tooltip_text(needs_git);
+	} else if (!conflicts.is_empty()) {
+		operation_continue->set_tooltip_text(vformat("Resolve the conflicts first: %s still %s them.", plural(conflicts.size(), "file", "files"), conflicts.size() == 1 ? "has" : "have"));
+	} else {
+		operation_continue->set_tooltip_text(kind == "merge" ? String("Commit the merge with git's prepared message.") : vformat("Let the %s go on: it may stop at conflicts again.", name));
+	}
+
+	// Warning-tinted like the strip's warnings: it needs attention, but nothing failed.
+	const Color tint = get_theme_color("warning_color", "Editor");
+	Ref<StyleBoxFlat> panel;
+	panel.instantiate();
+	panel->set_bg_color(Color(tint, 0.15));
+	panel->set_corner_radius_all(Math::round(3 * scale));
+	panel->set_content_margin(SIDE_LEFT, commit_message->get_theme_stylebox("normal")->get_margin(SIDE_LEFT)); // Like the strip.
+	for (const Side side : { SIDE_TOP, SIDE_RIGHT, SIDE_BOTTOM }) {
+		panel->set_content_margin(side, Math::round(4 * scale));
+	}
+	operation_banner->add_theme_stylebox_override("panel", panel);
+	Object::cast_to<TextureRect>(operation_banner->find_child("Icon", true, false))->set_texture(get_theme_icon("StatusWarning", "EditorIcons"));
+}
+
+void GitDock::_on_operation_abort() {
+	const String name = _operation_name();
+	abort_confirm->set_title(operation_abort->get_text());
+	abort_confirm->set_ok_button_text(operation_abort->get_text());
+	abort_confirm->set_text(String(operation["kind"]) == "bisect"
+					? String("End the bisect and go back to the branch you started it on?")
+					: vformat("Abort the %s? Everything it changed is undone, including conflicts you've already resolved, and the branch goes back to where it was before it started.", name));
+	abort_confirm->popup_centered();
+}

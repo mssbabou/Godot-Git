@@ -37,6 +37,7 @@ class GitRepository : public RefCounted {
 	Error _commit_with_git(const String &p_message, bool p_amend);
 	Error _push_with_git(const String &p_remote, const String &p_refspec, bool p_ssh);
 	Error _fetch_with_git(const String &p_remote);
+	Error _run_operation_step(const PackedStringArray &p_args, const String &p_step);
 
 protected:
 	static void _bind_methods();
@@ -64,6 +65,7 @@ public:
 	String get_remote_url(const String &p_remote) const;
 	Array get_large_staged_files(int64_t p_min_size) const;
 	PackedStringArray get_pull_blockers() const;
+	Dictionary get_operation() const;
 
 	Error stage(const String &p_path);
 	Error unstage(const String &p_path);
@@ -83,6 +85,8 @@ public:
 	Error fetch();
 	Error pull();
 	Error push();
+	Error abort_operation();
+	Error continue_operation();
 	String get_notice() const;
 	Dictionary get_pull_result() const;
 	void set_progress_callback(const Callable &p_callback);

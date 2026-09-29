@@ -290,6 +290,9 @@ Error GitRepository::pull() {
 	notice = String();
 	pulled_commits = 0;
 	pull_merged = false;
+	if (require_no_operation(repo, "pull") != OK) {
+		return FAILED;
+	}
 
 	ReferencePtr head;
 	if (head_branch(head.out(), repo) < 0) {

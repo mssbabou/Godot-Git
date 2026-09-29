@@ -269,4 +269,37 @@ Error explain_checkout_failure(git_repository *p_repo, const String &p_error, co
 	return fail(vformat("Nothing was changed: %s", reason));
 }
 
+String operation_in_progress(git_repository *p_repo) {
+	switch (git_repository_state(p_repo)) {
+		case GIT_REPOSITORY_STATE_MERGE:
+			return "merge";
+		case GIT_REPOSITORY_STATE_REVERT:
+		case GIT_REPOSITORY_STATE_REVERT_SEQUENCE:
+			return "revert";
+		case GIT_REPOSITORY_STATE_CHERRYPICK:
+		case GIT_REPOSITORY_STATE_CHERRYPICK_SEQUENCE:
+			return "cherry-pick";
+		case GIT_REPOSITORY_STATE_BISECT:
+			return "bisect";
+		case GIT_REPOSITORY_STATE_REBASE:
+		case GIT_REPOSITORY_STATE_REBASE_INTERACTIVE:
+		case GIT_REPOSITORY_STATE_REBASE_MERGE:
+			return "rebase";
+		case GIT_REPOSITORY_STATE_APPLY_MAILBOX:
+		case GIT_REPOSITORY_STATE_APPLY_MAILBOX_OR_REBASE:
+			return "apply";
+		default:
+			return String();
+	}
+}
+
+Error require_no_operation(git_repository *p_repo, const String &p_action) {
+	const String operation = operation_in_progress(p_repo);
+	if (operation.is_empty()) {
+		return OK;
+	}
+	const String name = operation == "apply" ? String("git am") : operation;
+	return fail(vformat("Can't %s while a %s is in progress. Finish it or abort it first.", p_action, name));
+}
+
 } // namespace godot_git

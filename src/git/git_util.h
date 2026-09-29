@@ -60,6 +60,7 @@ using CommitPtr = Owned<git_commit, git_commit_free>;
 using ConfigPtr = Owned<git_config, git_config_free>;
 using DiffPtr = Owned<git_diff, git_diff_free>;
 using IndexPtr = Owned<git_index, git_index_free>;
+using IndexConflictIteratorPtr = Owned<git_index_conflict_iterator, git_index_conflict_iterator_free>;
 using ObjectPtr = Owned<git_object, git_object_free>;
 using OdbPtr = Owned<git_odb, git_odb_free>;
 using PatchPtr = Owned<git_patch, git_patch_free>;
@@ -153,5 +154,15 @@ PackedStringArray stashed_paths(git_repository *p_repo, const git_oid *p_stash);
 
 // Every path with uncommitted changes: staged, unstaged, or new (untracked) files.
 PackedStringArray uncommitted_paths(git_repository *p_repo);
+
+// What git operation the repository is in the middle of (usually one started in a terminal and
+// stopped at conflicts): "merge", "rebase", "cherry-pick", "revert", "apply" (git am), "bisect",
+// or "" for none.
+String operation_in_progress(git_repository *p_repo);
+
+// FAILED while an operation is in progress, saying so ("Can't commit while a merge is in progress
+// ..."): committing, pulling or switching then would silently lose the operation (a plain commit
+// in the middle of a merge isn't a merge commit). p_action: "commit", "pull", ...
+Error require_no_operation(git_repository *p_repo, const String &p_action);
 
 } // namespace godot_git

@@ -138,6 +138,7 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_remote_url", "remote"), &GitRepository::get_remote_url);
 	ClassDB::bind_method(D_METHOD("get_large_staged_files", "min_size"), &GitRepository::get_large_staged_files);
 	ClassDB::bind_method(D_METHOD("get_pull_blockers"), &GitRepository::get_pull_blockers);
+	ClassDB::bind_method(D_METHOD("get_operation"), &GitRepository::get_operation);
 
 	ClassDB::bind_method(D_METHOD("stage", "path"), &GitRepository::stage);
 	ClassDB::bind_method(D_METHOD("unstage", "path"), &GitRepository::unstage);
@@ -157,6 +158,8 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("fetch"), &GitRepository::fetch);
 	ClassDB::bind_method(D_METHOD("pull"), &GitRepository::pull);
 	ClassDB::bind_method(D_METHOD("push"), &GitRepository::push);
+	ClassDB::bind_method(D_METHOD("abort_operation"), &GitRepository::abort_operation);
+	ClassDB::bind_method(D_METHOD("continue_operation"), &GitRepository::continue_operation);
 	ClassDB::bind_method(D_METHOD("get_notice"), &GitRepository::get_notice);
 	ClassDB::bind_method(D_METHOD("get_pull_result"), &GitRepository::get_pull_result);
 	ClassDB::bind_method(D_METHOD("set_progress_callback", "callback"), &GitRepository::set_progress_callback);
@@ -707,7 +710,7 @@ Error GitRepository::commit(const String &p_message) {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
 
 	git_error_clear();
-	if (require_lfs(repo, "committing") != OK || require_identity(repo, "Nothing was committed.") != OK) {
+	if (require_no_operation(repo, "commit") != OK || require_lfs(repo, "committing") != OK || require_identity(repo, "Nothing was committed.") != OK) {
 		return FAILED;
 	}
 	if (commit_needs_git(repo, COMMIT_NEW)) {
@@ -744,7 +747,7 @@ bool GitRepository::is_head_pushed() const {
 Error GitRepository::amend(const String &p_message) {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
 	git_error_clear();
-	if (require_lfs(repo, "committing") != OK || require_identity(repo, "The commit wasn't amended.") != OK) {
+	if (require_no_operation(repo, "amend") != OK || require_lfs(repo, "committing") != OK || require_identity(repo, "The commit wasn't amended.") != OK) {
 		return FAILED;
 	}
 	ReferencePtr head;
@@ -805,6 +808,9 @@ Error GitRepository::_commit_with_git(const String &p_message, bool p_amend) {
 Error GitRepository::checkout_branch(const String &p_branch) {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
 	git_error_clear();
+	if (require_no_operation(repo, "switch branches") != OK) {
+		return FAILED;
+	}
 
 	ReferencePtr ref;
 	int err = git_branch_lookup(ref.out(), repo, p_branch.utf8().get_data(), GIT_BRANCH_LOCAL);

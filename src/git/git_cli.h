@@ -50,7 +50,8 @@ bool commit_needs_git(git_repository *p_repo, CommitKind p_kind);
 // progress (git's "Writing objects: 45% (9/20)" becomes the step and a fraction; anything else,
 // such as a hook's output, is shown under p_step), and all of it is returned in r_output.
 // Cancellable: ERR_SKIP with "Canceled." Otherwise OK, with git's exit code in r_exit_code.
-Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const PackedStringArray &p_args, const String &p_step, String &r_output, int &r_exit_code);
+// p_no_editor: where git would open an editor for a message, it takes the prepared one as it is.
+Error run_git_command(git_repository *p_repo, RemoteContext &p_ctx, const PackedStringArray &p_args, const String &p_step, String &r_output, int &r_exit_code, bool p_no_editor = false);
 
 // Whether p_url is an SSH remote ("ssh://host/repo" or scp-like "git@host:repo"). Fetch and push
 // for those go through git: libgit2 can't pass options to ssh on Windows, discards ssh's error

@@ -75,6 +75,8 @@ class GitDock : public EditorDock {
 		NETWORK_PUSH,
 		NETWORK_SWITCH, // Switching branches in a repository with LFS files, which may download them.
 		NETWORK_COMMIT, // Committing through git, because hooks run or commits get signed.
+		NETWORK_ABORT, // Aborting an operation left in progress (a merge, rebase, ...), through git.
+		NETWORK_CONTINUE, // Continuing one once its conflicts are resolved (hooks may run).
 	};
 
 	// What the status strip is showing.
@@ -119,6 +121,16 @@ class GitDock : public EditorDock {
 	Button *status_button = nullptr; // Cancel (busy) or dismiss (warning, error).
 	ProgressBar *status_progress = nullptr;
 	Timer *status_timer = nullptr; // Keeps "5m ago" current.
+
+	// Under the strip while the repository is in the middle of an operation (a merge, rebase, ...
+	// usually left by a terminal): what it is, its conflicts, Abort and Continue.
+	PanelContainer *operation_banner = nullptr;
+	Label *operation_label = nullptr;
+	Button *operation_abort = nullptr;
+	Button *operation_continue = nullptr;
+	ConfirmationDialog *abort_confirm = nullptr;
+	Dictionary operation; // GitRepository::get_operation(), as of the last refresh.
+	String network_operation; // _operation_name() when a NETWORK_ABORT / NETWORK_CONTINUE started.
 	StatusKind status_kind = STATUS_IDLE;
 	String status_text;
 	String status_step;
@@ -237,6 +249,7 @@ class GitDock : public EditorDock {
 	bool stats_slow = false; // Counting for a while already: the totals are dimmed and say so.
 	Timer *stats_slow_timer = nullptr;
 	Dictionary file_icons; // File type -> its editor icon, for _file_icon; cleared with the theme.
+	Dictionary folder_types; // res:// folder -> { file name: type }, for _file_type; cleared on refresh.
 	Dictionary staged_stats; // {path: Vector2i(added, removed)}; Vector2i(-1, -1) for binary.
 	Dictionary unstaged_stats;
 
@@ -256,6 +269,7 @@ class GitDock : public EditorDock {
 	String _needs_git(int p_op) const;
 	String _to_res_path(const String &p_path) const;
 	Ref<Texture2D> _file_icon(const String &p_path);
+	String _file_type(const String &p_res_path);
 	Color _status_color(const String &p_state) const;
 	Color _dim_color() const;
 	void _open_path(const String &p_path);
@@ -325,6 +339,11 @@ class GitDock : public EditorDock {
 	void _update_status();
 	void _update_status_style();
 	void _on_status_button();
+	void _build_operation_banner(Control *p_parent);
+	void _update_operation_banner();
+	bool _in_operation() const;
+	String _operation_name() const;
+	void _on_operation_abort();
 
 	// git_dock_editor.cpp: keeping the rest of the editor in step (saving first, reloading
 	// scenes, FileSystem dock colors).

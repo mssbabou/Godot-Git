@@ -24,6 +24,10 @@ void GitDock::_start_network(int p_op) {
 	if (p_op == NETWORK_PULL && _ask_to_save("Pull", callable_mp(this, &GitDock::_start_network).bind(p_op))) {
 		return;
 	}
+	// Both rewrite files: an unsaved scene saved afterwards would undo them.
+	if ((p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE) && _ask_to_save(p_op == NETWORK_ABORT ? "Abort" : "Continue", callable_mp(this, &GitDock::_start_network).bind(p_op))) {
+		return;
+	}
 	if (network_op == NETWORK_NONE) {
 		_run_network((NetworkOp)p_op, false);
 		return;
@@ -52,10 +56,11 @@ void GitDock::_start_network(int p_op) {
 void GitDock::_run_network(NetworkOp p_op, bool p_quiet) {
 	network_op = p_op;
 	network_quiet = p_quiet;
+	network_operation = _operation_name(); // The banner's operation is gone by the time it's done.
 	network_ahead = sync_status.get("ahead", 0);
 	network_publish = p_op == NETWORK_PUSH && String(sync_status.get("upstream", String())).is_empty();
 	_update_actions();
-	if (p_op == NETWORK_PULL || p_op == NETWORK_SWITCH) {
+	if (p_op == NETWORK_PULL || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE) {
 		_remember_open_scenes(); // To reload the ones it rewrites; see _reload_changed_scenes.
 	}
 
@@ -114,6 +119,10 @@ String GitDock::_network_description(int p_op) const {
 			return vformat("Switching to %s", network_branch);
 		case NETWORK_COMMIT:
 			return network_amend ? String("Amending the last commit") : String("Committing");
+		case NETWORK_ABORT:
+			return String(operation.get("kind", String())) == "bisect" ? String("Ending the bisect") : vformat("Aborting the %s", _operation_name());
+		case NETWORK_CONTINUE:
+			return String(operation.get("kind", String())) == "merge" ? String("Committing the merge") : vformat("Continuing the %s", _operation_name());
 	}
 	return String();
 }
@@ -143,6 +152,12 @@ void GitDock::_network_worker(int p_op, const String &p_workdir, bool p_quiet, c
 			case NETWORK_COMMIT:
 				err = p_amend ? worker_repo->amend(p_text) : worker_repo->commit(p_text);
 				break;
+			case NETWORK_ABORT:
+				err = worker_repo->abort_operation();
+				break;
+			case NETWORK_CONTINUE:
+				err = worker_repo->continue_operation();
+				break;
 		}
 	}
 	const String message = err == OK ? String() : GitRepository::get_last_error();
@@ -169,7 +184,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	network_quiet = false;
 
 	// A pull or switch can change files on disk. Refresh first: the result below uses the new counts.
-	if ((p_op == NETWORK_PULL || p_op == NETWORK_SWITCH) && p_err == OK) {
+	if ((p_op == NETWORK_PULL || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE) && p_err == OK) {
 		EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 	}
 	refresh();
@@ -198,7 +213,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	if (p_op == NETWORK_COMMIT && p_err != OK) {
 		push_after_commit = false;
 	}
-	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit" };
+	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit", "Abort", "Continue" };
 	if (p_err == ERR_SKIP && p_op == NETWORK_COMMIT) {
 		// A post-commit hook may have been running: don't claim nothing happened. History shows it.
 		_set_status(STATUS_NEUTRAL, "Commit canceled.");
@@ -249,6 +264,19 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		} break;
 		case NETWORK_SWITCH: {
 			_set_status(STATUS_SUCCESS, vformat("Switched to %s", repo->get_current_branch()));
+			_reload_changed_scenes();
+		} break;
+		case NETWORK_ABORT: {
+			_set_status(STATUS_SUCCESS, network_operation == "bisect" ? String("Ended the bisect") : vformat("Aborted the %s", network_operation));
+			_reload_changed_scenes();
+		} break;
+		case NETWORK_CONTINUE: {
+			// A rebase (or a cherry-pick of several commits) may stop at the next conflicts.
+			if (_in_operation()) {
+				_set_status(STATUS_WARNING, vformat("The %s went on and stopped again: see above.", _operation_name()));
+			} else {
+				_set_status(STATUS_SUCCESS, network_operation == "merge" ? String("Committed the merge") : vformat("Finished the %s", network_operation));
+			}
 			_reload_changed_scenes();
 		} break;
 		case NETWORK_COMMIT: {

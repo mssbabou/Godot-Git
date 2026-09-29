@@ -5,6 +5,7 @@
 #include "editor/git_dock.h"
 
 #include <godot_cpp/classes/editor_file_system.hpp>
+#include <godot_cpp/classes/editor_file_system_directory.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/file_access.hpp>
@@ -69,6 +70,7 @@ GitDock::GitDock() {
 	toolbar->add_child(more_menu);
 
 	_build_status_strip(repo_vb);
+	_build_operation_banner(repo_vb);
 
 	// Syncing with the remote, in one row sharing the width: Fetch, then Pull / Push labeled with
 	// how many commits each would move.
@@ -367,12 +369,29 @@ String GitDock::_to_res_path(const String &p_path) const {
 Ref<Texture2D> GitDock::_file_icon(const String &p_path) {
 	// Files inside the Godot project get the same icon the FileSystem dock shows.
 	const String local = _to_res_path(p_path);
-	String type = local.begins_with("res://") ? EditorInterface::get_singleton()->get_resource_filesystem()->get_file_type(local) : String();
+	const String type = local.begins_with("res://") ? _file_type(local) : String();
 	if (!file_icons.has(type)) {
 		// Theme lookups add up over thousands of rows, so each type's icon is looked up once.
 		file_icons[type] = !type.is_empty() && has_theme_icon(type, "EditorIcons") ? get_theme_icon(type, "EditorIcons") : get_theme_icon("File", "EditorIcons");
 	}
 	return file_icons[type];
+}
+
+// The file's type as the FileSystem dock knows it ("GDScript", "Texture2D"), or "". Read a folder
+// at a time: EditorFileSystem::get_file_type finds a file by going through its folder's list from
+// the start, so 2,000 changed files in one folder took 0.3 s (most of a refresh's time).
+String GitDock::_file_type(const String &p_res_path) {
+	const String folder = p_res_path.get_base_dir();
+	if (!folder_types.has(folder)) {
+		Dictionary types;
+		if (EditorFileSystemDirectory *dir = EditorInterface::get_singleton()->get_resource_filesystem()->get_filesystem_path(folder)) {
+			for (int i = 0; i < dir->get_file_count(); i++) {
+				types[dir->get_file(i)] = dir->get_file_type(i);
+			}
+		}
+		folder_types[folder] = types;
+	}
+	return Dictionary(folder_types[folder]).get(p_res_path.get_file(), String());
 }
 
 Color GitDock::_status_color(const String &p_state) const {
@@ -402,6 +421,7 @@ void GitDock::refresh() {
 	}
 	no_repo_ui->hide();
 	repo_ui->show();
+	folder_types.clear(); // Files may have come and gone since.
 
 	project_file_time = FileAccess::get_modified_time("res://project.godot");
 	sync_status = repo->get_sync_status();
@@ -416,7 +436,9 @@ void GitDock::refresh() {
 
 	const Array status = repo->get_status();
 	// After a fetch: the files a pull would refuse for, so their rows and Pull can say so up front.
-	pull_blockers = (int)sync_status.get("behind", 0) > 0 ? repo->get_pull_blockers() : PackedStringArray();
+	operation = repo->get_operation();
+	// Mid-merge, Pull waits for the operation anyway: a pull warning on the rows would be noise.
+	pull_blockers = (int)sync_status.get("behind", 0) > 0 && !_in_operation() ? repo->get_pull_blockers() : PackedStringArray();
 	_fill_file_pane(staged_pane, status);
 	_fill_file_pane(changes_pane, status);
 	_start_line_stats();
@@ -566,7 +588,10 @@ void GitDock::_update_actions() {
 	// A background fetch doesn't count as busy: it only updates remote-tracking refs.
 	const NetworkOp shown = _shown_network_op();
 	// A pull, push or switch rewrites the repository from the worker thread; don't commit meanwhile.
-	const bool syncing = shown == NETWORK_PULL || shown == NETWORK_PUSH || shown == NETWORK_SWITCH || shown == NETWORK_COMMIT;
+	const bool syncing = shown == NETWORK_PULL || shown == NETWORK_PUSH || shown == NETWORK_SWITCH || shown == NETWORK_COMMIT || shown == NETWORK_ABORT || shown == NETWORK_CONTINUE;
+	// A merge, rebase, ... in progress: committing, pulling or switching would lose it (the
+	// backend refuses too). The banner says what to do instead.
+	const String in_operation = _in_operation() ? vformat("A %s is in progress: finish it or abort it first (see the banner above).", _operation_name()) : String();
 	const bool busy = shown != NETWORK_NONE;
 
 	// The worker rewrites the repository during a pull or push; switching branches or bulk
@@ -663,6 +688,19 @@ void GitDock::_update_actions() {
 		push_button->set_disabled(true);
 		push_button->set_tooltip_text(push_needs_git);
 	}
+
+	// Last, so the reason overrides the others: nothing else matters until it's finished.
+	branch_select->set_tooltip_text(in_operation.is_empty() ? String("Current branch. Pick another to switch to it.") : in_operation);
+	if (!in_operation.is_empty()) {
+		branch_select->set_disabled(true);
+		amend_check->set_disabled(true);
+		amend_check->set_tooltip_text(in_operation);
+		commit_button->set_disabled(true);
+		commit_button->set_tooltip_text(in_operation);
+		pull_button->set_disabled(true);
+		pull_button->set_tooltip_text(in_operation);
+	}
+	_update_operation_banner(); // Its buttons follow the same busy state.
 }
 
 void GitDock::_on_more_menu_id(int p_id) {
