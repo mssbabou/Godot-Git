@@ -3,11 +3,18 @@
 
 #include "editor/git_dock.h"
 
+#include <godot_cpp/classes/accept_dialog.hpp>
+#include <godot_cpp/classes/check_box.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/margin_container.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/script_editor.hpp>
+#include <godot_cpp/classes/text_server.hpp>
+#include <godot_cpp/classes/v_box_container.hpp>
+
+#include <godot_cpp/core/math.hpp>
 
 #include "editor/filesystem_colors.h"
 #include "editor/git_colors.h"
@@ -17,6 +24,22 @@
 #include "editor/ui_text.h"
 
 using namespace godot_git;
+
+namespace {
+
+// Git Settings' entries, in this order (settings_checks).
+struct SettingEntry {
+	const char *name;
+	const char *label;
+	const char *description;
+};
+const SettingEntry SETTINGS[3] = {
+	{ CHANGE_MARKS_SETTING, "Mark changed lines in scripts", "Lines added, changed or deleted since the last commit, marked next to the line numbers (unsaved edits too). Click a mark to see what was there." },
+	{ FILESYSTEM_COLORS_SETTING, "Color changed files in the FileSystem dock", "Changed files in the colors of their status letters, with a dot on the folders that hold them." },
+	{ AUTO_FETCH_SETTING, "Fetch automatically", "Checks for new commits every few minutes in the background. It never changes your files or asks you to sign in." },
+};
+
+} // namespace
 
 // Scenes and scripts open in the editor with unsaved edits. Built-in scripts ("scene.tscn::..")
 // are saved with their scene, so they're left out.
@@ -263,5 +286,70 @@ void GitDock::_on_editor_settings_changed() {
 	script_marks->set_enabled(_is_change_marks_enabled());
 	if (repo.is_valid() && repo->is_open()) {
 		_update_filesystem_colors(repo->get_status());
+	}
+	if (!_is_auto_fetch_enabled() && auto_fetch_failed) {
+		auto_fetch_failed = false;
+		if (status_kind == STATUS_WARNING) {
+			_set_status(STATUS_IDLE, String()); // Its failure message is moot now.
+		}
+	}
+	for (int i = 0; i < 3; i++) {
+		if (settings_checks[i]) {
+			settings_checks[i]->set_pressed_no_signal(EditorInterface::get_singleton()->get_editor_settings()->get_setting(SETTINGS[i].name));
+		}
+	}
+}
+
+// Git Settings, from the menu: the three settings with what each does. They're stored in Editor
+// Settings (_register_settings), which only shows a plugin's settings with Advanced Settings
+// ticked (gotcha 49), so this dialog is where people find them. A change applies at once.
+void GitDock::_build_settings_dialog() {
+	const float scale = EditorInterface::get_singleton()->get_editor_scale();
+	settings_dialog = memnew(AcceptDialog);
+	settings_dialog->set_title("Git Settings");
+	settings_dialog->set_ok_button_text("Close");
+	add_child(settings_dialog);
+	VBoxContainer *list = memnew(VBoxContainer);
+	list->add_theme_constant_override("separation", Math::round(10 * scale));
+	settings_dialog->add_child(list);
+	for (int i = 0; i < 3; i++) {
+		VBoxContainer *entry = memnew(VBoxContainer);
+		entry->add_theme_constant_override("separation", 0);
+		list->add_child(entry);
+		CheckBox *check = memnew(CheckBox);
+		check->set_text(SETTINGS[i].label);
+		check->connect("toggled", callable_mp(this, &GitDock::_on_setting_toggled).bind(i));
+		entry->add_child(check);
+		settings_checks[i] = check;
+		MarginContainer *indent = memnew(MarginContainer);
+		indent->add_theme_constant_override("margin_left", Math::round(28 * scale)); // Under the text, past the box.
+		entry->add_child(indent);
+		Label *description = memnew(Label);
+		description->set_text(SETTINGS[i].description);
+		description->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+		description->set_custom_minimum_size(Vector2(400 * scale, 0)); // Wraps at this width (gotcha 28).
+		description->set_modulate(Color(1, 1, 1, 0.65));
+		indent->add_child(description);
+	}
+	Label *where = memnew(Label);
+	where->set_text(String::utf8("For every project. Also in Editor Settings under Godot Git \u203a Settings (with Advanced Settings on)."));
+	where->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	where->set_custom_minimum_size(Vector2(428 * scale, 0));
+	where->set_modulate(Color(1, 1, 1, 0.5));
+	list->add_child(where);
+}
+
+void GitDock::_show_settings_dialog() {
+	for (int i = 0; i < 3; i++) {
+		settings_checks[i]->set_pressed_no_signal(EditorInterface::get_singleton()->get_editor_settings()->get_setting(SETTINGS[i].name));
+	}
+	settings_dialog->popup_centered();
+}
+
+// Saved in Editor Settings; its settings_changed signal applies it (_on_editor_settings_changed).
+void GitDock::_on_setting_toggled(bool p_on, int p_index) {
+	EditorInterface::get_singleton()->get_editor_settings()->set_setting(SETTINGS[p_index].name, p_on);
+	if (p_index == 2) {
+		last_auto_fetch_attempt = 0; // Turned back on: may fetch at the next check.
 	}
 }

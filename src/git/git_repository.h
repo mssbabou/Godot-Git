@@ -51,6 +51,7 @@ public:
 	String get_current_branch() const;
 	PackedStringArray get_branches() const;
 	PackedStringArray get_remote_branches() const;
+	Array get_branch_list() const;
 	PackedStringArray get_remotes() const;
 	Dictionary get_sync_status() const;
 	Array get_status() const;

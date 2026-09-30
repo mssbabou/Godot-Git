@@ -17,6 +17,10 @@ using namespace godot_git;
 
 void GitDock::_build_stashes(Control *p_parent) {
 	stashes_pane = memnew(FoldableContainer);
+	// Nothing else in its header: this keeps it as tall as the others (see _update_icons).
+	stashes_header_strut = memnew(Control);
+	stashes_header_strut->set_mouse_filter(MOUSE_FILTER_IGNORE);
+	stashes_pane->add_title_bar_control(stashes_header_strut);
 	stashes_pane->set_title("Stashes");
 	stashes_pane->hide();
 	p_parent->add_child(stashes_pane);
@@ -105,8 +109,10 @@ void GitDock::_fill_stashes() {
 		placeholder->set_meta("git_row", "placeholder");
 		placeholder->set_selectable(0, false);
 		placeholder->set_selectable(1, false);
+		// Read before collapsing: collapsing emits item_collapsed, which forgets it was expanded.
+		const bool expanded = stashes_expanded.has(stash["hash"]);
 		item->set_collapsed(true);
-		if (stashes_expanded.has(stash["hash"])) {
+		if (expanded) {
 			item->set_collapsed(false); // Loads it (item_collapsed).
 		}
 	}

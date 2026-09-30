@@ -82,6 +82,7 @@ void GitDock::_make_file_pane(FilePane &r_pane, Control *p_parent, const String 
 	r_pane.buttons_margin->add_child(r_pane.buttons);
 	if (!p_staged) {
 		r_pane.discard = memnew(Button);
+		r_pane.discard->set_v_size_flags(SIZE_SHRINK_CENTER);
 		r_pane.discard->set_tooltip_text("Discard all changes");
 		r_pane.discard->connect("pressed", callable_mp(this, &GitDock::_on_more_menu_id).bind(MORE_DISCARD_ALL));
 		r_pane.buttons->add_child(r_pane.discard);
@@ -89,10 +90,12 @@ void GitDock::_make_file_pane(FilePane &r_pane, Control *p_parent, const String 
 	if (p_staged) {
 		// Staging is how you pick what to stash: this sets aside exactly what's staged.
 		r_pane.stash = memnew(Button);
+		r_pane.stash->set_v_size_flags(SIZE_SHRINK_CENTER);
 		r_pane.stash->connect("pressed", callable_mp(this, &GitDock::_stash).bind(true));
 		r_pane.buttons->add_child(r_pane.stash);
 	}
 	r_pane.action = memnew(Button);
+	r_pane.action->set_v_size_flags(SIZE_SHRINK_CENTER); // The header is taller (see _update_icons).
 	r_pane.action->set_tooltip_text(p_staged ? "Unstage all" : "Stage all");
 	r_pane.action->connect("pressed", callable_mp(this, &GitDock::_on_more_menu_id).bind(p_staged ? MORE_UNSTAGE_ALL : MORE_STAGE_ALL));
 	r_pane.buttons->add_child(r_pane.action);

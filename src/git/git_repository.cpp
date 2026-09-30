@@ -10,6 +10,7 @@
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/core/class_db.hpp>
+#include <godot_cpp/templates/hash_set.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
 #include "git/git_cli.h"
@@ -70,6 +71,7 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_workdir"), &GitRepository::get_workdir);
 	ClassDB::bind_method(D_METHOD("get_current_branch"), &GitRepository::get_current_branch);
 	ClassDB::bind_method(D_METHOD("get_branches"), &GitRepository::get_branches);
+	ClassDB::bind_method(D_METHOD("get_branch_list"), &GitRepository::get_branch_list);
 	ClassDB::bind_method(D_METHOD("get_remote_branches"), &GitRepository::get_remote_branches);
 	ClassDB::bind_method(D_METHOD("get_remotes"), &GitRepository::get_remotes);
 	ClassDB::bind_method(D_METHOD("get_sync_status"), &GitRepository::get_sync_status);
@@ -414,6 +416,110 @@ PackedStringArray GitRepository::get_remote_branches() const {
 		}
 	}
 	return branches;
+}
+
+// Every branch, for the branch picker: [{ "name", "local" (false: a remote-tracking branch with no
+// local branch of the same name, which picking checks out as one), "current", "upstream"
+// ("origin/x", or ""), "ahead" / "behind" (commits against the upstream; 0 without one), "time"
+// (its last commit's, unix; 0 for a branch without commits) }]. Local branches first (the current
+// one first), then remote ones, each most recently changed first.
+Array GitRepository::get_branch_list() const {
+	Array result;
+	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+
+	const auto commit_time = [&](const git_oid *p_oid) -> int64_t {
+		CommitPtr commit;
+		return p_oid && git_commit_lookup(commit.out(), repo, p_oid) == 0 ? (int64_t)git_commit_time(commit) : 0;
+	};
+	// The current branch first, then the most recently changed.
+	const auto newest_first = [](const Variant &p_a, const Variant &p_b) {
+		const Dictionary a = p_a;
+		const Dictionary b = p_b;
+		if (bool(a["current"]) != bool(b["current"])) {
+			return bool(a["current"]);
+		}
+		return (int64_t)a["time"] > (int64_t)b["time"];
+	};
+
+	const String current = get_current_branch();
+	Array local;
+	HashSet<String> local_names;
+	BranchIteratorPtr it;
+	if (git_branch_iterator_new(it.out(), repo, GIT_BRANCH_LOCAL) == 0) {
+		ReferencePtr ref;
+		git_branch_t type;
+		while (git_branch_next(ref.out(), &type, it) == 0) {
+			const char *name = nullptr;
+			if (git_branch_name(&name, ref) < 0) {
+				continue;
+			}
+			Dictionary branch;
+			branch["name"] = String::utf8(name);
+			branch["local"] = true;
+			branch["current"] = git_branch_is_head(ref) == 1;
+			branch["upstream"] = String();
+			branch["ahead"] = 0;
+			branch["behind"] = 0;
+			branch["time"] = commit_time(git_reference_target(ref));
+			ReferencePtr upstream;
+			const char *upstream_name = nullptr;
+			if (git_branch_upstream(upstream.out(), ref) == 0 && git_branch_name(&upstream_name, upstream) == 0) {
+				branch["upstream"] = String::utf8(upstream_name);
+				size_t ahead = 0, behind = 0;
+				if (git_reference_target(ref) && git_reference_target(upstream) && git_graph_ahead_behind(&ahead, &behind, repo, git_reference_target(ref), git_reference_target(upstream)) == 0) {
+					branch["ahead"] = (int64_t)ahead;
+					branch["behind"] = (int64_t)behind;
+				}
+			}
+			git_error_clear(); // No upstream is normal.
+			local_names.insert(branch["name"]);
+			local.push_back(branch);
+		}
+	}
+	if (!current.is_empty() && !local_names.has(current)) {
+		// A branch without commits yet: HEAD names it, but it doesn't exist.
+		Dictionary branch;
+		branch["name"] = current;
+		branch["local"] = true;
+		branch["current"] = true;
+		branch["upstream"] = String();
+		branch["ahead"] = 0;
+		branch["behind"] = 0;
+		branch["time"] = (int64_t)0;
+		local.push_back(branch);
+		local_names.insert(current);
+	}
+	local.sort_custom(callable_mp_static(+newest_first));
+
+	Array remote;
+	if (git_branch_iterator_new(it.out(), repo, GIT_BRANCH_REMOTE) == 0) {
+		ReferencePtr ref;
+		git_branch_t type;
+		while (git_branch_next(ref.out(), &type, it) == 0) {
+			const char *name = nullptr;
+			if (git_reference_type(ref) != GIT_REFERENCE_DIRECT || git_branch_name(&name, ref) < 0) {
+				continue; // origin/HEAD is an alias.
+			}
+			const String full = String::utf8(name);
+			const int slash = full.find("/");
+			if (local_names.has(slash >= 0 ? full.substr(slash + 1) : full)) {
+				continue; // Listed as its local branch.
+			}
+			Dictionary branch;
+			branch["name"] = full;
+			branch["local"] = false;
+			branch["current"] = false;
+			branch["upstream"] = String();
+			branch["ahead"] = 0;
+			branch["behind"] = 0;
+			branch["time"] = commit_time(git_reference_target(ref));
+			remote.push_back(branch);
+		}
+	}
+	remote.sort_custom(callable_mp_static(+newest_first));
+	result.append_array(local);
+	result.append_array(remote);
+	return result;
 }
 
 PackedStringArray GitRepository::get_remotes() const {

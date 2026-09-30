@@ -4,14 +4,14 @@ A Git panel for the Godot editor: stage, commit, pull, push, switch branches and
 
 ![The Git dock and the Diff panel](https://raw.githubusercontent.com/mssbabou/Godot-Git/master/store/screenshot_diff.png)
 
-Godot Git adds a **Git** dock next to the Inspector and a **Diff** panel at the bottom of the editor.
+Godot Git adds a **Git** dock next to the Inspector and a **Git Diff** panel at the bottom of the editor.
 
 - **Changes**: see what's staged and unstaged, stage or discard files, commit and amend. Changed files are colored in the FileSystem dock too, and you can show or discard their changes from its right-click menu.
 - **In the script editor**: marks beside the line numbers show which lines you added, changed or deleted since the last commit, as you type. Click one to see what was there and put it back.
 - **Sync**: fetch, pull and push, with progress, Cancel, and a clear result or error that stays visible.
-- **Branches**: switch, create, rename and delete branches from the branch picker. Deleting one tells you first if it would lose commits.
+- **Branches**: search your branches, see which are ahead or behind their remote, and switch, create or delete them from the branch picker. Deleting one tells you first if it would lose commits.
 - **Stash**: set what's staged (or everything) aside, see your stashes and what's in them, and restore one with a click. A restore either applies completely or refuses and names the files; it never leaves conflict markers.
-- **Diff panel**: click a file to see what changed, with syntax highlighting, unified or side by side. Images show before and after, and `.import` files show which import settings changed.
+- **Git Diff panel**: click a file to see what changed, with syntax highlighting, unified or side by side. Images show before and after, and `.import` files show which import settings changed.
 - **History**: click a commit to see its message, changed files and each file's diff. Search it, or show one file's history (through renames). Right-click to undo your last commit, revert a commit, restore a file's older version, or start a branch there.
 
 **Sign in from the panel.** Pull or push a private repository and, with Git Credential Manager (included with Git for Windows), your browser opens to sign in once. No terminal, no tokens to paste. SSH uses your own keys and config, and hooks, commit signing and Git LFS work as they do in a terminal.
@@ -30,7 +30,7 @@ This is its own panel, not a backend for Godot's built-in version control dock (
 
 **Requirements:** Godot 4.7 or newer, on Windows (x86_64, arm64), Linux (x86_64, arm64, glibc 2.34+) or macOS (10.13+ Intel, 11+ Apple Silicon). Installing [git](https://git-scm.com) is recommended: sign-ins, SSH, LFS, hooks and signing need it.
 
-**Settings:** the script editor marks, FileSystem colors and automatic fetching are on by default. Turn any of them off in the dock's ⋮ menu (they're also in Editor Settings under *Godot Git → Settings*, with *Advanced Settings* on).
+**Settings:** the script editor marks, FileSystem colors and automatic fetching are on by default. Turn any of them off under *⋮ → Settings...* in the dock (they're also in Editor Settings under *Godot Git → Settings*, with *Advanced Settings* on).
 
 **Exports on Godot 4.7:** the plugin only runs in the editor. Add `addons/godot_git/*` to your export preset's *Resources → Filters to exclude files*, or exports warn and the game logs one harmless error. From Godot 4.8 this is automatic.
 

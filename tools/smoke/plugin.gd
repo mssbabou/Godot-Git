@@ -282,6 +282,46 @@ func _run() -> void:
 			break
 	_check(counted, "line counts arrive after an edit")
 
+	# Show Commit (Show Commit for This Line uses it) opens History at that commit, expanded. It
+	# stayed shut once: building the row collapsed it first, which forgot it should be open.
+	var repo := GitRepository.new()
+	repo.open("res://")
+	for c in repo.get_commits(100):
+		if c.summary == "Rename clamp01":
+			dock.show_commit(c.hash)
+	await _frames()
+	var shown := _commit_row("Rename clamp01")
+	_check(shown != null and not shown.collapsed and shown.get_child_count() > 1, "Show Commit opens that commit in History, expanded")
+	for button: Button in _section("History").find_children("*", "Button", true, false):
+		if button.tooltip_text.begins_with("Search commits") and button.button_pressed:
+			button.pressed.emit() # Closes the search again.
+	await _frames()
+
+	# The branch picker: the current branch first, the search filters, an unknown name offers to
+	# create it.
+	var branch_button: Button = dock.find_child("BranchButton", true, false)
+	var branch_popup: PopupPanel = dock.find_child("BranchPopup", true, false)
+	branch_button.pressed.emit()
+	await _frames()
+	var branch_tree: Tree = branch_popup.find_children("*", "Tree", true, false)[0]
+	var branch_search: LineEdit = branch_popup.find_children("*", "LineEdit", true, false)[0]
+	var rows := func() -> PackedStringArray:
+		var row_texts := PackedStringArray()
+		for item in branch_tree.get_root().get_children():
+			row_texts.append(item.get_text(0))
+		return row_texts
+	var all_rows: PackedStringArray = rows.call()
+	_check(branch_popup.visible and all_rows.size() == 3 and all_rows[0] == "main", "the branch picker lists the branches, the current one first (%s)" % ", ".join(all_rows))
+	branch_search.text = "exp"
+	branch_search.text_changed.emit("exp")
+	await _frames()
+	_check(rows.call() == PackedStringArray(["experiment", "Create branch \"exp\""]) and branch_tree.get_selected().get_text(0) == "experiment", "searching the branches filters them, and Enter would pick the match (%s)" % ", ".join(rows.call()))
+	branch_search.text = "double-jump"
+	branch_search.text_changed.emit("double-jump")
+	await _frames()
+	_check(rows.call() == PackedStringArray(["Create branch \"double-jump\""]), "a name no branch has offers to create it (%s)" % ", ".join(rows.call()))
+	branch_popup.hide()
+
 	# The dock at every width from its narrowest up. Layout loops depend on the width (gotcha 40,
 	# and the header alignment loop of 2026-09-30, which crashed about one run in four at whatever
 	# width the editor picked): 1 px steps through the range around the dock's minimum width, where

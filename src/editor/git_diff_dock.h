@@ -4,6 +4,7 @@
 #include <godot_cpp/classes/code_edit.hpp>
 #include <godot_cpp/classes/editor_dock.hpp>
 #include <godot_cpp/classes/font.hpp>
+#include <godot_cpp/classes/h_box_container.hpp>
 #include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/option_button.hpp>
 #include <godot_cpp/classes/panel_container.hpp>
@@ -125,6 +126,9 @@ private:
 	Label *name_label = nullptr;
 	Label *folder_label = nullptr;
 	Label *source_label = nullptr;
+	Label *status_label = nullptr;
+	HBoxContainer *counts_box = nullptr; // "+8 −6".
+	Button *copy_hash_button = nullptr; // A commit's short hash after "Commit"; click copies the full one.
 	Label *added_label = nullptr;
 	Label *removed_label = nullptr;
 	OptionButton *view_select = nullptr;
@@ -175,6 +179,8 @@ private:
 	void _show_settings();
 	void _fill_settings(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_diff);
 	void _fit_companions();
+	void _on_copy_hash();
+	void _show_hash_label();
 
 protected:
 	static void _bind_methods();

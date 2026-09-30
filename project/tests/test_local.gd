@@ -11,6 +11,7 @@ func run() -> void:
 	_commit_and_history()
 	_branches()
 	_rename_and_delete_branches()
+	_branch_list()
 	_large_staged_files()
 
 
@@ -159,6 +160,34 @@ func _rename_and_delete_branches() -> void:
 	check("gone for git too", git(repo, ["branch", "--list", "lonely"]).strip_edges() == "")
 	check("deleting a missing branch refused", r.delete_branch("lonely") != OK)
 	check("remote branch untouched", git(repo, ["branch", "-r"]).contains("origin/main"))
+
+
+# The branch picker's list: local first (newest first), each with ahead/behind against its
+# upstream, then remote branches that have no local branch.
+func _branch_list() -> void:
+	var shared := make_shared("branch-list")
+	var mine: String = shared.mine
+	git(shared.theirs, ["checkout", "-q", "-b", "their-feature"])
+	write(shared.theirs.path_join("f.txt"), "f
+")
+	commit_all(shared.theirs, "Feature")
+	git(shared.theirs, ["push", "-q", "-u", "origin", "their-feature"])
+	teammate_pushes(shared, "x.txt", "x2
+")
+	git(mine, ["checkout", "-q", "-b", "older"])
+	git(mine, ["checkout", "-q", "main"])
+	write(mine.path_join("y.txt"), "mine
+")
+	commit_all(mine, "Mine")
+	git(mine, ["fetch", "-q"])
+	var list := open(mine).get_branch_list()
+	var names := list.map(func(b): return b.name)
+	check("local branches first, newest first", names.slice(0, 2) == ["main", "older"], names)
+	check("a remote branch without a local one is listed", names.has("origin/their-feature") and not list[names.find("origin/their-feature")].local, names)
+	check("origin/main isn't listed twice", not names.has("origin/main"), names)
+	var main: Dictionary = list[0]
+	var counts: String = git(mine, ["rev-list", "--left-right", "--count", "main...origin/main"]).strip_edges()
+	check("current, with ahead/behind as git counts them", main.current and main.upstream == "origin/main" and "%d	%d" % [main.ahead, main.behind] == counts, [main, counts])
 
 
 # The commit warning for big files: what's staged and at least the given size, largest first.

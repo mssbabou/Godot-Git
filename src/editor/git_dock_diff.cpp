@@ -55,6 +55,7 @@ void GitDock::_update_diff() {
 			} else {
 				diff = repo->get_commit_diff(diff_commit, diff_path);
 				_add_image_versions(diff, diff_commit + "^1", diff_commit);
+				diff["commit"] = diff_commit; // The panel shows its hash, and copies it on a click.
 			}
 			// The companions the file's row stands for (see _add_commit_file_rows): in the same commit.
 			const Array files = (diff_stash ? stash_files : commit_files).get(diff_commit, Array());

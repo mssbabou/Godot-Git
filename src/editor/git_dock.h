@@ -14,6 +14,7 @@
 #include <godot_cpp/classes/option_button.hpp>
 #include <godot_cpp/classes/panel_container.hpp>
 #include <godot_cpp/classes/popup_menu.hpp>
+#include <godot_cpp/classes/popup_panel.hpp>
 #include <godot_cpp/classes/progress_bar.hpp>
 #include <godot_cpp/classes/rich_text_label.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
@@ -70,17 +71,11 @@ class GitDock : public EditorDock {
 		MORE_STAGE_ALL,
 		MORE_UNSTAGE_ALL,
 		MORE_DISCARD_ALL,
-		MORE_NEW_BRANCH,
 		MORE_OPEN_FOLDER,
-		MORE_AUTO_FETCH,
 		MORE_ADD_REMOTE,
 		MORE_BUILD_INFO,
-		MORE_FILESYSTEM_COLORS,
 		MORE_STASH_ALL,
-		MORE_CHANGE_MARKS,
-		// Branch picker items after the branches.
-		BRANCH_RENAME,
-		BRANCH_DELETE,
+		MORE_SETTINGS,
 	};
 
 	// The buttons on a hovered stash row.
@@ -134,7 +129,16 @@ class GitDock : public EditorDock {
 	Timer *project_file_timer = nullptr; // Watches project.godot, which Godot saves without telling anyone.
 	uint64_t project_file_time = 0;
 
-	OptionButton *branch_select = nullptr;
+	// The branch picker (git_dock_branches.cpp): a button naming the current branch, opening a
+	// panel with a search field and the branches.
+	Button *branch_button = nullptr;
+	TextureRect *branch_arrow = nullptr;
+	OptionButton *branch_style_source = nullptr; // Hidden: where the button's look comes from.
+	PopupPanel *branch_popup = nullptr;
+	LineEdit *branch_search = nullptr;
+	Tree *branch_tree = nullptr;
+	Array branch_list; // GitRepository::get_branch_list(), as of the last refresh.
+	uint64_t branch_hovered = 0; // The row showing Rename and Delete.
 	MenuButton *more_menu = nullptr;
 
 	// Status strip under the toolbar: what the panel is doing, or what it last did.
@@ -204,11 +208,12 @@ class GitDock : public EditorDock {
 	ConfirmationDialog *revert_confirm = nullptr;
 	String pending_revert; // The commit a NETWORK_REVERT reverts.
 	String pending_revert_summary;
-	String branch_here; // The commit New Branch creates at (Create Branch Here), or "" for HEAD.
+	String branch_here; // The commit Create Branch Here creates the branch at.
 	Label *branch_dialog_label = nullptr;
 
 	// Stashes: a section that only shows while there are stashes (git_dock_stashes.cpp).
 	FoldableContainer *stashes_pane = nullptr;
+	Control *stashes_header_strut = nullptr;
 	Tree *stashes_tree = nullptr;
 	Array stashes_shown; // GitRepository::get_stashes(), as the section shows them.
 	Dictionary stashes_expanded; // Hashes of expanded stashes, kept across rebuilds.
@@ -232,11 +237,8 @@ class GitDock : public EditorDock {
 	PackedStringArray pending_discard;
 	ConfirmationDialog *branch_dialog = nullptr;
 	LineEdit *branch_name_edit = nullptr;
-	ConfirmationDialog *rename_dialog = nullptr; // Renames the current branch.
-	Label *rename_label = nullptr;
-	LineEdit *rename_edit = nullptr;
-	ConfirmationDialog *delete_branch_dialog = nullptr; // Picks another local branch to delete.
-	OptionButton *delete_branch_select = nullptr;
+	ConfirmationDialog *delete_branch_dialog = nullptr;
+	String pending_delete;
 	Label *delete_branch_label = nullptr;
 	ConfirmationDialog *switch_confirm = nullptr; // Switching to a branch without this addon.
 	String pending_switch;
@@ -295,6 +297,8 @@ class GitDock : public EditorDock {
 	Dictionary open_scene_hashes; // res:// path -> MD5 of the file, before the operation.
 	GitFileSystemColors *filesystem_colors = nullptr;
 	GitScriptMarks *script_marks = nullptr; // Changed lines marked in the script editor.
+	AcceptDialog *settings_dialog = nullptr; // Git Settings (the menu's Settings...).
+	CheckBox *settings_checks[3] = {}; // In the order of SETTINGS in git_dock_editor.cpp.
 
 	// The Diff panel at the bottom, and the file it shows: clicking a file here shows its diff there.
 	GitDiffDock *diff_dock = nullptr;
@@ -346,17 +350,26 @@ class GitDock : public EditorDock {
 	void _on_discard_confirmed();
 
 	// git_dock_branches.cpp: the branch picker.
+	void _build_branch_picker(Control *p_parent);
+	void _style_branch_button();
 	void _fill_branches();
-	void _on_branch_selected(int p_index);
+	void _show_branch_popup();
+	void _fill_branch_tree();
+	void _fit_branch_popup();
+	void _on_branch_search_changed(const String &p_text);
+	void _on_branch_search_input(const Ref<InputEvent> &p_event);
+	void _on_branch_tree_input(const Ref<InputEvent> &p_event);
+	void _set_branch_hovered(TreeItem *p_item);
+	void _on_branch_row_button(TreeItem *p_item, int p_column, int p_id, int p_mouse_button);
+	void _on_branch_row_clicked(const Vector2 &p_position, int p_mouse_button);
+	void _on_branch_row_activated();
+	void _pick_branch_row(uint64_t p_item);
+	void _pick_branch(const String &p_branch);
 	String _addon_removed_by(const String &p_branch) const;
 	void _switch_branch(const String &p_branch);
 	void _on_branch_dialog_confirmed();
 	void _build_branch_dialogs();
-	void _show_rename_dialog();
-	void _on_rename_text_changed(const String &p_text);
-	void _on_rename_confirmed();
-	void _show_delete_branch_dialog();
-	void _on_delete_branch_picked(int p_index);
+	void _show_delete_branch_dialog(const String &p_branch);
 	void _on_delete_branch_confirmed();
 
 	// git_dock_commit.cpp: the commit box.
@@ -479,6 +492,9 @@ class GitDock : public EditorDock {
 	void _register_settings();
 	bool _is_change_marks_enabled() const;
 	void _on_editor_settings_changed();
+	void _build_settings_dialog();
+	void _show_settings_dialog();
+	void _on_setting_toggled(bool p_on, int p_index);
 
 	// git_dock_setup.cpp: setting a repository up (Initialize, Add Remote, name and email).
 	void _build_setup(Control *p_parent);

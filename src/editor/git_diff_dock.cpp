@@ -6,16 +6,21 @@
 #include "editor/git_diff_dock.h"
 
 #include <godot_cpp/classes/center_container.hpp>
+#include <godot_cpp/classes/display_server.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/h_box_container.hpp>
 #include <godot_cpp/classes/h_split_container.hpp>
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/margin_container.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
+#include <godot_cpp/classes/scene_tree_timer.hpp>
 #include <godot_cpp/classes/style_box_empty.hpp>
 #include <godot_cpp/classes/theme.hpp>
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/classes/v_scroll_bar.hpp>
+
+#include <godot_cpp/core/math.hpp>
 
 #include "editor/git_colors.h"
 #include "editor/ui_text.h"
@@ -35,8 +40,8 @@ void GitDiffDock::_bind_methods() {
 }
 
 GitDiffDock::GitDiffDock() {
-	set_name("Diff");
-	set_title("Diff");
+	set_name("Git Diff");
+	set_title("Git Diff");
 	set_layout_key("GodotGitDiff");
 	set_icon_name("VCSCommit");
 	set_default_slot(DOCK_SLOT_BOTTOM);
@@ -62,32 +67,47 @@ GitDiffDock::GitDiffDock() {
 
 	name_label = memnew(Label);
 	header_hb->add_child(name_label);
+	status_label = memnew(Label); // "Modified", in the status letter's color, next to the name.
+	header_hb->add_child(status_label);
+	// Then "+8 −6", as close together as in the Changes header (see _update_theme).
+	counts_box = memnew(HBoxContainer);
+	header_hb->add_child(counts_box);
+	added_label = memnew(Label);
+	counts_box->add_child(added_label);
+	removed_label = memnew(Label);
+	counts_box->add_child(removed_label);
 
 	folder_label = memnew(Label);
 	folder_label->set_h_size_flags(SIZE_EXPAND_FILL);
 	folder_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
 	header_hb->add_child(folder_label);
 
+	// The right side (where the changes are, the view, Open) in a row of its own, with room
+	// between its parts (they sat tight together, maintainer 2026-09-30).
+	HBoxContainer *right_hb = memnew(HBoxContainer);
+	right_hb->add_theme_constant_override("separation", Math::round(14 * EditorInterface::get_singleton()->get_editor_scale()));
+	header_hb->add_child(right_hb);
 	source_label = memnew(Label);
-	header_hb->add_child(source_label);
-
-	added_label = memnew(Label);
-	header_hb->add_child(added_label);
-	removed_label = memnew(Label);
-	header_hb->add_child(removed_label);
+	right_hb->add_child(source_label);
+	copy_hash_button = memnew(Button);
+	copy_hash_button->set_flat(true);
+	copy_hash_button->set_focus_mode(FOCUS_NONE);
+	copy_hash_button->hide();
+	copy_hash_button->connect("pressed", callable_mp(this, &GitDiffDock::_on_copy_hash));
+	right_hb->add_child(copy_hash_button);
 
 	view_select = memnew(OptionButton);
 	view_select->add_item("Unified", VIEW_UNIFIED);
 	view_select->add_item("Side by Side", VIEW_SPLIT);
 	view_select->set_tooltip_text("Show the changes in one column, or the old and new version side by side.");
 	view_select->connect("item_selected", callable_mp(this, &GitDiffDock::_on_view_selected));
-	header_hb->add_child(view_select);
+	right_hb->add_child(view_select);
 
 	open_button = memnew(Button);
 	open_button->set_flat(true);
 	open_button->set_text("Open");
 	open_button->connect("pressed", callable_mp(this, &GitDiffDock::_on_open_pressed));
-	header_hb->add_child(open_button);
+	right_hb->add_child(open_button);
 
 	// The views. Only one of these is visible at a time.
 	VBoxContainer *body = memnew(VBoxContainer);
@@ -172,8 +192,10 @@ Color GitDiffDock::row_tint(bool p_added) {
 }
 
 void GitDiffDock::_update_theme() {
-	theme.added = change_color(CHANGE_ADDED); // The +/- counts and signs; row tints below.
-	theme.removed = change_color(CHANGE_REMOVED);
+	// The +/- counts and signs in the theme's own green and red, like the row tints below: the
+	// softened status colors (git_colors.h) read washed out on numbers (maintainer, 2026-09-30).
+	theme.added = get_theme_color("success_color", "Editor");
+	theme.removed = get_theme_color("error_color", "Editor");
 	theme.dim = get_theme_color("font_color", "Label") * Color(1, 1, 1, 0.55);
 	theme.row_background[ROW_CONTEXT] = Color(0, 0, 0, 0);
 	theme.row_background[ROW_ADDED] = row_tint(true);
@@ -222,6 +244,14 @@ void GitDiffDock::_update_theme() {
 	}
 	added_label->add_theme_color_override("font_color", theme.added);
 	removed_label->add_theme_color_override("font_color", theme.removed);
+	// The 4.7 theme pads every Label on both sides (gotcha 42), which set "+8" and "−6" two
+	// paddings apart; without it they're the Changes header's spacing apart.
+	Ref<StyleBoxEmpty> unpadded;
+	unpadded.instantiate();
+	for (Label *label : { added_label, removed_label, source_label }) {
+		label->add_theme_stylebox_override("normal", unpadded);
+	}
+	counts_box->add_theme_constant_override("separation", get_theme_constant("h_separation", "FoldableContainer"));
 
 	// A TextEdit clips its lines to its whole rect, padding included, so a row scrolled half out
 	// of view was drawn into the padding, up to the rounded edge (very visible with tinted rows).
@@ -250,6 +280,19 @@ void GitDiffDock::set_diff(const Dictionary &p_diff, const String &p_source, con
 	source = p_source;
 	file_icon = p_icon;
 	_render();
+}
+
+// The copy button's normal look: the short hash with a copy icon.
+void GitDiffDock::_show_hash_label() {
+	copy_hash_button->set_text(String(diff.get("commit", String())).left(7));
+	copy_hash_button->set_button_icon(get_theme_icon("ActionCopy", "EditorIcons"));
+}
+
+void GitDiffDock::_on_copy_hash() {
+	DisplayServer::get_singleton()->clipboard_set(diff.get("commit", String()));
+	copy_hash_button->set_text("Copied");
+	copy_hash_button->set_button_icon(get_theme_icon("StatusSuccess", "EditorIcons"));
+	get_tree()->create_timer(1.5)->connect("timeout", callable_mp(this, &GitDiffDock::_show_hash_label));
 }
 
 // Scrolls the text view to the new file's line p_new_line (1-based; the first row at or after it,
@@ -319,7 +362,17 @@ void GitDiffDock::_update_header() {
 	name_label->set_text(name);
 	folder_label->set_text(path.get_base_dir());
 	const String old_path = diff.get("old_path", path);
-	source_label->set_text(old_path != path ? vformat("%s, renamed from %s", source, old_path.get_file()) : source);
+	// A commit's diff: "Commit" and its hash as a button that copies it.
+	const String commit = diff.get("commit", String());
+	const String shown_source = commit.is_empty() ? source : String("Commit");
+	source_label->set_text(old_path != path ? vformat("%s, renamed from %s", shown_source, old_path.get_file()) : shown_source);
+	copy_hash_button->set_visible(!commit.is_empty());
+	const String status = diff.get("status", String());
+	status_label->set_visible(!status.is_empty() && status != "unchanged");
+	status_label->set_text(status == "untracked" ? String("Untracked") : status_name(status));
+	status_label->add_theme_color_override("font_color", status_color(status));
+	copy_hash_button->set_tooltip_text(vformat("Copy the commit's full hash (%s)", commit));
+	_show_hash_label();
 
 	const int added = diff.get("added", 0);
 	const int removed = diff.get("removed", 0);

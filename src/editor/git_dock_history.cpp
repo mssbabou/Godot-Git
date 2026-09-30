@@ -100,8 +100,11 @@ void GitDock::_fill_history() {
 		placeholder->set_meta("git_row", "placeholder");
 		placeholder->set_selectable(0, false);
 		placeholder->set_selectable(1, false);
+		// Read before collapsing: collapsing emits item_collapsed, whose handler forgets the
+		// commit was expanded (so Show Commit, and expanded commits across a rebuild, stayed shut).
+		const bool expanded = history_expanded.has(commit["hash"]);
 		item->set_collapsed(true);
-		if (history_expanded.has(commit["hash"])) {
+		if (expanded) {
 			item->set_collapsed(false); // Loads it (item_collapsed).
 		}
 	}
@@ -289,6 +292,7 @@ void GitDock::_build_history_filters() {
 	history_search_button->set_tooltip_text("Search commits by message, author or hash.");
 	history_search_button->set_toggle_mode(true);
 	history_search_button->set_v_size_flags(SIZE_SHRINK_CENTER);
+	history_search_button->set_icon_alignment(HORIZONTAL_ALIGNMENT_CENTER);
 	history_search_button->connect("pressed", callable_mp(this, &GitDock::_on_history_search_pressed));
 	history_pane->add_title_bar_control(history_search_button);
 
@@ -490,7 +494,7 @@ void GitDock::_restore_version(const String &p_revision, const String &p_path, c
 	_reload_changed_scenes();
 }
 
-// Create Branch Here: New Branch's dialog, creating at p_hash and staying on the current branch.
+// Create Branch Here: a branch at p_hash, staying on the current branch.
 void GitDock::_show_branch_here(const String &p_hash) {
 	branch_here = p_hash;
 	branch_dialog->set_title("Create Branch Here");

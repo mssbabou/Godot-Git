@@ -59,15 +59,7 @@ GitDock::GitDock() {
 	HBoxContainer *toolbar = memnew(HBoxContainer);
 	repo_vb->add_child(toolbar);
 
-	branch_select = memnew(OptionButton);
-	branch_select->set_h_size_flags(SIZE_EXPAND_FILL);
-	branch_select->set_clip_text(true);
-	// "feature/inventory-system-re…", not cut off mid-letter.
-	branch_select->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
-	branch_select->set_fit_to_longest_item(false);
-	branch_select->set_tooltip_text("Current branch. Pick another to switch to it.");
-	branch_select->connect("item_selected", callable_mp(this, &GitDock::_on_branch_selected));
-	toolbar->add_child(branch_select);
+	_build_branch_picker(toolbar);
 
 	more_menu = memnew(MenuButton);
 	more_menu->set_flat(true);
@@ -142,7 +134,7 @@ GitDock::GitDock() {
 	add_child(switch_confirm);
 
 	branch_dialog = memnew(ConfirmationDialog);
-	branch_dialog->set_title("New Branch");
+	branch_dialog->set_title("Create Branch Here");
 	branch_dialog->set_ok_button_text("Create");
 	branch_dialog->connect("confirmed", callable_mp(this, &GitDock::_on_branch_dialog_confirmed));
 	add_child(branch_dialog);
@@ -163,6 +155,7 @@ GitDock::GitDock() {
 
 	large_confirm = _make_confirm("Large Files", "Commit Anyway", callable_mp(this, &GitDock::_on_large_confirmed));
 	revert_confirm = _make_confirm("Revert Commit", "Revert", callable_mp(this, &GitDock::_on_revert_confirmed));
+	_build_settings_dialog();
 
 	filesystem_colors = memnew(GitFileSystemColors);
 	add_child(filesystem_colors);
@@ -239,6 +232,14 @@ void GitDock::_update_icons() {
 	changes_pane.action->set_button_icon(_icon("Add"));
 	changes_pane.discard->set_button_icon(get_theme_icon("UndoRedo", "EditorIcons"));
 	history_search_button->set_button_icon(get_theme_icon("Search", "EditorIcons"));
+	// Every section header the same height, whatever sits in it (buttons, the search button,
+	// nothing): they were 36, 40 and 28 px tall, and a little more room reads better (maintainer,
+	// 2026-09-30).
+	const float header_height = Math::round(30 * EditorInterface::get_singleton()->get_editor_scale());
+	for (Control *control : { (Control *)staged_pane.buttons_margin, (Control *)changes_pane.buttons_margin, (Control *)history_search_button, stashes_header_strut }) {
+		control->set_custom_minimum_size(Vector2(control->get_custom_minimum_size().x, header_height));
+	}
+	_style_branch_button();
 	history_file_close->set_button_icon(get_theme_icon("Close", "EditorIcons"));
 
 	// The trees sit inside the panes' own panels; drop their frames so it's one surface.
@@ -314,8 +315,10 @@ void GitDock::_update_icons() {
 	}
 
 	for (FilePane *pane : { &staged_pane, &changes_pane }) {
-		pane->added->add_theme_color_override("font_color", change_color(CHANGE_ADDED));
-		pane->removed->add_theme_color_override("font_color", change_color(CHANGE_REMOVED));
+		// Line counts in the theme's own green and red, like the Diff panel's (not the softened
+		// status colors, which read washed out on numbers; maintainer, 2026-09-30).
+		pane->added->add_theme_color_override("font_color", get_theme_color("success_color", "Editor"));
+		pane->removed->add_theme_color_override("font_color", get_theme_color("error_color", "Editor"));
 		// The editor theme pads every Label on both sides, which set "+195" and "−14" two
 		// paddings apart. Without it they're the header's own spacing apart: about a space.
 		pane->added->add_theme_stylebox_override("normal", empty);
@@ -342,9 +345,6 @@ void GitDock::_build_more_menu() {
 	more->set_item_disabled(more->get_item_count() - 1, unstaged_paths.is_empty() && staged_count == 0);
 	more->set_item_tooltip(more->get_item_count() - 1, "Set every change aside, new files included, in a stash you can restore later (under Stashes).");
 	more->add_separator();
-	if (has_commits) {
-		more->add_icon_item(get_theme_icon("VcsBranches", "EditorIcons"), "New Branch...", MORE_NEW_BRANCH);
-	}
 	if (!sync_status.get("has_remotes", false)) {
 		more->add_icon_item(get_theme_icon("Add", "EditorIcons"), "Add Remote...", MORE_ADD_REMOTE);
 		more->set_item_tooltip(more->get_item_count() - 1, "Connect this repository to one on GitHub, GitLab or another host, so you can push and pull.");
@@ -352,20 +352,11 @@ void GitDock::_build_more_menu() {
 	if (more->get_item_count() > 0 && !more->is_item_separator(more->get_item_count() - 1)) {
 		more->add_separator();
 	}
-	if (sync_status.get("has_remotes", false)) {
-		more->add_check_item("Fetch Automatically", MORE_AUTO_FETCH);
-		more->set_item_checked(more->get_item_count() - 1, _is_auto_fetch_enabled());
-		more->set_item_tooltip(more->get_item_count() - 1, "Check the remote for new commits every few minutes, in the background. It never changes your files and never asks you to sign in.");
-	}
-	more->add_check_item("Mark Changed Lines in Scripts", MORE_CHANGE_MARKS);
-	more->set_item_checked(more->get_item_count() - 1, _is_change_marks_enabled());
-	more->set_item_tooltip(more->get_item_count() - 1, "Mark lines added, changed or deleted since the last commit next to the line numbers in the script editor, unsaved edits included. Click a mark to see what was there.");
-	more->add_check_item("Color Changed Files in FileSystem", MORE_FILESYSTEM_COLORS);
-	more->set_item_checked(more->get_item_count() - 1, _is_filesystem_colors_enabled());
-	more->set_item_tooltip(more->get_item_count() - 1, "Show changed files in the FileSystem dock in the colors of their status letters, and the folders holding them in a softer color.");
-	more->add_separator();
 	more->add_icon_item(get_theme_icon("Reload", "EditorIcons"), "Refresh", MORE_REFRESH);
 	more->add_icon_item(get_theme_icon("Folder", "EditorIcons"), "Open Repository Folder", MORE_OPEN_FOLDER);
+	// Preferences get a dialog of their own, not check items here: this menu is for actions.
+	more->add_icon_item(get_theme_icon("Tools", "EditorIcons"), "Settings...", MORE_SETTINGS);
+	more->set_item_tooltip(more->get_item_count() - 1, "Change marks in the script editor, colors in the FileSystem dock, and fetching in the background.");
 
 	// Where this library came from, so nobody has to take a binary on faith.
 	more->add_separator();
@@ -596,7 +587,7 @@ void GitDock::_update_actions() {
 
 	// The worker rewrites the repository during a pull or push; switching branches or bulk
 	// changes meanwhile would race it.
-	branch_select->set_disabled(syncing);
+	branch_button->set_disabled(syncing);
 	more_menu->set_disabled(syncing);
 	_update_commit_row(syncing);
 	_update_sync_row(shown != NETWORK_NONE);
@@ -614,9 +605,9 @@ void GitDock::_update_actions() {
 	staged_pane.stash->set_tooltip_text(stash_reason.is_empty() ? vformat("Stash the %s: set %s aside, to restore later from Stashes.", plural(staged_count, "staged file", "staged files"), staged_count == 1 ? "it" : "them") : stash_reason);
 
 	// Last, so the reason overrides the others: nothing else matters until it's finished.
-	branch_select->set_tooltip_text(in_operation.is_empty() ? String("Current branch. Pick another to switch to it.") : in_operation);
+	branch_button->set_tooltip_text(in_operation.is_empty() ? String("The current branch. Click to switch to another, or to create, rename or delete one.") : in_operation);
 	if (!in_operation.is_empty()) {
-		branch_select->set_disabled(true);
+		branch_button->set_disabled(true);
 		amend_check->set_disabled(true);
 		amend_check->set_tooltip_text(in_operation);
 		commit_button->set_disabled(true);
@@ -757,36 +748,14 @@ void GitDock::_on_more_menu_id(int p_id) {
 				_confirm_discard(unstaged_paths);
 			}
 		} break;
-		case MORE_NEW_BRANCH: {
-			branch_here = String();
-			branch_dialog->set_title("New Branch");
-			branch_dialog_label->set_text("Create a branch from the current commit and switch to it:");
-			branch_name_edit->clear();
-			branch_dialog->popup_centered(Vector2i(360, 0) * EditorInterface::get_singleton()->get_editor_scale());
-			branch_name_edit->grab_focus();
-		} break;
-		case MORE_AUTO_FETCH: {
-			const bool enable = !_is_auto_fetch_enabled();
-			EditorInterface::get_singleton()->get_editor_settings()->set_setting(AUTO_FETCH_SETTING, enable);
-			if (!enable && auto_fetch_failed && status_kind == STATUS_WARNING) {
-				_set_status(STATUS_IDLE, String()); // Its failure message is moot now.
-			}
-			auto_fetch_failed = false;
-			last_auto_fetch_attempt = 0;
-		} break;
 		case MORE_ADD_REMOTE: {
 			_show_remote_dialog();
 		} break;
 		case MORE_OPEN_FOLDER: {
 			OS::get_singleton()->shell_show_in_file_manager(repo->get_workdir(), true);
 		} break;
-		case MORE_CHANGE_MARKS: {
-			EditorInterface::get_singleton()->get_editor_settings()->set_setting(CHANGE_MARKS_SETTING, !_is_change_marks_enabled());
-			script_marks->set_enabled(_is_change_marks_enabled());
-		} break;
-		case MORE_FILESYSTEM_COLORS: {
-			EditorInterface::get_singleton()->get_editor_settings()->set_setting(FILESYSTEM_COLORS_SETTING, !_is_filesystem_colors_enabled());
-			refresh();
+		case MORE_SETTINGS: {
+			_show_settings_dialog();
 		} break;
 		case MORE_BUILD_INFO: {
 			const String url = String::utf8(build_url());

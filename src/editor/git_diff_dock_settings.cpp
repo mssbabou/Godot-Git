@@ -197,13 +197,10 @@ void GitDiffDock::_show_settings() {
 		TreeItem *file = companion_tree->create_item(root);
 		file->set_selectable(COLUMN_SETTING, false);
 		set_cell(file, COLUMN_SETTING, String(companion.get("path", String())).get_file(), theme.dim);
-		if (status == "new" || status == "untracked") {
-			set_cell(file, COLUMN_OLD, "New file", theme.dim);
-		} else if (status == "deleted") {
-			set_cell(file, COLUMN_OLD, "Deleted", theme.dim);
-		} else {
-			_fill_settings(companion_tree, file, companion);
-		}
+		// Its settings, also when it's new or deleted: a new script's .uid is always new, and its
+		// uid is the point (it said only "New file", maintainer 2026-09-30). New values alone, or
+		// old ones alone, say it's new or deleted, so there's no label for that (it didn't line up).
+		_fill_settings(companion_tree, file, companion);
 		for (int c = 0; c < SETTING_COLUMN_COUNT; c++) {
 			file->set_selectable(c, false);
 		}
