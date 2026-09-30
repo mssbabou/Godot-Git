@@ -1,89 +1,55 @@
 # Godot Git
 
-A Git panel for the Godot editor: stage, commit, pull, push, switch branches and review your changes without leaving Godot.
+A Git panel for the Godot editor that knows it's in Godot, and won't leave your project in a mess.
 
-![The Git dock and the Diff panel](https://raw.githubusercontent.com/mssbabou/Godot-Git/master/store/screenshot_diff.png)
+![The Git dock and the Git Diff panel](https://raw.githubusercontent.com/mssbabou/Godot-Git/master/store/screenshot_diff.png)
 
-Godot Git adds a **Git** dock next to the Inspector and a **Git Diff** panel at the bottom of the editor.
+## What it brings
 
-- **Changes**: see what's staged and unstaged, stage or discard files, commit and amend. Changed files are colored in the FileSystem dock too, and you can show or discard their changes from its right-click menu.
-- **In the script editor**: marks beside the line numbers show which lines you added, changed or deleted since the last commit, as you type. Click one to see what was there and put it back.
-- **Sync**: fetch, pull and push, with progress, Cancel, and a clear result or error that stays visible.
-- **Branches**: search your branches, see which are ahead or behind their remote, and switch, create or delete them from the branch picker. Deleting one tells you first if it would lose commits.
-- **Stash**: set what's staged (or everything) aside, see your stashes and what's in them, and restore one with a click. A restore either applies completely or refuses and names the files; it never leaves conflict markers.
-- **Git Diff panel**: click a file to see what changed, with syntax highlighting, unified or side by side. Images show before and after, and `.import` files show which import settings changed.
-- **History**: click a commit to see its message, changed files and each file's diff. Search it, or show one file's history (through renames). Right-click to undo your last commit, revert a commit, restore a file's older version, or start a branch there.
+- **Pulls that can't wreck your work.** Your uncommitted edits survive a pull: merged into your teammate's version when the lines don't overlap, otherwise the pull refuses before touching anything and tells you which files. No conflict markers dropped into your scenes, no stash you didn't ask for, no half-switched branches.
+- **Made for Godot projects.** `.uid` and `.import` files ride along with the file they belong to instead of doubling your change list. Open scenes and scripts reload after a pull or branch switch, so saving can't undo it. Import settings show as settings ("Compress › Mode  Lossless → VRAM Compressed"), images as before and after.
+- **Changes where you work.** Changed lines are marked in the script editor as you type, with a click to see or undo them. Changed files are colored in the FileSystem dock.
+- **Always says what it's doing.** Every pull, push and fetch shows progress, can be canceled, and leaves a result or error that stays until you've read it.
+- **Sign in without a terminal.** Private repositories open a browser sign-in once (through Git Credential Manager). SSH, hooks, commit signing and Git LFS work as they do in a terminal.
+- **Native and fast.** C++ on [libgit2](https://libgit2.org/): no git process per click, no polling, quick with thousands of changed files.
 
-**Sign in from the panel.** Pull or push a private repository and, with Git Credential Manager (included with Git for Windows), your browser opens to sign in once. No terminal, no tokens to paste. SSH uses your own keys and config, and hooks, commit signing and Git LFS work as they do in a terminal.
-
-**It won't leave you in a mess.** A pull keeps your uncommitted work: if a teammate changed a file you're editing, your edit is merged into their version when the lines don't overlap, and if they do, the pull refuses up front and names the files. It never hides your changes in a stash or leaves conflict markers in them. A branch switch that can't finish (a file open in another program, say) puts everything back, and conflicting merges are fully undone.
-
-**Native and fast.** Built in C++ on [libgit2](https://libgit2.org/): no git process per click, no polling, and it stays quick with thousands of changed files. Stage, commit, branch and history work even without git installed; the panel tells you when something needs it.
-
-This is its own panel, not a backend for Godot's built-in version control dock (unlike the official Godot Git Plugin).
+Plus the everyday things: stage, commit, amend, fetch, pull, push; branches with search and ahead/behind; stash; history with search, one file's history, undo last commit, revert and restore.
 
 ## Install
 
-1. Download `godot_git-<version>.zip` from the [releases](https://github.com/mssbabou/Godot-Git/releases), or get Godot Git from the Godot Asset Store.
+1. Download `godot_git-<version>.zip` from the [releases](https://github.com/mssbabou/Godot-Git/releases), or get it from the Godot Asset Store.
 2. Extract it into your project, so you get `res://addons/godot_git/`.
-3. Open (or restart) the editor. The **Git** tab appears next to the Inspector.
+3. Restart the editor. The **Git** tab appears next to the Inspector, **Git Diff** at the bottom.
 
-**Requirements:** Godot 4.7 or newer, on Windows (x86_64, arm64), Linux (x86_64, arm64, glibc 2.34+) or macOS (10.13+ Intel, 11+ Apple Silicon). Installing [git](https://git-scm.com) is recommended: sign-ins, SSH, LFS, hooks and signing need it.
+Needs Godot 4.7+ on Windows, Linux (glibc 2.34+) or macOS (10.13+). Installing [git](https://git-scm.com) is recommended: sign-ins, SSH, LFS, hooks and signing use it.
 
-**Settings:** the script editor marks, FileSystem colors and automatic fetching are on by default. Turn any of them off under *⋮ → Settings...* in the dock (they're also in Editor Settings under *Godot Git → Settings*, with *Advanced Settings* on).
+## Build it yourself
 
-**Exports on Godot 4.7:** the plugin only runs in the editor. Add `addons/godot_git/*` to your export preset's *Resources → Filters to exclude files*, or exports warn and the game logs one harmless error. From Godot 4.8 this is automatic.
-
-**macOS, zip downloaded in a browser:** macOS may block the library. Run `xattr -dr com.apple.quarantine addons/godot_git` in your project folder, or allow it under *System Settings → Privacy & Security*.
-
-## Verifying a download
-
-The plugin is a compiled library, so you can't read it like a GDScript plugin. Instead, every release proves where it came from:
-
-- **Built in public.** Releases are built by this repository's [GitHub Actions](https://github.com/mssbabou/Godot-Git/blob/master/.github/workflows/build.yml) from a tagged commit, from scratch (no cached build output), after the tests pass on all five platforms. Nobody uploads a binary by hand, and published releases are immutable: their files can't be replaced afterwards.
-- **Signed build attestations.** Each release zip and each library in it has a signed record, kept in a public log, saying which commit and which build made it. With the [GitHub CLI](https://cli.github.com/):
-
-  ```bash
-  gh attestation verify godot_git-v0.4.0.zip --repo mssbabou/Godot-Git
-  ```
-
-  This works on an installed copy too, e.g. `addons/godot_git/bin/windows/libgodot_git.windows.editor.x86_64.dll`. It fails if a single byte differs.
-- **Checksums.** Each release has a `SHA256SUMS` file covering the zip and every library, with paths as they are in a project. From your project folder (on Windows, in Git Bash): `sha256sum -c SHA256SUMS --ignore-missing`.
-- **In the editor.** The last item in the dock's ⋮ menu says what you're running, e.g. "Godot Git v0.4.0 · Built by GitHub from 5cbbd8d", and opens that build's public log. A build you made yourself says "Local Build".
-
-The dependencies are official, pinned releases: libgit2 1.9.7 and godot-cpp 10.0.0 (git submodules in `thirdparty/`).
-
-Releases up to v0.3.0 were made before this process and have no attestations.
-
-## Building from source
-
-The first build takes a few minutes, because it also compiles libgit2. Later builds only recompile what changed.
-
-**1. Install the tools**
-
-- **Windows:** [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) (2022 or newer) with the *Desktop development with C++* workload, [Python 3](https://www.python.org/downloads/), [CMake](https://cmake.org/download/) and [git](https://git-scm.com). Then `pip install scons`.
-- **Linux** (Debian/Ubuntu): `sudo apt install build-essential cmake python3-pip git`, then `pip install scons`. On Arch: `sudo pacman -S base-devel cmake scons git`.
-- **macOS:** `xcode-select --install`, then `brew install cmake scons`.
-
-**2. Get the source**, including the submodules:
+Rather not run a binary you didn't build? It's three commands:
 
 ```bash
 git clone --recursive https://github.com/mssbabou/Godot-Git.git
 cd Godot-Git
-```
-
-**3. Build the zip:**
-
-```bash
 scons package
 ```
 
-This writes `dist/godot_git-<version>.zip`, ready to extract into a project like a downloaded release. It contains the library for the platform you built on only. A zip for every platform needs a build on each; the [CI workflow](https://github.com/mssbabou/Godot-Git/blob/master/.github/workflows/build.yml) does exactly that, and `python tools/package.py --require-all` packages the results.
+That writes `dist/godot_git-<version>.zip` for your platform, ready to extract into a project. The first build takes a few minutes (it compiles libgit2 too). Plain `scons` builds into `project/`, a test project with the plugin installed.
 
-Plain `scons` builds the library into `project/addons/godot_git/bin/` without zipping. `project/` is a development project with the plugin installed; open it with Godot to try your build.
+You need a C++ compiler, Python 3 with SCons, CMake and git:
+- **Windows:** [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/) with *Desktop development with C++*, [Python](https://www.python.org/downloads/), [CMake](https://cmake.org/download/), then `pip install scons`.
+- **Linux:** `sudo apt install build-essential cmake python3-pip git && pip install scons` (Arch: `sudo pacman -S base-devel cmake scons git`).
+- **macOS:** `xcode-select --install`, then `brew install cmake scons`.
 
-Your own build is not byte-for-byte identical to a release (compilers embed paths and timestamps). To check a release, use its attestation (above), not a rebuild.
+## Good to know
+
+- **Settings:** script editor marks, FileSystem colors and automatic fetching are on by default; turn them off under *⋮ → Settings...*.
+- **Exports on Godot 4.7:** add `addons/godot_git/*` to your export preset's *Filters to exclude files*, or the game logs one harmless error. Automatic from Godot 4.8.
+- **macOS, zip from a browser:** if macOS blocks the library, run `xattr -dr com.apple.quarantine addons/godot_git` in your project folder.
 
 ## License
 
-MIT, see [LICENSE](https://github.com/mssbabou/Godot-Git/blob/master/LICENSE). The release zips also include the licenses of [libgit2](https://libgit2.org/) (GPLv2 with linking exception) and [godot-cpp](https://github.com/godotengine/godot-cpp) (MIT).
+MIT, see [LICENSE](https://github.com/mssbabou/Godot-Git/blob/master/LICENSE). Release zips include the licenses of libgit2 (GPLv2 with linking exception) and godot-cpp (MIT).
+
+---
+
+<sub>**Verifying a release:** releases are built from a tagged commit by this repository's public [CI](https://github.com/mssbabou/Godot-Git/blob/master/.github/workflows/build.yml), with signed build attestations (`gh attestation verify godot_git-<version>.zip --repo mssbabou/Godot-Git`) and a `SHA256SUMS` file. The last item in the dock's ⋮ menu says which build you're running.</sub>
