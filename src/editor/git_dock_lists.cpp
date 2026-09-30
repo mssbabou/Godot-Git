@@ -391,11 +391,15 @@ void GitDock::_align_header_buttons() {
 			continue;
 		}
 		// Flush with the rows' right edge, above the status letters (see _draw_file_row), known
-		// once a row has been drawn.
-		if (!first->has_meta("git_row_right")) {
+		// once a row has been drawn. Measured from the section's right edge, which doesn't depend
+		// on the dock's width: when this header is the widest thing in a dock at its minimum width,
+		// the margin set here widens the dock, and a position recorded at the last draw was then
+		// off by that much. The margin flipped between values forever within one frame, until
+		// Godot's message queue overflowed and the editor crashed (the smoke test, 2026-09-30).
+		if (!first->has_meta("git_row_inset")) {
 			continue;
 		}
-		const float rows_right = tree->get_global_position().x + float(first->get_meta("git_row_right"));
+		const float rows_right = section->get_global_position().x + section->get_size().x - float(first->get_meta("git_row_inset"));
 		const float buttons_right = pane->buttons->get_global_position().x + pane->buttons->get_size().x;
 		const int margin = pane->buttons_margin->get_theme_constant("margin_right");
 		const int aligned = MAX(0, (int)Math::round(margin + buttons_right - rows_right));
@@ -442,9 +446,10 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 	const Color color = _status_color(state);
 	if (pane) {
 		// The header's "all" buttons end where the letters do (see _align_header_buttons).
-		if (float(p_item->get_meta("git_row_right", -1.0f)) != right) {
-			p_item->set_meta("git_row_right", right);
-			_queue_align_header_buttons(); // Depends only on the tree's width, so it settles.
+		const float inset = pane->container->get_global_position().x + pane->container->get_size().x - (tree->get_global_position().x + right);
+		if (float(p_item->get_meta("git_row_inset", -1.0f)) != inset) {
+			p_item->set_meta("git_row_inset", inset);
+			_queue_align_header_buttons();
 		}
 		const float letter_width = font->get_string_size("M", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
 		const String letter = status_letter(state);

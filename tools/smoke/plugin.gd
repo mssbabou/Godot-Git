@@ -283,8 +283,8 @@ func _run() -> void:
 	_check(counted, "line counts arrive after an edit")
 
 	# Stash last, and driven by timers, not await: stashing changes files on disk, scripts among
-	# them, and Godot then reloads scripts, which cancels every await in progress (this script's
-	# too; it then spun on "Object was deleted while awaiting a callback" until the editor crashed).
+	# them, and Godot then reloads scripts, which may cancel awaits in progress (unproven; the crash
+	# that suggested it was a layout loop in the dock, fixed in _align_header_buttons).
 	get_tree().root.set_meta("smoke_failures", failures)
 	_stash_press()
 
