@@ -258,7 +258,10 @@ enabled=PackedStringArray(%s)
     git("commit", "-q", "-am", "Make enemies hit harder", "-m", "Playtesters walked straight through them.", "-m", "Two damage makes them worth avoiding.")
     git("checkout", "-q", "-b", "hud")
     write("hud.gd", HUD)
-    write("hud.gd.uid", "uid://c8hudplayground\n")  # Shown on hud.gd's row in History ("+uid").
+    # Shown on hud.gd's row in History ("+uid"). A real uid: at most 13 characters of a-y and 0-8.
+    # A longer made-up one overflowed, and Godot's churn over it crashed the smoke test's stash step
+    # now and then.
+    write("hud.gd.uid", "uid://b8hud4pl4ygr\n")
     git("add", "hud.gd", "hud.gd.uid")
     git("commit", "-q", "-m", "Add a health HUD")
     git("checkout", "-q", "main")

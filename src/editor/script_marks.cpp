@@ -57,6 +57,8 @@ GitScriptMarks::GitScriptMarks() {
 
 void GitScriptMarks::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("show_in_diff_requested", PropertyInfo(Variant::STRING, "path")));
+	ADD_SIGNAL(MethodInfo("history_requested", PropertyInfo(Variant::STRING, "path")));
+	ADD_SIGNAL(MethodInfo("line_commit_requested", PropertyInfo(Variant::STRING, "path"), PropertyInfo(Variant::STRING, "text"), PropertyInfo(Variant::INT, "line")));
 	// For the smoke test.
 	ClassDB::bind_method(D_METHOD("get_hunks", "code_edit"), &GitScriptMarks::get_hunks);
 	ClassDB::bind_method(D_METHOD("get_hunk_at", "code_edit", "line"), &GitScriptMarks::get_hunk_at);
@@ -364,9 +366,21 @@ int GitScriptMarks::get_hunk_at(CodeEdit *p_code_edit, int p_line) const {
 	return tab->hunk_at[p_line];
 }
 
+// The script's repository path. From its tab, or (with change marks off, so no tabs are tracked)
+// from the script editor, when p_code_edit is its current tab's.
 String GitScriptMarks::get_path(CodeEdit *p_code_edit) const {
 	const Tab *tab = p_code_edit ? tabs.getptr(p_code_edit->get_instance_id()) : nullptr;
-	return tab ? tab->path : String();
+	if (tab) {
+		return tab->path;
+	}
+	ScriptEditor *script_editor = EditorInterface::get_singleton()->get_script_editor();
+	ScriptEditorBase *current = script_editor ? script_editor->get_current_editor() : nullptr;
+	if (!p_code_edit || !current || current->get_base_editor() != p_code_edit || repo.is_null() || !repo->is_open()) {
+		return String();
+	}
+	const Ref<Script> script = script_editor->get_current_script();
+	const String res_path = script.is_valid() ? script->get_path() : String();
+	return res_path.is_empty() || res_path.contains("::") ? String() : _repo_path(res_path);
 }
 
 void GitScriptMarks::show_preview(CodeEdit *p_code_edit, int p_hunk) {
@@ -673,13 +687,33 @@ CodeEdit *GitScriptMenu::_code_edit_from(const Variant &p_target) {
 void GitScriptMenu::_popup_menu(const PackedStringArray &p_paths) {
 	GitScriptMarks *script_marks = _get_marks();
 	CodeEdit *code_edit = _code_edit_from(p_paths);
-	if (!script_marks || !code_edit || script_marks->get_hunk_at(code_edit, code_edit->get_caret_line()) < 0) {
-		return;
+	if (!script_marks || !code_edit || script_marks->get_path(code_edit).is_empty()) {
+		return; // Not a script in the repository.
 	}
 	const Ref<Theme> theme = EditorInterface::get_singleton()->get_editor_theme();
-	add_context_menu_item("Show Change", callable_mp(this, &GitScriptMenu::_show_change));
-	add_context_menu_item("Revert Change", callable_mp(this, &GitScriptMenu::_revert), theme->get_icon("UndoRedo", "EditorIcons"));
-	add_context_menu_item("Show in Diff", callable_mp(this, &GitScriptMenu::_show_in_diff), theme->get_icon("VCSCommit", "EditorIcons"));
+	if (script_marks->get_hunk_at(code_edit, code_edit->get_caret_line()) >= 0) {
+		add_context_menu_item("Show Change", callable_mp(this, &GitScriptMenu::_show_change));
+		add_context_menu_item("Revert Change", callable_mp(this, &GitScriptMenu::_revert), theme->get_icon("UndoRedo", "EditorIcons"));
+		add_context_menu_item("Show in Diff", callable_mp(this, &GitScriptMenu::_show_in_diff), theme->get_icon("VCSCommit", "EditorIcons"));
+	}
+	add_context_menu_item("Show Commit for This Line", callable_mp(this, &GitScriptMenu::_line_commit), theme->get_icon("VCSCommit", "EditorIcons"));
+	add_context_menu_item("Show History of This File", callable_mp(this, &GitScriptMenu::_file_history), theme->get_icon("History", "EditorIcons"));
+}
+
+void GitScriptMenu::_line_commit(const Variant &p_target) {
+	GitScriptMarks *script_marks = _get_marks();
+	CodeEdit *code_edit = _code_edit_from(p_target);
+	if (script_marks && code_edit) {
+		script_marks->emit_signal("line_commit_requested", script_marks->get_path(code_edit), code_edit->get_text(), code_edit->get_caret_line());
+	}
+}
+
+void GitScriptMenu::_file_history(const Variant &p_target) {
+	GitScriptMarks *script_marks = _get_marks();
+	CodeEdit *code_edit = _code_edit_from(p_target);
+	if (script_marks && code_edit) {
+		script_marks->emit_signal("history_requested", script_marks->get_path(code_edit));
+	}
 }
 
 void GitScriptMenu::_show_change(const Variant &p_target) {

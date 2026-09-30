@@ -23,6 +23,10 @@ void GitFileSystemMenu::_popup_menu(const PackedStringArray &p_paths) {
 	const PackedStringArray staged = git_dock->get_changed_paths(p_paths, true);
 	const Ref<Theme> theme = EditorInterface::get_singleton()->get_editor_theme();
 
+	// One file: the commits that changed it.
+	if (p_paths.size() == 1 && !p_paths[0].ends_with("/") && !git_dock->get_repo_path(p_paths[0]).is_empty()) {
+		add_context_menu_item("Show History", callable_mp(this, &GitFileSystemMenu::_show_history), theme->get_icon("History", "EditorIcons"));
+	}
 	// One file: its diff. A folder's changes are too many to show as one.
 	if (p_paths.size() == 1 && !p_paths[0].ends_with("/") && (!unstaged.is_empty() || !staged.is_empty())) {
 		add_context_menu_item("Show Uncommitted Changes", callable_mp(this, &GitFileSystemMenu::_show_change), theme->get_icon("VCSCommit", "EditorIcons"));
@@ -45,6 +49,13 @@ void GitFileSystemMenu::_show_change(const PackedStringArray &p_paths) {
 	}
 	if (!paths.is_empty()) {
 		git_dock->show_change(paths[0]);
+	}
+}
+
+void GitFileSystemMenu::_show_history(const PackedStringArray &p_paths) {
+	GitDock *git_dock = _get_dock();
+	if (git_dock && !p_paths.is_empty()) {
+		git_dock->show_file_history(git_dock->get_repo_path(p_paths[0]));
 	}
 }
 

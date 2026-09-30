@@ -15,6 +15,7 @@ class GitFileSystemMenu : public EditorContextMenuPlugin {
 
 	GitDock *_get_dock() const;
 	void _show_change(const PackedStringArray &p_paths);
+	void _show_history(const PackedStringArray &p_paths);
 	void _discard(const PackedStringArray &p_paths);
 
 protected:

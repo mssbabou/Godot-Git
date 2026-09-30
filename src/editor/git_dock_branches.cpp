@@ -169,6 +169,17 @@ void GitDock::_on_branch_dialog_confirmed() {
 	if (name.is_empty()) {
 		return;
 	}
+	if (!branch_here.is_empty()) {
+		const String hash = branch_here;
+		branch_here = String();
+		const Error err = repo->create_branch_at(name, hash);
+		_report(err, "Create branch");
+		refresh();
+		if (err == OK) {
+			_set_status(STATUS_SUCCESS, vformat("Created branch %s at %s (switch to it from the branch picker)", name, hash.left(7)));
+		}
+		return;
+	}
 	_report(repo->create_branch(name), "Create branch");
 	refresh();
 }

@@ -29,7 +29,7 @@ class GitRepository : public RefCounted {
 	// get_commits' last result, and what it depended on (HEAD and every branch's commit): reading
 	// history is slow in big repositories (150 ms in Godot's own), and most refreshes change neither.
 	mutable String commits_key;
-	mutable Array commits_cache;
+	mutable Dictionary commits_cache; // "max|path|query" -> the commits.
 	bool login_prompts_allowed = true;
 
 	void close();
@@ -62,7 +62,9 @@ public:
 	Array get_stash_files(const String &p_hash) const;
 	Dictionary get_stash_diff(const String &p_hash, const String &p_path) const;
 	Dictionary get_file_bytes(const String &p_version, const String &p_path) const;
-	Array get_commits(int p_max_count) const;
+	Array get_commits(int p_max_count, const String &p_path = String(), const String &p_query = String()) const;
+	Dictionary get_commit(const String &p_revision) const;
+	Dictionary get_line_commit(const String &p_path, const String &p_text, int p_line) const;
 	bool uses_lfs() const;
 	bool has_file_at(const String &p_revision, const String &p_path) const;
 	Dictionary get_git_needs() const;
@@ -86,6 +88,10 @@ public:
 	bool is_head_pushed() const;
 	Error checkout_branch(const String &p_branch);
 	Error create_branch(const String &p_name);
+	Error create_branch_at(const String &p_name, const String &p_hash);
+	Error restore_file_version(const String &p_revision, const String &p_path);
+	Error undo_last_commit();
+	Error revert_commit(const String &p_hash);
 	Error rename_branch(const String &p_branch, const String &p_new_name);
 	Error delete_branch(const String &p_branch);
 	Error add_remote(const String &p_name, const String &p_url);

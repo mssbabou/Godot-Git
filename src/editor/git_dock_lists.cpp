@@ -55,6 +55,7 @@ void GitDock::_build_lists(Control *p_parent) {
 	history_tree->connect("item_selected", callable_mp(this, &GitDock::_on_history_item_selected));
 	history_tree->connect("item_collapsed", callable_mp(this, &GitDock::_on_history_item_collapsed));
 	history_empty = _make_body(history_pane, history_tree);
+	_build_history_filters();
 
 	stats_slow_timer = memnew(Timer);
 	stats_slow_timer->set_one_shot(true);

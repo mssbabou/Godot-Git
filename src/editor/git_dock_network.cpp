@@ -60,7 +60,7 @@ void GitDock::_run_network(NetworkOp p_op, bool p_quiet) {
 	network_ahead = sync_status.get("ahead", 0);
 	network_publish = p_op == NETWORK_PUSH && String(sync_status.get("upstream", String())).is_empty();
 	_update_actions();
-	if (p_op == NETWORK_PULL || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE) {
+	if (p_op == NETWORK_PULL || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT) {
 		_remember_open_scenes(); // To reload the ones it rewrites; see _reload_changed_scenes.
 	}
 
@@ -71,7 +71,7 @@ void GitDock::_run_network(NetworkOp p_op, bool p_quiet) {
 	}
 
 	network_thread.instantiate();
-	const String text = p_op == NETWORK_COMMIT ? network_commit_message : network_branch;
+	const String text = p_op == NETWORK_COMMIT ? network_commit_message : (p_op == NETWORK_REVERT ? pending_revert : network_branch);
 	network_thread->start(callable_mp(this, &GitDock::_network_worker).bind(p_op, repo->get_workdir(), p_quiet, text, network_amend));
 }
 
@@ -123,6 +123,8 @@ String GitDock::_network_description(int p_op) const {
 			return String(operation.get("kind", String())) == "bisect" ? String("Ending the bisect") : vformat("Aborting the %s", _operation_name());
 		case NETWORK_CONTINUE:
 			return String(operation.get("kind", String())) == "merge" ? String("Committing the merge") : vformat("Continuing the %s", _operation_name());
+		case NETWORK_REVERT:
+			return vformat("Reverting \"%s\"", pending_revert_summary);
 	}
 	return String();
 }
@@ -158,6 +160,9 @@ void GitDock::_network_worker(int p_op, const String &p_workdir, bool p_quiet, c
 			case NETWORK_CONTINUE:
 				err = worker_repo->continue_operation();
 				break;
+			case NETWORK_REVERT:
+				err = worker_repo->revert_commit(p_text);
+				break;
 		}
 	}
 	const String message = err == OK ? String() : GitRepository::get_last_error();
@@ -184,7 +189,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	network_quiet = false;
 
 	// A pull or switch can change files on disk. Refresh first: the result below uses the new counts.
-	if ((p_op == NETWORK_PULL || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE) && p_err == OK) {
+	if ((p_op == NETWORK_PULL || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT) && p_err == OK) {
 		EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 	}
 	refresh();
@@ -213,7 +218,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	if (p_op == NETWORK_COMMIT && p_err != OK) {
 		push_after_commit = false;
 	}
-	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit", "Abort", "Continue" };
+	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit", "Abort", "Continue", "Revert" };
 	if (p_err == ERR_SKIP && p_op == NETWORK_COMMIT) {
 		// A post-commit hook may have been running: don't claim nothing happened. History shows it.
 		_set_status(STATUS_NEUTRAL, "Commit canceled.");
@@ -288,6 +293,11 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			} else {
 				_set_status(STATUS_SUCCESS, network_operation == "merge" ? String("Committed the merge") : vformat("Finished the %s", network_operation));
 			}
+			_reload_changed_scenes();
+		} break;
+		case NETWORK_REVERT: {
+			_set_status(STATUS_SUCCESS, vformat("Reverted \"%s\" in a new commit, %s", pending_revert_summary, repo->get_commit("HEAD").get("id", String())));
+			pending_revert = String();
 			_reload_changed_scenes();
 		} break;
 		case NETWORK_COMMIT: {

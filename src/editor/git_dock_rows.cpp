@@ -229,9 +229,32 @@ void GitDock::_on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_but
 bool GitDock::_build_commit_menu() {
 	const String row = row_kind(history_tree->get_selected());
 	if (row == "commit") {
+		const Dictionary commit = history_tree->get_selected()->get_metadata(0);
+		const bool busy = _in_operation() || network_op != NETWORK_NONE;
+		// The last commit can be taken back while it's only here (like Amend).
+		if (String(commit["hash"]) == String(sync_status.get("head", String()))) {
+			context_menu->add_icon_item(get_theme_icon("UndoRedo", "EditorIcons"), "Undo Last Commit", MENU_UNDO_COMMIT);
+			String why;
+			if (busy) {
+				why = _in_operation() ? vformat("Not while a %s is in progress.", _operation_name()) : String("Not while another operation runs.");
+			} else if (!bool(commit["unpushed"]) && bool(sync_status.get("has_remotes", false))) {
+				why = "It's already pushed, so undoing it here would leave your teammates with a commit you no longer have. Revert it instead.";
+			} else if (bool(commit.get("merge", false))) {
+				why = "It's a merge; undoing merges isn't supported here.";
+			} else if (repo->get_commits(2).size() < 2) {
+				why = "It's the first commit, so there's nothing to go back to.";
+			}
+			context_menu->set_item_disabled(-1, !why.is_empty());
+			context_menu->set_item_tooltip(-1, why.is_empty() ? String("Take this commit back: the branch moves back one commit, and its changes wait in Staged Changes (with its message in the box) to be committed again.") : why);
+		}
+		context_menu->add_icon_item(get_theme_icon("Reload", "EditorIcons"), "Revert Commit...", MENU_REVERT_COMMIT);
+		context_menu->set_item_disabled(-1, busy);
+		context_menu->set_item_tooltip(-1, busy ? String("Not while another operation is in progress.") : String("Add a new commit that undoes this one's changes. Safe for pushed commits: nothing is rewritten."));
+		context_menu->add_icon_item(get_theme_icon("VcsBranches", "EditorIcons"), "Create Branch Here...", MENU_BRANCH_HERE);
+		context_menu->set_item_tooltip(-1, "Create a branch at this commit, to go back to it or try something from there. You stay on the current branch.");
+		context_menu->add_separator();
 		context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Commit Hash", MENU_COPY_HASH);
 		context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Commit Message", MENU_COPY_MESSAGE);
-		const Dictionary commit = history_tree->get_selected()->get_metadata(0);
 		const String url = _web_commit_url(commit["hash"]);
 		if (!url.is_empty()) {
 			// Only offered for GitHub, GitLab and Bitbucket; before it's pushed there's no page yet.
@@ -245,6 +268,23 @@ bool GitDock::_build_commit_menu() {
 		return true;
 	}
 	if (row == "file") {
+		TreeItem *file = history_tree->get_selected();
+		const String state = file->get_meta("git_state", String());
+		const String hash = file->get_meta("git_hash", String());
+		const String short_hash = hash.left(7);
+		context_menu->add_icon_item(get_theme_icon("History", "EditorIcons"), "Show History of This File", MENU_SHOW_HISTORY);
+		context_menu->add_separator();
+		// Restoring puts a version back as an uncommitted change. A deleted file has no version in
+		// the commit that deleted it; a renamed one's earlier version has another name.
+		if (state != "deleted") {
+			context_menu->add_icon_item(get_theme_icon("UndoRedo", "EditorIcons"), "Restore This Version", MENU_RESTORE_VERSION);
+			context_menu->set_item_tooltip(-1, vformat("Put the file back as it was in %s, as an uncommitted change you can look at, commit or discard.", short_hash));
+		}
+		if (state != "renamed") {
+			context_menu->add_icon_item(get_theme_icon("UndoRedo", "EditorIcons"), "Restore Version Before This Commit", MENU_RESTORE_BEFORE);
+			context_menu->set_item_tooltip(-1, state == "new" ? vformat("The file didn't exist before %s, so this deletes it (as an uncommitted change).", short_hash) : vformat("Put the file back as it was before %s, as an uncommitted change.", short_hash));
+		}
+		context_menu->add_separator();
 		context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Path", MENU_COPY_PATH);
 		context_menu->add_icon_item(get_theme_icon("ActionCopy", "EditorIcons"), "Copy Relative Path", MENU_COPY_RELATIVE_PATH);
 		return true;
@@ -265,6 +305,8 @@ bool GitDock::_build_file_menu(Tree *p_tree) {
 
 	if (single) {
 		context_menu->add_icon_item(get_theme_icon("Load", "EditorIcons"), "Open", MENU_OPEN);
+		context_menu->add_icon_item(get_theme_icon("History", "EditorIcons"), "Show History", MENU_SHOW_HISTORY);
+		context_menu->set_item_tooltip(-1, "Show the commits that changed this file, in History.");
 		context_menu->add_separator();
 	}
 	if (pane->staged) {
@@ -342,6 +384,31 @@ void GitDock::_on_context_menu_id(int p_id) {
 		case MENU_COPY_MESSAGE: {
 			const Dictionary commit = history_tree->get_selected()->get_metadata(0);
 			DisplayServer::get_singleton()->clipboard_set(commit[p_id == MENU_COPY_HASH ? "hash" : "message"]);
+		} break;
+		case MENU_SHOW_HISTORY: {
+			if (!paths.is_empty()) {
+				show_file_history(paths[0]);
+			}
+		} break;
+		case MENU_RESTORE_VERSION:
+		case MENU_RESTORE_BEFORE: {
+			TreeItem *file = history_tree->get_selected();
+			if (row_kind(file) == "file") {
+				const String hash = file->get_meta("git_hash");
+				const bool before = p_id == MENU_RESTORE_BEFORE;
+				_restore_version(before ? hash + String("^1") : hash, file->get_meta("git_path"), vformat(before ? "as it was before %s" : "as it was in %s", hash.left(7)));
+			}
+		} break;
+		case MENU_UNDO_COMMIT: {
+			_undo_last_commit();
+		} break;
+		case MENU_REVERT_COMMIT: {
+			const Dictionary commit = history_tree->get_selected()->get_metadata(0);
+			_confirm_revert(commit["hash"], commit["summary"]);
+		} break;
+		case MENU_BRANCH_HERE: {
+			const Dictionary commit = history_tree->get_selected()->get_metadata(0);
+			_show_branch_here(commit["hash"]);
 		} break;
 		case MENU_OPEN_ON_WEB: {
 			const Dictionary commit = history_tree->get_selected()->get_metadata(0);

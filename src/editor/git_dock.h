@@ -59,6 +59,12 @@ class GitDock : public EditorDock {
 		MENU_OPEN_ON_WEB,
 		MENU_RESTORE_STASH,
 		MENU_DELETE_STASH,
+		MENU_SHOW_HISTORY,
+		MENU_RESTORE_VERSION,
+		MENU_RESTORE_BEFORE,
+		MENU_UNDO_COMMIT,
+		MENU_REVERT_COMMIT,
+		MENU_BRANCH_HERE,
 		// "More" (⋮) menu.
 		MORE_REFRESH,
 		MORE_STAGE_ALL,
@@ -92,6 +98,7 @@ class GitDock : public EditorDock {
 		NETWORK_COMMIT, // Committing through git, because hooks run or commits get signed.
 		NETWORK_ABORT, // Aborting an operation left in progress (a merge, rebase, ...), through git.
 		NETWORK_CONTINUE, // Continuing one once its conflicts are resolved (hooks may run).
+		NETWORK_REVERT, // Reverting a commit: a new commit, so hooks may run.
 	};
 
 	// What the status strip is showing.
@@ -183,6 +190,22 @@ class GitDock : public EditorDock {
 	bool history_more = false;
 	Dictionary history_expanded; // Hashes of expanded commits, kept across rebuilds.
 	Dictionary commit_files; // Hash -> get_commit_files(). Commits never change, so it's kept.
+	// History's filters (git_dock_history.cpp): a search, and one file's commits.
+	Button *history_search_button = nullptr; // In History's header; opens the search field.
+	Control *history_search_row = nullptr;
+	LineEdit *history_search = nullptr;
+	Timer *history_search_timer = nullptr; // Searches a moment after typing stops.
+	String history_query;
+	Control *history_file_bar = nullptr; // "History of player.gd", with a button that ends it.
+	TextureRect *history_file_icon = nullptr;
+	Label *history_file_label = nullptr;
+	Button *history_file_close = nullptr;
+	String history_path; // The file whose commits History shows (repository path), or "" for all.
+	ConfirmationDialog *revert_confirm = nullptr;
+	String pending_revert; // The commit a NETWORK_REVERT reverts.
+	String pending_revert_summary;
+	String branch_here; // The commit New Branch creates at (Create Branch Here), or "" for HEAD.
+	Label *branch_dialog_label = nullptr;
 
 	// Stashes: a section that only shows while there are stashes (git_dock_stashes.cpp).
 	FoldableContainer *stashes_pane = nullptr;
@@ -391,6 +414,18 @@ class GitDock : public EditorDock {
 	void _fill_commit_later(uint64_t p_item);
 	void _load_more_commits();
 	void _on_history_item_selected();
+	void _build_history_filters();
+	void _on_history_search_pressed();
+	void _on_history_search_changed(const String &p_text);
+	void _on_history_search_input(const Ref<InputEvent> &p_event);
+	void _apply_history_search();
+	void _set_history_filter(const String &p_path, const String &p_query);
+	void _scroll_to_history();
+	void _undo_last_commit();
+	void _confirm_revert(const String &p_hash, const String &p_summary);
+	void _on_revert_confirmed();
+	void _restore_version(const String &p_revision, const String &p_path, const String &p_what);
+	void _show_branch_here(const String &p_hash);
 
 	// git_dock_stashes.cpp: stashing, and the Stashes section.
 	void _build_stashes(Control *p_parent);
@@ -481,6 +516,10 @@ public:
 	void show_change(const String &p_path);
 	void discard_changes(const PackedStringArray &p_paths);
 	GitScriptMarks *get_script_marks() const { return script_marks; }
+	String get_repo_path(const String &p_res_path) const;
+	void show_file_history(const String &p_path);
+	void show_commit(const String &p_hash);
+	void show_line_commit(const String &p_path, const String &p_text, int p_line);
 
 	GitDock();
 };

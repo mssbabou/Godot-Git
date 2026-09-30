@@ -79,7 +79,13 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_commit_files", "hash"), &GitRepository::get_commit_files);
 	ClassDB::bind_method(D_METHOD("get_commit_diff", "hash", "path"), &GitRepository::get_commit_diff);
 	ClassDB::bind_method(D_METHOD("get_file_bytes", "version", "path"), &GitRepository::get_file_bytes);
-	ClassDB::bind_method(D_METHOD("get_commits", "max_count"), &GitRepository::get_commits, DEFVAL(50));
+	ClassDB::bind_method(D_METHOD("get_commits", "max_count", "path", "query"), &GitRepository::get_commits, DEFVAL(50), DEFVAL(String()), DEFVAL(String()));
+	ClassDB::bind_method(D_METHOD("get_commit", "revision"), &GitRepository::get_commit);
+	ClassDB::bind_method(D_METHOD("get_line_commit", "path", "text", "line"), &GitRepository::get_line_commit);
+	ClassDB::bind_method(D_METHOD("create_branch_at", "name", "hash"), &GitRepository::create_branch_at);
+	ClassDB::bind_method(D_METHOD("restore_file_version", "revision", "path"), &GitRepository::restore_file_version);
+	ClassDB::bind_method(D_METHOD("undo_last_commit"), &GitRepository::undo_last_commit);
+	ClassDB::bind_method(D_METHOD("revert_commit", "hash"), &GitRepository::revert_commit);
 	ClassDB::bind_method(D_METHOD("uses_lfs"), &GitRepository::uses_lfs);
 	ClassDB::bind_method(D_METHOD("has_file_at", "revision", "path"), &GitRepository::has_file_at);
 	ClassDB::bind_method(D_METHOD("get_git_needs"), &GitRepository::get_git_needs);
@@ -140,7 +146,7 @@ GitRepository::~GitRepository() {
 
 void GitRepository::close() {
 	commits_key = String();
-	commits_cache = Array();
+	commits_cache = Dictionary();
 	if (repo) {
 		release_lfs(repo);
 		git_repository_free(repo);

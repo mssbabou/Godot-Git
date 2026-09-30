@@ -3,8 +3,20 @@
 
 #include "editor/git_dock.h"
 
+#include <godot_cpp/classes/button.hpp>
+#include <godot_cpp/classes/editor_file_system.hpp>
+#include <godot_cpp/classes/editor_interface.hpp>
+#include <godot_cpp/classes/h_box_container.hpp>
+#include <godot_cpp/classes/input_event_key.hpp>
+#include <godot_cpp/classes/line_edit.hpp>
+#include <godot_cpp/classes/margin_container.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
+#include <godot_cpp/classes/text_server.hpp>
+#include <godot_cpp/classes/texture_rect.hpp>
 #include <godot_cpp/classes/time.hpp>
+#include <godot_cpp/classes/timer.hpp>
 #include <godot_cpp/core/math.hpp>
 
 #include "editor/git_diff_dock.h"
@@ -17,14 +29,15 @@ using namespace godot_git;
 // first expanded). Rebuilt only when the commits changed, so expanded commits, the selection and
 // the scroll position survive the refresh that every save triggers.
 void GitDock::_fill_history() {
-	Array commits = repo->get_commits(history_limit + 1);
+	Array commits = repo->get_commits(history_limit + 1, history_path, history_query);
 	const bool more = commits.size() > history_limit;
 	if (more) {
 		commits.resize(history_limit);
 	}
-	has_commits = !commits.is_empty();
-	// For Amend. "unpushed" means on no remote-tracking branch; without remotes it's never set.
-	const Dictionary last = commits.is_empty() ? Dictionary() : Dictionary(commits[0]);
+	// For Amend and Undo Last Commit, whatever History shows. "unpushed" means on no
+	// remote-tracking branch; without remotes it's never set.
+	const Dictionary last = repo->get_commit("HEAD");
+	has_commits = !last.is_empty();
 	last_commit_id = last.get("id", String());
 	last_commit_message = last.get("message", String());
 	last_commit_pushed = has_commits && bool(sync_status.get("has_remotes", false)) && !bool(last.get("unpushed", false));
@@ -46,7 +59,13 @@ void GitDock::_fill_history() {
 	root = history_tree->create_item();
 	history_tree->set_visible(!commits.is_empty());
 	history_empty->get_parent_control()->set_visible(commits.is_empty());
-	history_empty->set_text("No commits yet.");
+	if (!history_path.is_empty()) {
+		history_empty->set_text(history_query.is_empty() ? vformat("No commits changed %s.", history_path.get_file()) : vformat("No commits that changed %s match \"%s\".", history_path.get_file(), history_query));
+	} else if (!history_query.is_empty()) {
+		history_empty->set_text(vformat("No commits match \"%s\".", history_query));
+	} else {
+		history_empty->set_text("No commits yet.");
+	}
 	if (commits.is_empty()) {
 		return;
 	}
@@ -256,4 +275,227 @@ void GitDock::_on_history_item_selected() {
 	changes_pane.tree->deselect_all();
 	stashes_tree->deselect_all();
 	_show_commit_diff(item->get_meta("git_hash"), item->get_meta("git_path"), false);
+}
+
+// History's filters: a search field (opened from the magnifier in its header) and, while History
+// shows one file's commits, a bar naming the file (icon and name, like a filter chip; "History of
+// ..." got cut off in a narrow dock) with a button back to all commits. Both look
+// through the whole history, not just the commits already listed.
+void GitDock::_build_history_filters() {
+	const float scale = EditorInterface::get_singleton()->get_editor_scale();
+	Control *body = history_tree->get_parent_control();
+
+	history_search_button = memnew(Button);
+	history_search_button->set_tooltip_text("Search commits by message, author or hash.");
+	history_search_button->set_toggle_mode(true);
+	history_search_button->set_v_size_flags(SIZE_SHRINK_CENTER);
+	history_search_button->connect("pressed", callable_mp(this, &GitDock::_on_history_search_pressed));
+	history_pane->add_title_bar_control(history_search_button);
+
+	MarginContainer *search_margin = memnew(MarginContainer);
+	search_margin->add_theme_constant_override("margin_bottom", Math::round(4 * scale));
+	search_margin->hide();
+	history_search_row = search_margin;
+	history_search = memnew(LineEdit);
+	history_search->set_placeholder("Search commits");
+	history_search->set_clear_button_enabled(true);
+	history_search->connect("text_changed", callable_mp(this, &GitDock::_on_history_search_changed));
+	history_search->connect("text_submitted", callable_mp(this, &GitDock::_apply_history_search).unbind(1));
+	history_search->connect("gui_input", callable_mp(this, &GitDock::_on_history_search_input));
+	search_margin->add_child(history_search);
+	body->add_child(search_margin);
+	body->move_child(search_margin, 0);
+
+	HBoxContainer *file_bar = memnew(HBoxContainer);
+	file_bar->hide();
+	history_file_bar = file_bar;
+	history_file_icon = memnew(TextureRect);
+	history_file_icon->set_stretch_mode(TextureRect::STRETCH_KEEP_CENTERED);
+	file_bar->add_child(history_file_icon);
+	history_file_label = memnew(Label);
+	history_file_label->set_h_size_flags(SIZE_EXPAND_FILL);
+	history_file_label->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+	history_file_label->set_mouse_filter(MOUSE_FILTER_PASS); // For its tooltip (the full path).
+	file_bar->add_child(history_file_label);
+	Button *all = memnew(Button);
+	all->set_flat(true);
+	all->set_tooltip_text("Show every commit again.");
+	history_file_close = all;
+	all->connect("pressed", callable_mp(this, &GitDock::_set_history_filter).bind(String(), String()));
+	file_bar->add_child(all);
+	body->add_child(file_bar);
+	body->move_child(file_bar, 0);
+
+	history_search_timer = memnew(Timer);
+	history_search_timer->set_one_shot(true);
+	history_search_timer->set_wait_time(0.4);
+	history_search_timer->connect("timeout", callable_mp(this, &GitDock::_apply_history_search));
+	add_child(history_search_timer);
+}
+
+void GitDock::_on_history_search_pressed() {
+	if (history_search_row->is_visible()) {
+		// Closing the search ends it.
+		history_search_row->hide();
+		history_search->clear();
+		_set_history_filter(history_path, String());
+		return;
+	}
+	history_pane->set_folded(false);
+	history_search_row->show();
+	history_search_button->set_pressed_no_signal(true);
+	history_search->grab_focus();
+}
+
+void GitDock::_on_history_search_changed(const String &p_text) {
+	history_search_timer->start();
+}
+
+void GitDock::_on_history_search_input(const Ref<InputEvent> &p_event) {
+	const Ref<InputEventKey> key = p_event;
+	if (key.is_valid() && key->is_pressed() && key->get_keycode() == KEY_ESCAPE) {
+		history_search->accept_event();
+		_on_history_search_pressed(); // Closes it.
+	}
+}
+
+void GitDock::_apply_history_search() {
+	history_search_timer->stop();
+	if (history_search->get_text().strip_edges() != history_query) {
+		_set_history_filter(history_path, history_search->get_text().strip_edges());
+	}
+}
+
+// Shows p_path's commits (or all with ""), matching p_query (or all with "").
+void GitDock::_set_history_filter(const String &p_path, const String &p_query) {
+	history_path = p_path;
+	history_query = p_query;
+	history_limit = 50;
+	history_file_bar->set_visible(!p_path.is_empty());
+	history_file_label->set_text(p_path.get_file());
+	history_file_icon->set_texture(p_path.is_empty() ? Ref<Texture2D>() : _file_icon(p_path));
+	history_file_label->set_tooltip_text(vformat("History shows the commits that changed %s.", p_path));
+	history_search_button->set_pressed_no_signal(history_search_row->is_visible());
+	_fill_history();
+}
+
+// The Git dock up front, History unfolded and scrolled into view.
+void GitDock::_scroll_to_history() {
+	make_visible();
+	history_pane->set_folded(false);
+	for (Node *parent = history_pane->get_parent(); parent; parent = parent->get_parent()) {
+		if (ScrollContainer *scroll = Object::cast_to<ScrollContainer>(parent)) {
+			callable_mp(scroll, &ScrollContainer::ensure_control_visible).call_deferred(history_pane);
+			break;
+		}
+	}
+}
+
+// The repository path of a res:// path, or "" outside the repository.
+String GitDock::get_repo_path(const String &p_res_path) const {
+	if (repo.is_null() || !repo->is_open()) {
+		return String();
+	}
+	const String workdir = repo->get_workdir().simplify_path().trim_suffix("/") + "/";
+	const String absolute = ProjectSettings::get_singleton()->globalize_path(p_res_path).simplify_path();
+	return absolute.begins_with(workdir) ? absolute.substr(workdir.length()) : String();
+}
+
+// History narrowed to one file's commits (from the lists' and the FileSystem dock's right-click
+// menus, and the script editor's).
+void GitDock::show_file_history(const String &p_path) {
+	if (p_path.is_empty()) {
+		return;
+	}
+	history_search->clear();
+	history_search_row->hide();
+	_set_history_filter(p_path, String());
+	_scroll_to_history();
+}
+
+// One commit in History, expanded: found by searching for its hash.
+void GitDock::show_commit(const String &p_hash) {
+	history_expanded[p_hash] = true;
+	history_search_row->show();
+	history_search->set_text(p_hash.left(10));
+	_set_history_filter(String(), p_hash.left(10));
+	_scroll_to_history();
+	TreeItem *root = history_tree->get_root();
+	for (TreeItem *item = root ? root->get_first_child() : nullptr; item; item = item->get_next()) {
+		if (row_kind(item) == "commit" && String(Dictionary(item->get_metadata(0))["hash"]) == p_hash) {
+			item->select(0);
+			break;
+		}
+	}
+}
+
+// Show Commit for This Line, from the script editor: p_text is the editor's text (unsaved edits
+// included), p_line 0-based.
+void GitDock::show_line_commit(const String &p_path, const String &p_text, int p_line) {
+	const Dictionary commit = repo->get_line_commit(p_path, p_text, p_line);
+	if (commit.is_empty()) {
+		_set_status(STATUS_NEUTRAL, vformat("Line %d of %s isn't committed yet: it's new or changed since the last commit.", p_line + 1, p_path.get_file()));
+		return;
+	}
+	show_commit(commit["hash"]);
+}
+
+// Undo Last Commit: its changes go back to Staged Changes, and its message into the box (unless
+// you're typing another one) so committing again is one click.
+void GitDock::_undo_last_commit() {
+	const Dictionary last = repo->get_commit("HEAD");
+	const Error err = repo->undo_last_commit();
+	_report(err, "Undo commit");
+	if (err != OK) {
+		return;
+	}
+	if (commit_message->get_text().strip_edges().is_empty() && !amend_check->is_pressed()) {
+		commit_message->set_text(last.get("message", String()));
+	}
+	refresh();
+	_set_status(STATUS_SUCCESS, vformat("Undid \"%s\": its changes are staged again", last.get("summary", String())));
+}
+
+void GitDock::_confirm_revert(const String &p_hash, const String &p_summary) {
+	pending_revert = p_hash;
+	pending_revert_summary = p_summary;
+	revert_confirm->set_text(vformat("Revert \"%s\"?\n\nThis adds a new commit that undoes its changes. The commit itself stays in the history.", p_summary));
+	revert_confirm->popup_centered();
+}
+
+// Like a pull, a revert rewrites files: unsaved scenes and scripts are offered to be saved first,
+// and it runs in the background (a hook may run on its commit).
+void GitDock::_on_revert_confirmed() {
+	if (pending_revert.is_empty()) {
+		return;
+	}
+	if (_ask_to_save("Revert", callable_mp(this, &GitDock::_on_revert_confirmed))) {
+		return;
+	}
+	_start_network(NETWORK_REVERT);
+}
+
+// Restore This Version / Restore Version Before This Commit: the file as it was, as an uncommitted
+// change. p_what finishes the status line ("as it was in abc1234").
+void GitDock::_restore_version(const String &p_revision, const String &p_path, const String &p_what) {
+	_remember_open_scenes();
+	const Error err = repo->restore_file_version(p_revision, p_path);
+	_report(err, "Restore");
+	if (err != OK) {
+		return;
+	}
+	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
+	refresh();
+	_set_status(STATUS_SUCCESS, vformat("Restored %s %s", p_path.get_file(), p_what));
+	_reload_changed_scenes();
+}
+
+// Create Branch Here: New Branch's dialog, creating at p_hash and staying on the current branch.
+void GitDock::_show_branch_here(const String &p_hash) {
+	branch_here = p_hash;
+	branch_dialog->set_title("Create Branch Here");
+	branch_dialog_label->set_text(vformat("Create a branch at commit %s. You stay on %s.", p_hash.left(7), repo->get_current_branch()));
+	branch_name_edit->clear();
+	branch_dialog->popup_centered(Vector2i(360, 0) * EditorInterface::get_singleton()->get_editor_scale());
+	branch_name_edit->grab_focus();
 }

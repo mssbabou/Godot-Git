@@ -113,7 +113,8 @@ public:
 	void close();
 };
 
-// The script editor's right-click items for the change at the caret.
+// The script editor's right-click items: the change at the caret, the commit of its line, and the
+// file's history.
 class GitScriptMenu : public EditorContextMenuPlugin {
 	GDCLASS(GitScriptMenu, EditorContextMenuPlugin)
 
@@ -124,6 +125,8 @@ class GitScriptMenu : public EditorContextMenuPlugin {
 	void _show_change(const Variant &p_target);
 	void _revert(const Variant &p_target);
 	void _show_in_diff(const Variant &p_target);
+	void _line_commit(const Variant &p_target);
+	void _file_history(const Variant &p_target);
 
 protected:
 	static void _bind_methods() {}

@@ -239,6 +239,35 @@ func _run() -> void:
 		var uid := _row(history, func(item: TreeItem) -> bool: return item.get_parent() == hud and item.get_meta("git_path", "") == "hud.gd.uid")
 		_check(script != null and uid == null and PackedStringArray(script.get_meta("git_companions", PackedStringArray())).has("hud.gd.uid"), "a commit's .uid is shown on its file's row")
 
+	# One file's history, and a search.
+	dock.show_file_history("enemy.gd")
+	await _frames()
+	var summaries := PackedStringArray()
+	for item in _tree("History").get_root().get_children():
+		if item.get_meta("git_row", "") == "commit":
+			summaries.append(item.get_text(0))
+	_check(summaries == PackedStringArray(["Make enemies hit harder", "Initial platformer"]) and _texts(_section("History")).has("enemy.gd"), "a file's history lists only its commits (%s)" % ", ".join(summaries))
+	var search: LineEdit = null
+	for edit: LineEdit in _section("History").find_children("*", "LineEdit", true, false):
+		if edit.placeholder_text == "Search commits":
+			search = edit
+	for button: Button in _section("History").find_children("*", "Button", true, false):
+		if button.tooltip_text == "Show every commit again.":
+			button.pressed.emit()
+	if search:
+		search.text = "clamp"
+		search.text_submitted.emit("clamp")
+		await _frames()
+	var found := PackedStringArray()
+	for item in _tree("History").get_root().get_children():
+		if item.get_meta("git_row", "") == "commit":
+			found.append(item.get_text(0))
+	_check(search != null and found == PackedStringArray(["Rename clamp01"]), "searching History finds a commit (%s)" % ", ".join(found))
+	if search:
+		search.text = ""
+		search.text_submitted.emit("")
+		await _frames()
+
 	# Line counts arrive from the background after an edit.
 	var coin := FileAccess.open("res://coin.gd", FileAccess.READ_WRITE)
 	coin.seek_end()

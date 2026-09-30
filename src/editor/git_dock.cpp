@@ -31,6 +31,9 @@ using namespace godot_git;
 
 void GitDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("refresh"), &GitDock::refresh);
+	// For the smoke test.
+	ClassDB::bind_method(D_METHOD("show_file_history", "path"), &GitDock::show_file_history);
+	ClassDB::bind_method(D_METHOD("show_commit", "hash"), &GitDock::show_commit);
 }
 
 GitDock::GitDock() {
@@ -146,9 +149,8 @@ GitDock::GitDock() {
 
 	VBoxContainer *branch_vb = memnew(VBoxContainer);
 	branch_dialog->add_child(branch_vb);
-	Label *branch_label = memnew(Label);
-	branch_label->set_text("Create a branch from the current commit and switch to it:");
-	branch_vb->add_child(branch_label);
+	branch_dialog_label = memnew(Label);
+	branch_vb->add_child(branch_dialog_label);
 	branch_name_edit = memnew(LineEdit);
 	branch_name_edit->set_placeholder("Branch name");
 	branch_vb->add_child(branch_name_edit);
@@ -160,11 +162,14 @@ GitDock::GitDock() {
 	unsaved_skip = unsaved_confirm->add_button("", false, "skip");
 
 	large_confirm = _make_confirm("Large Files", "Commit Anyway", callable_mp(this, &GitDock::_on_large_confirmed));
+	revert_confirm = _make_confirm("Revert Commit", "Revert", callable_mp(this, &GitDock::_on_revert_confirmed));
 
 	filesystem_colors = memnew(GitFileSystemColors);
 	add_child(filesystem_colors);
 	script_marks = memnew(GitScriptMarks);
 	script_marks->connect("show_in_diff_requested", callable_mp(this, &GitDock::show_change));
+	script_marks->connect("history_requested", callable_mp(this, &GitDock::show_file_history));
+	script_marks->connect("line_commit_requested", callable_mp(this, &GitDock::show_line_commit));
 	add_child(script_marks);
 
 	// Timers. Saves of scenes, scripts and resources reach us through "filesystem_changed", but
@@ -233,6 +238,8 @@ void GitDock::_update_icons() {
 	staged_pane.stash->set_button_icon(_icon("GitStash"));
 	changes_pane.action->set_button_icon(_icon("Add"));
 	changes_pane.discard->set_button_icon(get_theme_icon("UndoRedo", "EditorIcons"));
+	history_search_button->set_button_icon(get_theme_icon("Search", "EditorIcons"));
+	history_file_close->set_button_icon(get_theme_icon("Close", "EditorIcons"));
 
 	// The trees sit inside the panes' own panels; drop their frames so it's one surface.
 	Ref<StyleBoxEmpty> empty;
@@ -272,6 +279,12 @@ void GitDock::_update_icons() {
 			button->add_theme_stylebox_override("hover_pressed", tree_pressed);
 		}
 	}
+	// History's search button looks like the other sections' header buttons; pressed while open.
+	history_search_button->add_theme_stylebox_override("normal", flat);
+	history_search_button->add_theme_stylebox_override("focus", empty);
+	history_search_button->add_theme_stylebox_override("hover", tree_hover);
+	history_search_button->add_theme_stylebox_override("pressed", tree_pressed);
+	history_search_button->add_theme_stylebox_override("hover_pressed", tree_pressed);
 	_queue_align_header_buttons();
 
 	const Color dim = _dim_color();
@@ -576,7 +589,7 @@ void GitDock::_update_actions() {
 	// A background fetch doesn't count as busy: it only updates remote-tracking refs.
 	const NetworkOp shown = _shown_network_op();
 	// A pull, push or switch rewrites the repository from the worker thread; don't commit meanwhile.
-	const bool syncing = shown == NETWORK_PULL || shown == NETWORK_PUSH || shown == NETWORK_SWITCH || shown == NETWORK_COMMIT || shown == NETWORK_ABORT || shown == NETWORK_CONTINUE;
+	const bool syncing = shown == NETWORK_PULL || shown == NETWORK_PUSH || shown == NETWORK_SWITCH || shown == NETWORK_COMMIT || shown == NETWORK_ABORT || shown == NETWORK_CONTINUE || shown == NETWORK_REVERT;
 	// A merge, rebase, ... in progress: committing, pulling or switching would lose it (the
 	// backend refuses too). The banner says what to do instead.
 	const String in_operation = _in_operation() ? vformat("A %s is in progress: finish it or abort it first (see the banner above).", _operation_name()) : String();
@@ -745,6 +758,9 @@ void GitDock::_on_more_menu_id(int p_id) {
 			}
 		} break;
 		case MORE_NEW_BRANCH: {
+			branch_here = String();
+			branch_dialog->set_title("New Branch");
+			branch_dialog_label->set_text("Create a branch from the current commit and switch to it:");
 			branch_name_edit->clear();
 			branch_dialog->popup_centered(Vector2i(360, 0) * EditorInterface::get_singleton()->get_editor_scale());
 			branch_name_edit->grab_focus();
