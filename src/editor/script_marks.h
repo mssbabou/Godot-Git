@@ -82,7 +82,7 @@ public:
 	void show_preview(CodeEdit *p_code_edit, int p_hunk);
 	void close_preview();
 	void revert(CodeEdit *p_code_edit, int p_hunk);
-	void show_in_diff(CodeEdit *p_code_edit);
+	void show_in_diff(CodeEdit *p_code_edit, int p_hunk);
 
 	GitScriptMarks();
 };

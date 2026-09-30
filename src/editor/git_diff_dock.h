@@ -188,6 +188,7 @@ public:
 	// GitRepository::get_file_bytes), shown before | after instead of "binary file". "companions":
 	// the diffs of the file's `.import` / `.uid` companions, shown setting by setting under it.
 	void set_diff(const Dictionary &p_diff, const String &p_source, const Ref<Texture2D> &p_icon);
+	void scroll_to_line(int p_new_line);
 
 	// Whether the Diff panel shows p_path as an image (by its extension).
 	static bool is_image_path(const String &p_path);

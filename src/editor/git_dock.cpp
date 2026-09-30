@@ -767,7 +767,7 @@ void GitDock::_on_more_menu_id(int p_id) {
 		} break;
 		case MORE_AUTO_FETCH: {
 			const bool enable = !_is_auto_fetch_enabled();
-			EditorInterface::get_singleton()->get_editor_settings()->set_project_metadata("godot_git", "auto_fetch", enable);
+			EditorInterface::get_singleton()->get_editor_settings()->set_setting(AUTO_FETCH_SETTING, enable);
 			if (!enable && auto_fetch_failed && status_kind == STATUS_WARNING) {
 				_set_status(STATUS_IDLE, String()); // Its failure message is moot now.
 			}
@@ -785,7 +785,7 @@ void GitDock::_on_more_menu_id(int p_id) {
 			script_marks->set_enabled(_is_change_marks_enabled());
 		} break;
 		case MORE_FILESYSTEM_COLORS: {
-			EditorInterface::get_singleton()->get_editor_settings()->set_project_metadata("godot_git", "filesystem_colors", !_is_filesystem_colors_enabled());
+			EditorInterface::get_singleton()->get_editor_settings()->set_setting(FILESYSTEM_COLORS_SETTING, !_is_filesystem_colors_enabled());
 			refresh();
 		} break;
 		case MORE_BUILD_INFO: {

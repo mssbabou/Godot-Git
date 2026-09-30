@@ -513,7 +513,7 @@ public:
 
 	// For the FileSystem dock's right-click menu (GitFileSystemMenu; in git_dock_editor.cpp).
 	PackedStringArray get_changed_paths(const PackedStringArray &p_res_paths, bool p_staged) const;
-	void show_change(const String &p_path);
+	void show_change(const String &p_path, int p_line = 0);
 	void discard_changes(const PackedStringArray &p_paths);
 	GitScriptMarks *get_script_marks() const { return script_marks; }
 	String get_repo_path(const String &p_res_path) const;

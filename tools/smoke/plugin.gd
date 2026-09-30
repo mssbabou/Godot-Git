@@ -282,6 +282,25 @@ func _run() -> void:
 			break
 	_check(counted, "line counts arrive after an edit")
 
+	# The dock at every width from its narrowest up. Layout loops depend on the width (gotcha 40,
+	# and the header alignment loop of 2026-09-30, which crashed about one run in four at whatever
+	# width the editor picked): 1 px steps through the range around the dock's minimum width, where
+	# both lived, then larger ones. A loop overflows Godot's message queue and crashes the editor.
+	# The dock in front again first: steps above (selecting a file in the FileSystem dock) hand
+	# its tab to the Inspector, and a dock behind a tab isn't laid out, so layout bugs hide there.
+	# That's why the alignment loop crashed only now and then: the stash below changes the
+	# sections, and looped only when the dock happened to be in front. In front, it crashed 4 of 4.
+	dock.make_visible()
+	await _frames()
+	var slot := dock.get_parent() as Control
+	var narrowest := int(dock.size.x)
+	for width in range(narrowest - 20, narrowest + 120) + range(narrowest + 120, 700, 20):
+		slot.custom_minimum_size.x = width
+		await get_tree().process_frame
+	slot.custom_minimum_size.x = 0
+	await _frames()
+	_check(true, "the dock lays out at every width from %d to 700 px" % narrowest)
+
 	# Stash last, and driven by timers, not await: stashing changes files on disk, scripts among
 	# them, and Godot then reloads scripts, which may cancel awaits in progress (unproven; the crash
 	# that suggested it was a layout loop in the dock, fixed in _align_header_buttons).
@@ -401,15 +420,27 @@ func _marks_check() -> void:
 		for label: Label in code_edit.find_children("*", "Label", true, false):
 			labels.append(label.text)
 		_smoke_check(preview_open and " ".join(labels).contains("Change 2 of"), "clicking a mark shows what was there (%s)" % " ".join(labels))
-		# Reverting every change, last first, gives back the committed text (unsaved, in the editor).
-		for i in range(hunks.size() - 1, -1, -1):
-			marks.revert(code_edit, i)
-		var committed := ""
-		var out := []
-		OS.execute("git", ["-C", ProjectSettings.globalize_path("res://"), "show", "HEAD:player.gd"], out)
-		committed = "".join(out)
-		_smoke_check(marks.get_hunks(code_edit).is_empty() and code_edit.text.strip_edges() == committed.strip_edges(), "reverting every change gives back the committed text")
-		code_edit.undo() # Leaves the file as it was, for anything after this.
+		# Show in Diff on the last change opens the file's diff scrolled down to it.
+		marks.show_in_diff(code_edit, hunks.size() - 1)
+		get_tree().create_timer(1.0).timeout.connect(_marks_diff_check.bind(marks, code_edit, hunks))
+		return
+	_smoke_finish()
+
+
+func _marks_diff_check(marks: Node, code_edit: CodeEdit, hunks: Array) -> void:
+	var first_line := 0
+	for edit: CodeEdit in diff.find_children("*", "CodeEdit", true, false):
+		if edit.is_visible_in_tree():
+			first_line = maxi(first_line, edit.get_first_visible_line())
+	_smoke_check(first_line > 0, "Show in Diff scrolls the Diff panel to the change (first visible row %d)" % first_line)
+	# Reverting every change, last first, gives back the committed text (unsaved, in the editor).
+	for i in range(hunks.size() - 1, -1, -1):
+		marks.revert(code_edit, i)
+	var out := []
+	OS.execute("git", ["-C", ProjectSettings.globalize_path("res://"), "show", "HEAD:player.gd"], out)
+	var committed := "".join(out)
+	_smoke_check(marks.get_hunks(code_edit).is_empty() and code_edit.text.strip_edges() == committed.strip_edges(), "reverting every change gives back the committed text")
+	code_edit.undo() # Leaves the file as it was, for anything after this.
 	_smoke_finish()
 
 

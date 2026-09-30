@@ -252,6 +252,25 @@ void GitDiffDock::set_diff(const Dictionary &p_diff, const String &p_source, con
 	_render();
 }
 
+// Scrolls the text view to the new file's line p_new_line (1-based; the first row at or after it,
+// else the last), a few rows of context above it. Show in Diff from the script editor uses it.
+void GitDiffDock::scroll_to_line(int p_new_line) {
+	const bool split = !panes[PANE_NEW].new_numbers.is_empty();
+	Pane &pane = panes[split ? PANE_NEW : PANE_UNIFIED];
+	if (pane.new_numbers.is_empty()) {
+		return;
+	}
+	int row = pane.new_numbers.size() - 1;
+	for (int i = 0; i < pane.new_numbers.size(); i++) {
+		if (pane.new_numbers[i] >= p_new_line) {
+			row = i;
+			break;
+		}
+	}
+	// Deferred: the rows were just filled, and a CodeEdit scrolls by its laid-out size.
+	Callable(pane.edit, "set_line_as_first_visible").call_deferred(MAX(row - 3, 0), 0);
+}
+
 void GitDiffDock::_render() {
 	_update_header();
 

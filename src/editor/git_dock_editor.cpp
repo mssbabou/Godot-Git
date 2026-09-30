@@ -11,6 +11,7 @@
 
 #include "editor/filesystem_colors.h"
 #include "editor/git_colors.h"
+#include "editor/git_diff_dock.h"
 #include "editor/git_dock_util.h"
 #include "editor/script_marks.h"
 #include "editor/ui_text.h"
@@ -144,7 +145,7 @@ void GitDock::_reload_changed_scenes() {
 }
 
 bool GitDock::_is_filesystem_colors_enabled() const {
-	return EditorInterface::get_singleton()->get_editor_settings()->get_project_metadata("godot_git", "filesystem_colors", true);
+	return EditorInterface::get_singleton()->get_editor_settings()->get_setting(FILESYSTEM_COLORS_SETTING);
 }
 
 // Changed files in the FileSystem dock get their status letter's color; folders holding them get
@@ -214,9 +215,13 @@ PackedStringArray GitDock::get_changed_paths(const PackedStringArray &p_res_path
 	return result;
 }
 
-// Shows a file's changes in the Diff panel, the unstaged ones if it has both.
-void GitDock::show_change(const String &p_path) {
+// Shows a file's changes in the Diff panel, the unstaged ones if it has both; scrolled to line
+// p_line of the file when given (1-based).
+void GitDock::show_change(const String &p_path, int p_line) {
 	_show_diff(p_path, !unstaged_paths.has(p_path), true);
+	if (p_line > 0 && diff_dock) {
+		diff_dock->scroll_to_line(p_line);
+	}
 }
 
 void GitDock::discard_changes(const PackedStringArray &p_paths) {
@@ -228,21 +233,35 @@ void GitDock::discard_changes(const PackedStringArray &p_paths) {
 // (gotcha 49), so the ⋮ menu offers each one too.
 void GitDock::_register_settings() {
 	const Ref<EditorSettings> settings = EditorInterface::get_singleton()->get_editor_settings();
-	if (!settings->has_setting(CHANGE_MARKS_SETTING)) {
-		settings->set_setting(CHANGE_MARKS_SETTING, true);
+	// Names used by development builds before 2026-09-30's move to one page; they'd linger as
+	// empty-looking extra pages in Editor Settings.
+	for (const char *old_name : { "godot_git/script_editor/change_marks", "godot_git/filesystem_dock/status_colors", "godot_git/remote/auto_fetch" }) {
+		if (settings->has_setting(old_name)) {
+			settings->erase(old_name);
+		}
 	}
-	settings->set_initial_value(CHANGE_MARKS_SETTING, true, false);
-	Dictionary info;
-	info["name"] = CHANGE_MARKS_SETTING;
-	info["type"] = Variant::BOOL;
-	settings->add_property_info(info);
+	// All on by default: the panel's pick for anything someone might not want.
+	for (const char *name : { CHANGE_MARKS_SETTING, FILESYSTEM_COLORS_SETTING, AUTO_FETCH_SETTING }) {
+		if (!settings->has_setting(name)) {
+			settings->set_setting(name, true);
+		}
+		settings->set_initial_value(name, true, false);
+		Dictionary info;
+		info["name"] = name;
+		info["type"] = Variant::BOOL;
+		settings->add_property_info(info);
+	}
 }
 
 bool GitDock::_is_change_marks_enabled() const {
 	return EditorInterface::get_singleton()->get_editor_settings()->get_setting(CHANGE_MARKS_SETTING);
 }
 
-// A setting changed in Editor Settings rather than through the ⋮ menu.
+// A setting changed in Editor Settings rather than through the ⋮ menu (the menu reads them when
+// it opens; auto-fetch reads its setting on every tick).
 void GitDock::_on_editor_settings_changed() {
 	script_marks->set_enabled(_is_change_marks_enabled());
+	if (repo.is_valid() && repo->is_open()) {
+		_update_filesystem_colors(repo->get_status());
+	}
 }

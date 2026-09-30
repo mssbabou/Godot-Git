@@ -8,6 +8,7 @@
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
+#include "editor/git_dock_util.h"
 #include "editor/ui_text.h"
 
 using namespace godot_git;
@@ -83,9 +84,9 @@ GitDock::NetworkOp GitDock::_shown_network_op() const {
 	return network_quiet ? NETWORK_NONE : network_op;
 }
 
-// Per project, on unless turned off in the ⋮ menu.
+// In Editor Settings (every project), on unless turned off there or in the ⋮ menu.
 bool GitDock::_is_auto_fetch_enabled() const {
-	return EditorInterface::get_singleton()->get_editor_settings()->get_project_metadata("godot_git", "auto_fetch", true);
+	return EditorInterface::get_singleton()->get_editor_settings()->get_setting(AUTO_FETCH_SETTING);
 }
 
 // Checks every minute; fetches when the last fetch (ours or the git CLI's) is 5+ minutes old.

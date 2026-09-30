@@ -56,7 +56,7 @@ GitScriptMarks::GitScriptMarks() {
 }
 
 void GitScriptMarks::_bind_methods() {
-	ADD_SIGNAL(MethodInfo("show_in_diff_requested", PropertyInfo(Variant::STRING, "path")));
+	ADD_SIGNAL(MethodInfo("show_in_diff_requested", PropertyInfo(Variant::STRING, "path"), PropertyInfo(Variant::INT, "line")));
 	ADD_SIGNAL(MethodInfo("history_requested", PropertyInfo(Variant::STRING, "path")));
 	ADD_SIGNAL(MethodInfo("line_commit_requested", PropertyInfo(Variant::STRING, "path"), PropertyInfo(Variant::STRING, "text"), PropertyInfo(Variant::INT, "line")));
 	// For the smoke test.
@@ -64,7 +64,7 @@ void GitScriptMarks::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_hunk_at", "code_edit", "line"), &GitScriptMarks::get_hunk_at);
 	ClassDB::bind_method(D_METHOD("show_preview", "code_edit", "hunk"), &GitScriptMarks::show_preview);
 	ClassDB::bind_method(D_METHOD("revert", "code_edit", "hunk"), &GitScriptMarks::revert);
-	ClassDB::bind_method(D_METHOD("show_in_diff", "code_edit"), &GitScriptMarks::show_in_diff);
+	ClassDB::bind_method(D_METHOD("show_in_diff", "code_edit", "hunk"), &GitScriptMarks::show_in_diff);
 }
 
 void GitScriptMarks::_notification(int p_what) {
@@ -449,11 +449,14 @@ void GitScriptMarks::revert(CodeEdit *p_code_edit, int p_hunk) {
 	changed.erase(p_code_edit->get_instance_id());
 }
 
-void GitScriptMarks::show_in_diff(CodeEdit *p_code_edit) {
+// The Diff panel with this file, scrolled to change p_hunk (or the top with -1).
+void GitScriptMarks::show_in_diff(CodeEdit *p_code_edit, int p_hunk) {
 	const String path = get_path(p_code_edit);
 	if (!path.is_empty()) {
 		close_preview();
-		emit_signal("show_in_diff_requested", path);
+		const Array hunks = get_hunks(p_code_edit);
+		const int line = p_hunk >= 0 && p_hunk < hunks.size() ? MAX(int(Dictionary(hunks[p_hunk])["new_start"]), 1) : 0;
+		emit_signal("show_in_diff_requested", path, line);
 	}
 }
 
@@ -546,7 +549,7 @@ void GitChangePreview::open(GitScriptMarks *p_marks, CodeEdit *p_code_edit, int 
 
 	const String revert_tooltip = old_count == 0 ? String("Remove the added lines from the editor. Ctrl+Z brings them back; nothing is saved until you save.") : String("Put the committed version of these lines back in the editor. Ctrl+Z undoes it; nothing is saved until you save.");
 	add_button("Revert Change", "UndoRedo", revert_tooltip, true, callable_mp(marks, &GitScriptMarks::revert).bind(code_edit, hunk));
-	add_button("Show in Diff", "VCSCommit", "Show this file's changes in the Diff panel (as saved on disk).", true, callable_mp(marks, &GitScriptMarks::show_in_diff).bind(code_edit));
+	add_button("Show in Diff", "VCSCommit", "Show this file's changes in the Diff panel (as saved on disk).", true, callable_mp(marks, &GitScriptMarks::show_in_diff).bind(code_edit, hunk));
 	add_button(String(), "Close", "Close (Esc)", true, callable_mp(this, &GitChangePreview::close));
 
 	if (!old_lines.is_empty()) {
@@ -736,6 +739,6 @@ void GitScriptMenu::_show_in_diff(const Variant &p_target) {
 	GitScriptMarks *script_marks = _get_marks();
 	CodeEdit *code_edit = _code_edit_from(p_target);
 	if (script_marks && code_edit) {
-		script_marks->show_in_diff(code_edit);
+		script_marks->show_in_diff(code_edit, script_marks->get_hunk_at(code_edit, code_edit->get_caret_line()));
 	}
 }

@@ -18,9 +18,12 @@ enum FileColumn {
 	FILE_COLUMN_COUNT,
 };
 
-// Our settings in Editor Settings (see _register_settings). Plain strings: no global String objects
-// (gotcha 3).
-inline constexpr const char *CHANGE_MARKS_SETTING = "godot_git/script_editor/change_marks";
+// Our settings in Editor Settings (see _register_settings): all on one page, Godot Git > Settings,
+// named like their ⋮ menu items (one page per section would be three pages of one checkbox each).
+// Plain strings: no global String objects (gotcha 3).
+inline constexpr const char *CHANGE_MARKS_SETTING = "godot_git/settings/mark_changed_lines_in_scripts";
+inline constexpr const char *FILESYSTEM_COLORS_SETTING = "godot_git/settings/color_changed_files_in_filesystem";
+inline constexpr const char *AUTO_FETCH_SETTING = "godot_git/settings/fetch_automatically";
 
 // What a History row is: "commit", "placeholder" (until the commit is expanded), "note", "file"
 // or "more" (Load More Commits).
