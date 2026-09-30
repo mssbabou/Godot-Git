@@ -5,6 +5,7 @@
 #include "git/git_repository.h"
 
 #include <git2.h>
+#include <git2/sys/errors.h>
 
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
@@ -408,5 +409,54 @@ Dictionary GitRepository::get_file_bytes(const String &p_version, const String &
 		}
 	}
 	result["bytes"] = bytes;
+	return result;
+}
+
+// What changed between two versions of a text, line by line, for the script editor's change marks:
+// [{ "old_start", "old_count", "new_start", "new_count" (1-based, git's hunk header numbers, no
+// context lines), "old_lines" (the lines it replaced) }]. A deletion has new_count 0 and new_start
+// the line it follows (0: the top); an addition has old_count 0. Line endings don't count (CRLF
+// and a missing final newline would otherwise mark lines nobody changed).
+Array GitRepository::diff_lines(const String &p_old, const String &p_new) {
+	Array result;
+	const auto normalized = [](const String &p_text) {
+		String text = p_text.replace("\r\n", "\n");
+		if (!text.is_empty() && !text.ends_with("\n")) {
+			text += String("\n");
+		}
+		return text.utf8();
+	};
+	const CharString old_text = normalized(p_old);
+	const CharString new_text = normalized(p_new);
+	git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+	opts.context_lines = 0;
+	opts.interhunk_lines = 0;
+	opts.flags |= GIT_DIFF_FORCE_TEXT;
+	PatchPtr patch;
+	if (git_patch_from_buffers(patch.out(), old_text.get_data(), old_text.length(), nullptr, new_text.get_data(), new_text.length(), nullptr, &opts) < 0 || !patch) {
+		git_error_clear();
+		return result;
+	}
+	for (size_t h = 0; h < git_patch_num_hunks(patch); h++) {
+		const git_diff_hunk *hunk = nullptr;
+		size_t line_count = 0;
+		if (git_patch_get_hunk(&hunk, &line_count, patch, h) < 0) {
+			continue;
+		}
+		PackedStringArray old_lines;
+		for (size_t l = 0; l < line_count; l++) {
+			const git_diff_line *line = nullptr;
+			if (git_patch_get_line_in_hunk(&line, patch, h, l) == 0 && line->origin == GIT_DIFF_LINE_DELETION) {
+				old_lines.push_back(String::utf8(line->content, (int)line->content_len).trim_suffix("\n"));
+			}
+		}
+		Dictionary entry;
+		entry["old_start"] = hunk->old_start;
+		entry["old_count"] = hunk->old_lines;
+		entry["new_start"] = hunk->new_start;
+		entry["new_count"] = hunk->new_lines;
+		entry["old_lines"] = old_lines;
+		result.push_back(entry);
+	}
 	return result;
 }

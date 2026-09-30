@@ -9,9 +9,11 @@
 
 #include "addon_files.h"
 #include "editor/filesystem_colors.h"
+#include "editor/filesystem_menu.h"
 #include "editor/git_diff_dock.h"
 #include "editor/git_dock.h"
 #include "editor/git_editor_plugin.h"
+#include "editor/script_marks.h"
 #include "git/git_lfs.h"
 #include "git/git_repository.h"
 
@@ -63,6 +65,10 @@ void initialize_godot_git_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_INTERNAL_CLASS(GitDiffHighlighter);
 		GDREGISTER_INTERNAL_CLASS(GitDiffDock);
 		GDREGISTER_INTERNAL_CLASS(GitFileSystemColors);
+		GDREGISTER_INTERNAL_CLASS(GitFileSystemMenu);
+		GDREGISTER_INTERNAL_CLASS(GitScriptMarks);
+		GDREGISTER_INTERNAL_CLASS(GitChangePreview);
+		GDREGISTER_INTERNAL_CLASS(GitScriptMenu);
 		GDREGISTER_INTERNAL_CLASS(GitEditorPlugin);
 		EditorPlugins::add_by_type<GitEditorPlugin>();
 	}

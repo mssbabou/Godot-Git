@@ -22,6 +22,9 @@
 #include "build_info.h"
 #include "editor/file_opener.h"
 #include "editor/filesystem_colors.h"
+#include "editor/git_colors.h"
+#include "editor/git_dock_util.h"
+#include "editor/script_marks.h"
 #include "editor/ui_text.h"
 
 using namespace godot_git;
@@ -150,6 +153,7 @@ GitDock::GitDock() {
 	branch_name_edit->set_placeholder("Branch name");
 	branch_vb->add_child(branch_name_edit);
 	branch_dialog->register_text_enter(branch_name_edit);
+	_build_branch_dialogs();
 
 	unsaved_confirm = _make_confirm("Unsaved Changes", String(), callable_mp(this, &GitDock::_on_unsaved_confirmed));
 	unsaved_confirm->connect("custom_action", callable_mp(this, &GitDock::_on_unsaved_custom_action));
@@ -159,6 +163,9 @@ GitDock::GitDock() {
 
 	filesystem_colors = memnew(GitFileSystemColors);
 	add_child(filesystem_colors);
+	script_marks = memnew(GitScriptMarks);
+	script_marks->connect("show_in_diff_requested", callable_mp(this, &GitDock::show_change));
+	add_child(script_marks);
 
 	// Timers. Saves of scenes, scripts and resources reach us through "filesystem_changed", but
 	// Project Settings writes project.godot directly; checking its modified time is one cheap stat.
@@ -189,6 +196,9 @@ void GitDock::_notification(int p_what) {
 			fs->connect("filesystem_changed", callable_mp(this, &GitDock::refresh));
 			_update_status_style(); // Needs the commit box's theme, which isn't final at THEME_CHANGED.
 			_check_git();
+			_register_settings();
+			script_marks->set_enabled(_is_change_marks_enabled());
+			EditorInterface::get_singleton()->get_editor_settings()->connect("settings_changed", callable_mp(this, &GitDock::_on_editor_settings_changed));
 			refresh();
 			auto_fetch_timer->start(10.0); // First check soon after opening, then every minute.
 		} break;
@@ -230,6 +240,13 @@ void GitDock::_update_icons() {
 	for (Tree *tree : { staged_pane.tree, changes_pane.tree, stashes_tree, history_tree }) {
 		tree->add_theme_stylebox_override("panel", empty);
 		tree->add_theme_stylebox_override("focus", empty);
+	}
+
+	// Stash rows use the Tree's own buttons, which the 4.7 "modern" theme draws in the row's own
+	// hover color, so they don't show being hovered (see _draw_row_buttons, which does the same).
+	stashes_tree->remove_theme_stylebox_override("button_hover");
+	if (stashes_tree->get_theme_stylebox("button_hover") == stashes_tree->get_theme_stylebox("hovered")) {
+		stashes_tree->add_theme_stylebox_override("button_hover", stashes_tree->get_theme_stylebox("button_pressed"));
 	}
 
 	// Header "all" buttons get the exact look and size of the rows' buttons: same styleboxes as
@@ -284,8 +301,8 @@ void GitDock::_update_icons() {
 	}
 
 	for (FilePane *pane : { &staged_pane, &changes_pane }) {
-		pane->added->add_theme_color_override("font_color", get_theme_color("success_color", "Editor"));
-		pane->removed->add_theme_color_override("font_color", get_theme_color("error_color", "Editor"));
+		pane->added->add_theme_color_override("font_color", change_color(CHANGE_ADDED));
+		pane->removed->add_theme_color_override("font_color", change_color(CHANGE_REMOVED));
 		// The editor theme pads every Label on both sides, which set "+195" and "−14" two
 		// paddings apart. Without it they're the header's own spacing apart: about a space.
 		pane->added->add_theme_stylebox_override("normal", empty);
@@ -327,6 +344,9 @@ void GitDock::_build_more_menu() {
 		more->set_item_checked(more->get_item_count() - 1, _is_auto_fetch_enabled());
 		more->set_item_tooltip(more->get_item_count() - 1, "Check the remote for new commits every few minutes, in the background. It never changes your files and never asks you to sign in.");
 	}
+	more->add_check_item("Mark Changed Lines in Scripts", MORE_CHANGE_MARKS);
+	more->set_item_checked(more->get_item_count() - 1, _is_change_marks_enabled());
+	more->set_item_tooltip(more->get_item_count() - 1, "Mark lines added, changed or deleted since the last commit next to the line numbers in the script editor, unsaved edits included. Click a mark to see what was there.");
 	more->add_check_item("Color Changed Files in FileSystem", MORE_FILESYSTEM_COLORS);
 	more->set_item_checked(more->get_item_count() - 1, _is_filesystem_colors_enabled());
 	more->set_item_tooltip(more->get_item_count() - 1, "Show changed files in the FileSystem dock in the colors of their status letters, and the folders holding them in a softer color.");
@@ -422,13 +442,7 @@ String GitDock::_file_type(const String &p_res_path) {
 }
 
 Color GitDock::_status_color(const String &p_state) const {
-	if (p_state == "new" || p_state == "untracked") {
-		return get_theme_color("success_color", "Editor");
-	}
-	if (p_state == "deleted" || p_state == "conflicted") {
-		return get_theme_color("error_color", "Editor");
-	}
-	return get_theme_color("warning_color", "Editor");
+	return status_color(p_state); // The one palette (git_colors.h).
 }
 
 Color GitDock::_dim_color() const {
@@ -444,6 +458,7 @@ void GitDock::refresh() {
 		no_repo_ui->show();
 		set_title("Git");
 		filesystem_colors->set_colors(Dictionary(), Dictionary());
+		script_marks->set_repository(Ref<GitRepository>(), String());
 		return;
 	}
 	no_repo_ui->hide();
@@ -479,6 +494,7 @@ void GitDock::refresh() {
 	_update_actions();
 	_update_status();
 	_update_diff();
+	script_marks->set_repository(repo, sync_status.get("head", String()));
 	_queue_align_header_buttons();
 }
 
@@ -681,7 +697,7 @@ void GitDock::_update_sync_row(bool p_busy) {
 	} else if (!pull_blockers.is_empty() && shown != NETWORK_PULL) {
 		// Pull would refuse anyway (see GitRepository::pull): say why before it's pressed.
 		pull_button->set_disabled(true);
-		pull_button->set_tooltip_text(vformat("Pull is waiting: the new commits on %s change %s, and your uncommitted changes there can't be merged in (same lines, or staged, new, deleted or binary). Commit or discard your changes to %s first (marked in Changes).",
+		pull_button->set_tooltip_text(vformat("Pull is waiting: the new commits on %s change %s, and your uncommitted changes there can't be merged in (same lines, or staged, new, deleted or binary). Commit, stash or discard your changes to %s first (marked in Changes).",
 				upstream, join_list(pull_blockers, 3), pull_blockers.size() == 1 ? "it" : "them"));
 	} else {
 		pull_button->set_tooltip_text(behind > 0
@@ -747,6 +763,10 @@ void GitDock::_on_more_menu_id(int p_id) {
 		} break;
 		case MORE_OPEN_FOLDER: {
 			OS::get_singleton()->shell_show_in_file_manager(repo->get_workdir(), true);
+		} break;
+		case MORE_CHANGE_MARKS: {
+			EditorInterface::get_singleton()->get_editor_settings()->set_setting(CHANGE_MARKS_SETTING, !_is_change_marks_enabled());
+			script_marks->set_enabled(_is_change_marks_enabled());
 		} break;
 		case MORE_FILESYSTEM_COLORS: {
 			EditorInterface::get_singleton()->get_editor_settings()->set_project_metadata("godot_git", "filesystem_colors", !_is_filesystem_colors_enabled());

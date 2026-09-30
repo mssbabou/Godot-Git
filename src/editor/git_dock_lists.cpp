@@ -13,7 +13,6 @@
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/classes/v_scroll_bar.hpp>
 #include <godot_cpp/core/math.hpp>
-#include <godot_cpp/templates/hash_set.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
 #include "editor/git_diff_dock.h"
@@ -178,30 +177,21 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status) {
 
 	int files = 0;
 	int rows = 0;
-	if (!p_pane.staged) {
-		unstaged_paths.clear();
-	}
+	PackedStringArray &listed_paths = p_pane.staged ? staged_paths : unstaged_paths;
+	listed_paths.clear();
 
 	// Godot's companion files (player.gd.uid, coin.png.import) go with their file: when both are
 	// in this list, the companion gets no row of its own; the file's row says "+uid" / "+import"
 	// and its actions include it. A companion whose file didn't change stays a row: then it's the
 	// change (new import settings, say). Without this, adding assets filled the list with them.
-	HashSet<String> listed;
+	PackedStringArray listed;
 	for (int i = 0; i < p_status.size(); i++) {
 		const Dictionary entry = p_status[i];
 		if (!String(entry[key]).is_empty()) {
-			listed.insert(entry["path"]);
+			listed.push_back(entry["path"]);
 		}
 	}
-	Dictionary companions; // File -> PackedStringArray of its companions in this list.
-	for (const String &path : listed) {
-		const String owner = companion_owner(path);
-		if (!owner.is_empty() && listed.has(owner)) {
-			PackedStringArray of = companions.get(owner, PackedStringArray());
-			of.push_back(path);
-			companions[owner] = of;
-		}
-	}
+	const Dictionary companions = grouped_companions(listed);
 
 	for (int i = 0; i < p_status.size(); i++) {
 		const Dictionary entry = p_status[i];
@@ -211,11 +201,8 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status) {
 		}
 		const String path = entry["path"];
 		files++;
-		if (!p_pane.staged) {
-			unstaged_paths.push_back(path);
-		}
-		const String owner = companion_owner(path);
-		if (!owner.is_empty() && listed.has(owner)) {
+		listed_paths.push_back(path);
+		if (is_grouped(companions, path)) {
 			continue; // Shown on its file's row.
 		}
 		rows++;
@@ -329,7 +316,7 @@ void GitDock::_show_line_stats(FilePane &p_pane) {
 		}
 		const PackedStringArray blocking = _blocking_paths(item);
 		if (!blocking.is_empty()) {
-			tooltip += vformat("\n\nThe new commits on %s change %s too, in a way your uncommitted changes can't be merged with, so Pull waits until they're committed or discarded.", String(sync_status.get("upstream", String())), blocking.size() == 1 && blocking[0] == path ? String("this file") : String(", ").join(blocking));
+			tooltip += vformat("\n\nThe new commits on %s change %s too, in a way your uncommitted changes can't be merged with, so Pull waits until they're committed, stashed or discarded.", String(sync_status.get("upstream", String())), blocking.size() == 1 && blocking[0] == path ? String("this file") : String(", ").join(blocking));
 		}
 		item->set_tooltip_text(COLUMN_NAME, tooltip);
 		item->set_meta("git_tooltip", tooltip); // Put back after the tooltip of a row button.
@@ -529,7 +516,13 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 float GitDock::_draw_row_buttons(TreeItem *p_item, const FilePane &p_pane, const Rect2 &p_rect, float p_right) {
 	Tree *tree = p_pane.tree;
 	const RID canvas = tree->get_custom_drawing_canvas_item();
-	const Ref<StyleBox> hover_style = tree->get_theme_stylebox("button_hover");
+	// The 4.7 "modern" editor theme uses one stylebox for a Tree's row hover and its button hover,
+	// so a hovered button on its (always hovered) row didn't show at all. Then the theme's
+	// stronger shade of the same color, the pressed style, marks the button instead.
+	Ref<StyleBox> hover_style = tree->get_theme_stylebox("button_hover");
+	if (hover_style == tree->get_theme_stylebox("hovered")) {
+		hover_style = tree->get_theme_stylebox("button_pressed");
+	}
 	const Size2 padding = tree->get_theme_stylebox("button_pressed")->get_minimum_size();
 	const float margin = tree->get_theme_constant("button_margin");
 	float right = p_right;

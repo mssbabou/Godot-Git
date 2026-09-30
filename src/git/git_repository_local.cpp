@@ -325,3 +325,86 @@ Error GitRepository::create_branch(const String &p_name) {
 	}
 	return to_error(git_repository_set_head(repo, git_reference_name(ref)));
 }
+
+// Renames a local branch (the current one too: HEAD follows). Its upstream setting moves with it,
+// like `git branch -m`; the branch on the remote keeps its old name.
+Error GitRepository::rename_branch(const String &p_branch, const String &p_new_name) {
+	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
+	git_error_clear();
+	if (require_no_operation(repo, "rename branches") != OK) {
+		return FAILED;
+	}
+	int valid = 0;
+	if (git_branch_name_is_valid(&valid, p_new_name.utf8().get_data()) < 0 || !valid) {
+		return fail(vformat("\"%s\" isn't a valid branch name.", p_new_name));
+	}
+	ReferencePtr ref;
+	if (git_branch_lookup(ref.out(), repo, p_branch.utf8().get_data(), GIT_BRANCH_LOCAL) < 0) {
+		return fail(vformat("There is no branch called \"%s\".", p_branch));
+	}
+	ReferencePtr renamed;
+	const int err = git_branch_move(renamed.out(), ref, p_new_name.utf8().get_data(), 0);
+	if (err == GIT_EEXISTS) {
+		return fail(vformat("A branch called \"%s\" already exists.", p_new_name));
+	}
+	return to_error(err);
+}
+
+// Deletes a local branch, never the current one. The branch on the remote stays. Commits only it
+// had are lost (see get_branch_details), so the panel asks first.
+Error GitRepository::delete_branch(const String &p_branch) {
+	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
+	git_error_clear();
+	if (require_no_operation(repo, "delete branches") != OK) {
+		return FAILED;
+	}
+	ReferencePtr ref;
+	if (git_branch_lookup(ref.out(), repo, p_branch.utf8().get_data(), GIT_BRANCH_LOCAL) < 0) {
+		return fail(vformat("There is no branch called \"%s\".", p_branch));
+	}
+	if (git_branch_is_head(ref) == 1) {
+		return fail(vformat("You're on %s. Switch to another branch before deleting it.", p_branch));
+	}
+	return to_error(git_branch_delete(ref));
+}
+
+// What deleting a local branch would mean: "unique", how many of its commits no other branch, tag
+// or remote-tracking branch has (those would be lost; -1 if unknown), and "upstream", the
+// remote-tracking branch it follows ("origin/x", or "").
+Dictionary GitRepository::get_branch_details(const String &p_branch) const {
+	Dictionary details;
+	details["unique"] = -1;
+	details["upstream"] = String();
+	ERR_FAIL_NULL_V_MSG(repo, details, "Repository is not open.");
+
+	ReferencePtr ref;
+	if (git_branch_lookup(ref.out(), repo, p_branch.utf8().get_data(), GIT_BRANCH_LOCAL) < 0) {
+		return details;
+	}
+	ReferencePtr upstream;
+	const char *upstream_name = nullptr;
+	if (git_branch_upstream(upstream.out(), ref) == 0 && git_branch_name(&upstream_name, upstream) == 0) {
+		details["upstream"] = String::utf8(upstream_name);
+	}
+
+	RevwalkPtr walk;
+	if (git_revwalk_new(walk.out(), repo) < 0 || git_revwalk_push_ref(walk, git_reference_name(ref)) < 0) {
+		return details;
+	}
+	git_revwalk_hide_glob(walk, "refs/remotes");
+	git_revwalk_hide_glob(walk, "refs/tags");
+	git_revwalk_hide_head(walk); // Fails without commits or on an unborn branch; nothing to hide then.
+	for (const String &other : get_branches()) {
+		if (other != p_branch) {
+			git_revwalk_hide_ref(walk, vformat("refs/heads/%s", other).utf8().get_data());
+		}
+	}
+	int unique = 0;
+	git_oid oid;
+	while (git_revwalk_next(&oid, walk) == 0) {
+		unique++;
+	}
+	git_error_clear(); // From a hide that had nothing to hide.
+	details["unique"] = unique;
+	return details;
+}

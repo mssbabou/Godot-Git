@@ -29,6 +29,7 @@
 
 class GitDiffDock;
 class GitFileSystemColors;
+class GitScriptMarks;
 
 using namespace godot;
 
@@ -70,6 +71,10 @@ class GitDock : public EditorDock {
 		MORE_BUILD_INFO,
 		MORE_FILESYSTEM_COLORS,
 		MORE_STASH_ALL,
+		MORE_CHANGE_MARKS,
+		// Branch picker items after the branches.
+		BRANCH_RENAME,
+		BRANCH_DELETE,
 	};
 
 	// The buttons on a hovered stash row.
@@ -204,6 +209,12 @@ class GitDock : public EditorDock {
 	PackedStringArray pending_discard;
 	ConfirmationDialog *branch_dialog = nullptr;
 	LineEdit *branch_name_edit = nullptr;
+	ConfirmationDialog *rename_dialog = nullptr; // Renames the current branch.
+	Label *rename_label = nullptr;
+	LineEdit *rename_edit = nullptr;
+	ConfirmationDialog *delete_branch_dialog = nullptr; // Picks another local branch to delete.
+	OptionButton *delete_branch_select = nullptr;
+	Label *delete_branch_label = nullptr;
 	ConfirmationDialog *switch_confirm = nullptr; // Switching to a branch without this addon.
 	String pending_switch;
 
@@ -229,6 +240,7 @@ class GitDock : public EditorDock {
 	int staged_count = 0;
 	bool has_commits = false;
 	bool align_queued = false;
+	PackedStringArray staged_paths; // Every file in Staged Changes / Changes, companions too.
 	PackedStringArray unstaged_paths;
 
 	Ref<Thread> network_thread;
@@ -259,6 +271,7 @@ class GitDock : public EditorDock {
 	bool unsaved_checked = false; // Set just before unsaved_then runs, so it doesn't ask again.
 	Dictionary open_scene_hashes; // res:// path -> MD5 of the file, before the operation.
 	GitFileSystemColors *filesystem_colors = nullptr;
+	GitScriptMarks *script_marks = nullptr; // Changed lines marked in the script editor.
 
 	// The Diff panel at the bottom, and the file it shows: clicking a file here shows its diff there.
 	GitDiffDock *diff_dock = nullptr;
@@ -315,6 +328,13 @@ class GitDock : public EditorDock {
 	String _addon_removed_by(const String &p_branch) const;
 	void _switch_branch(const String &p_branch);
 	void _on_branch_dialog_confirmed();
+	void _build_branch_dialogs();
+	void _show_rename_dialog();
+	void _on_rename_text_changed(const String &p_text);
+	void _on_rename_confirmed();
+	void _show_delete_branch_dialog();
+	void _on_delete_branch_picked(int p_index);
+	void _on_delete_branch_confirmed();
 
 	// git_dock_commit.cpp: the commit box.
 	void _on_commit_message_input(const Ref<InputEvent> &p_event);
@@ -365,6 +385,7 @@ class GitDock : public EditorDock {
 	// git_dock_history.cpp: History.
 	void _fill_history();
 	void _fill_commit(TreeItem *p_item);
+	int _add_commit_file_rows(Tree *p_tree, TreeItem *p_parent, const Array &p_files, const String &p_hash, int p_max_rows);
 	TreeItem *_add_commit_file_row(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_file, const String &p_hash);
 	void _on_history_item_collapsed(TreeItem *p_item);
 	void _fill_commit_later(uint64_t p_item);
@@ -420,6 +441,9 @@ class GitDock : public EditorDock {
 	void _reload_changed_scenes();
 	bool _is_filesystem_colors_enabled() const;
 	void _update_filesystem_colors(const Array &p_status);
+	void _register_settings();
+	bool _is_change_marks_enabled() const;
+	void _on_editor_settings_changed();
 
 	// git_dock_setup.cpp: setting a repository up (Initialize, Add Remote, name and email).
 	void _build_setup(Control *p_parent);
@@ -451,6 +475,12 @@ protected:
 public:
 	void refresh();
 	void set_diff_dock(GitDiffDock *p_dock);
+
+	// For the FileSystem dock's right-click menu (GitFileSystemMenu; in git_dock_editor.cpp).
+	PackedStringArray get_changed_paths(const PackedStringArray &p_res_paths, bool p_staged) const;
+	void show_change(const String &p_path);
+	void discard_changes(const PackedStringArray &p_paths);
+	GitScriptMarks *get_script_marks() const { return script_marks; }
 
 	GitDock();
 };

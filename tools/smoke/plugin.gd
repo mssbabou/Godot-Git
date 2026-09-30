@@ -229,6 +229,16 @@ func _run() -> void:
 		await _frames()
 		_check(not commit.collapsed and history.get_selected() != null, "an expanded commit and the selection survive a refresh")
 
+	# A commit's .uid is shown on its script's row, not as a row of its own.
+	var hud := _commit_row("Add a health HUD")
+	_check(hud != null, "History lists the merged branch's commit")
+	if hud:
+		_click(history, hud)
+		await _frames()
+		var script := _row(history, func(item: TreeItem) -> bool: return item.get_parent() == hud and item.get_meta("git_path", "") == "hud.gd")
+		var uid := _row(history, func(item: TreeItem) -> bool: return item.get_parent() == hud and item.get_meta("git_path", "") == "hud.gd.uid")
+		_check(script != null and uid == null and PackedStringArray(script.get_meta("git_companions", PackedStringArray())).has("hud.gd.uid"), "a commit's .uid is shown on its file's row")
+
 	# Line counts arrive from the background after an edit.
 	var coin := FileAccess.open("res://coin.gd", FileAccess.READ_WRITE)
 	coin.seek_end()
@@ -337,6 +347,44 @@ func _stash_done() -> void:
 	for label: RichTextLabel in _smoke_dock().find_children("*", "RichTextLabel", true, false):
 		strip += label.get_parsed_text()
 	_smoke_check(staged.size() == 1 and not _smoke_section("Stashes").visible, "restoring puts it back, staged, and the section goes away (strip: %s)" % strip)
+	# Change marks: open a changed script in the script editor.
+	EditorInterface.edit_script(load("res://player.gd"))
+	get_tree().create_timer(1.5).timeout.connect(_marks_check)
+
+
+func _marks_check() -> void:
+	var marks: Node = null
+	for node in _smoke_dock().get_children():
+		if node.get_class() == "GitScriptMarks":
+			marks = node
+	var editor := EditorInterface.get_script_editor().get_current_editor()
+	var code_edit := editor.get_base_editor() as CodeEdit if editor else null
+	var has_column := false
+	if code_edit:
+		for i in code_edit.get_gutter_count():
+			has_column = has_column or code_edit.get_gutter_name(i) == "godot_git_changes"
+	var hunks: Array = marks.get_hunks(code_edit) if marks and code_edit else []
+	_smoke_check(has_column and hunks.size() >= 3, "a changed script gets change marks (%d changes)" % hunks.size())
+	if marks and code_edit and not hunks.is_empty():
+		marks.show_preview(code_edit, 1)
+		var preview_open := code_edit.find_children("*", "GitChangePreview", false, false).size() == 1
+		var labels := PackedStringArray()
+		for label: Label in code_edit.find_children("*", "Label", true, false):
+			labels.append(label.text)
+		_smoke_check(preview_open and " ".join(labels).contains("Change 2 of"), "clicking a mark shows what was there (%s)" % " ".join(labels))
+		# Reverting every change, last first, gives back the committed text (unsaved, in the editor).
+		for i in range(hunks.size() - 1, -1, -1):
+			marks.revert(code_edit, i)
+		var committed := ""
+		var out := []
+		OS.execute("git", ["-C", ProjectSettings.globalize_path("res://"), "show", "HEAD:player.gd"], out)
+		committed = "".join(out)
+		_smoke_check(marks.get_hunks(code_edit).is_empty() and code_edit.text.strip_edges() == committed.strip_edges(), "reverting every change gives back the committed text")
+		code_edit.undo() # Leaves the file as it was, for anything after this.
+	_smoke_finish()
+
+
+func _smoke_finish() -> void:
 	var failed := int(get_tree().root.get_meta("smoke_failures", 0))
 	if failed == 0:
 		print("SMOKE: OK")

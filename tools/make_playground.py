@@ -10,6 +10,7 @@ project/addons/godot_git, so build first. Open it with: godot -e --path <folder>
 
 What's in it:
 - history: a first commit, a commit with a message body, a feature branch merged back in
+  (its script's .uid committed with it), and an unmerged "experiment" branch
   (--smoke adds 60 more small commits, for "Load More Commits");
 - staged: an edited script, a rename, and an image saved again with the same pixels; unstaged: an
   edited script with several hunks, an edited scene, a recolored sprite, a changed SVG, a changed
@@ -257,12 +258,19 @@ enabled=PackedStringArray(%s)
     git("commit", "-q", "-am", "Make enemies hit harder", "-m", "Playtesters walked straight through them.", "-m", "Two damage makes them worth avoiding.")
     git("checkout", "-q", "-b", "hud")
     write("hud.gd", HUD)
-    git("add", "hud.gd")
+    write("hud.gd.uid", "uid://c8hudplayground\n")  # Shown on hud.gd's row in History ("+uid").
+    git("add", "hud.gd", "hud.gd.uid")
     git("commit", "-q", "-m", "Add a health HUD")
     git("checkout", "-q", "main")
     write("util/old_util.gd", UTIL.replace("clamp01", "clamp_01"))
     git("commit", "-q", "-am", "Rename clamp01")
     git("merge", "-q", "--no-ff", "--no-edit", "hud")
+    # A branch with a commit no other branch has, for Delete Branch's warning.
+    git("checkout", "-q", "-b", "experiment")
+    write("experiment.txt", "Trying a double jump.\n")
+    git("add", "experiment.txt")
+    git("commit", "-q", "-m", "Try a double jump")
+    git("checkout", "-q", "main")
     if smoke:
         for i in range(60):
             write("counter.txt", "%d\n" % i)

@@ -147,14 +147,38 @@ void GitDock::_fill_commit(TreeItem *p_item) {
 	if (files.is_empty()) {
 		add_note("No file changes.", String());
 	}
-	// Enough for any real commit; beyond that the tree would only get slow.
-	constexpr int MAX_ROWS = 500;
-	for (int i = 0; i < MIN((int)files.size(), MAX_ROWS); i++) {
-		_add_commit_file_row(history_tree, p_item, files[i], hash);
+	// 500 rows is enough for any real commit; beyond that the tree would only get slow.
+	const int left_out = _add_commit_file_rows(history_tree, p_item, files, hash, 500);
+	if (left_out > 0) {
+		add_note(vformat("...and %d more files, not listed.", left_out), String());
 	}
-	if (files.size() > MAX_ROWS) {
-		add_note(vformat("...and %d more files, not listed.", files.size() - MAX_ROWS), String());
+}
+
+// A commit's or stash's files under p_parent, with companions (player.gd.uid) on their file's row
+// like the change lists (see _fill_file_pane). Returns how many files didn't fit in p_max_rows.
+int GitDock::_add_commit_file_rows(Tree *p_tree, TreeItem *p_parent, const Array &p_files, const String &p_hash, int p_max_rows) {
+	PackedStringArray paths;
+	for (int i = 0; i < p_files.size(); i++) {
+		paths.push_back(Dictionary(p_files[i])["path"]);
 	}
+	const Dictionary companions = grouped_companions(paths);
+	int rows = 0;
+	for (int i = 0; i < p_files.size(); i++) {
+		if (is_grouped(companions, paths[i])) {
+			continue;
+		}
+		if (rows == p_max_rows) {
+			return p_files.size() - i;
+		}
+		TreeItem *item = _add_commit_file_row(p_tree, p_parent, p_files[i], p_hash);
+		if (companions.has(paths[i])) {
+			const PackedStringArray with = companions[paths[i]];
+			item->set_meta("git_companions", with);
+			item->set_tooltip_text(0, vformat("%s\nWith %s, which Godot keeps next to it.", item->get_tooltip_text(0), String(", ").join(with)));
+		}
+		rows++;
+	}
+	return 0;
 }
 
 // A row for one file of a commit or stash (p_hash; see GitRepository::get_commit_files), drawn

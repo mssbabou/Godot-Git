@@ -13,9 +13,11 @@
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/margin_container.hpp>
 #include <godot_cpp/classes/style_box_empty.hpp>
+#include <godot_cpp/classes/theme.hpp>
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/classes/v_scroll_bar.hpp>
 
+#include "editor/git_colors.h"
 #include "editor/ui_text.h"
 
 using namespace godot_git;
@@ -162,13 +164,20 @@ void GitDiffDock::_notification(int p_what) {
 	}
 }
 
+// The tint of an added or removed line, drawn over the code editor's background. Also used by
+// the script editor's change preview (GitChangePreview), so both show changes in one red and green.
+Color GitDiffDock::row_tint(bool p_added) {
+	const Color color = EditorInterface::get_singleton()->get_editor_theme()->get_color(p_added ? "success_color" : "error_color", "Editor");
+	return color * Color(1, 1, 1, 0.14);
+}
+
 void GitDiffDock::_update_theme() {
-	theme.added = get_theme_color("success_color", "Editor");
-	theme.removed = get_theme_color("error_color", "Editor");
+	theme.added = change_color(CHANGE_ADDED); // The +/- counts and signs; row tints below.
+	theme.removed = change_color(CHANGE_REMOVED);
 	theme.dim = get_theme_color("font_color", "Label") * Color(1, 1, 1, 0.55);
 	theme.row_background[ROW_CONTEXT] = Color(0, 0, 0, 0);
-	theme.row_background[ROW_ADDED] = theme.added * Color(1, 1, 1, 0.14);
-	theme.row_background[ROW_REMOVED] = theme.removed * Color(1, 1, 1, 0.14);
+	theme.row_background[ROW_ADDED] = row_tint(true);
+	theme.row_background[ROW_REMOVED] = row_tint(false);
 	theme.row_background[ROW_HEADER] = get_theme_color("accent_color", "Editor") * Color(1, 1, 1, 0.1);
 	theme.row_background[ROW_FILLER] = get_theme_color("font_color", "Label") * Color(1, 1, 1, 0.03);
 

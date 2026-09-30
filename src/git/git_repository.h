@@ -70,6 +70,7 @@ public:
 	Array get_large_staged_files(int64_t p_min_size) const;
 	PackedStringArray get_pull_blockers() const;
 	Dictionary get_operation() const;
+	Dictionary get_branch_details(const String &p_branch) const;
 
 	Error stage(const String &p_path);
 	Error unstage(const String &p_path);
@@ -85,6 +86,8 @@ public:
 	bool is_head_pushed() const;
 	Error checkout_branch(const String &p_branch);
 	Error create_branch(const String &p_name);
+	Error rename_branch(const String &p_branch, const String &p_new_name);
+	Error delete_branch(const String &p_branch);
 	Error add_remote(const String &p_name, const String &p_url);
 	Dictionary get_identity() const;
 	Error set_identity(const String &p_name, const String &p_email, bool p_global);
@@ -108,6 +111,7 @@ public:
 	static void set_git_program(const String &p_program);
 	static String get_last_error();
 	static String get_libgit2_version();
+	static Array diff_lines(const String &p_old, const String &p_new);
 
 	~GitRepository();
 };

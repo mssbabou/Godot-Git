@@ -6,9 +6,23 @@ void GitEditorPlugin::_enter_tree() {
 	diff_dock = memnew(GitDiffDock);
 	add_dock(diff_dock);
 	dock->set_diff_dock(diff_dock);
+	filesystem_menu.instantiate();
+	filesystem_menu->set_dock(dock);
+	add_context_menu_plugin(EditorContextMenuPlugin::CONTEXT_SLOT_FILESYSTEM, filesystem_menu);
+	script_menu.instantiate();
+	script_menu->set_marks(dock->get_script_marks());
+	add_context_menu_plugin(EditorContextMenuPlugin::CONTEXT_SLOT_SCRIPT_EDITOR_CODE, script_menu);
 }
 
 void GitEditorPlugin::_exit_tree() {
+	if (filesystem_menu.is_valid()) {
+		remove_context_menu_plugin(filesystem_menu);
+		filesystem_menu.unref();
+	}
+	if (script_menu.is_valid()) {
+		remove_context_menu_plugin(script_menu);
+		script_menu.unref();
+	}
 	if (dock) {
 		remove_dock(dock);
 		// Not queue_free: when the addon's files disappear (switching to a branch without it),

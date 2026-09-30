@@ -105,6 +105,9 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("commit_runs_git", "amend"), &GitRepository::commit_runs_git);
 	ClassDB::bind_method(D_METHOD("checkout_branch", "branch"), &GitRepository::checkout_branch);
 	ClassDB::bind_method(D_METHOD("create_branch", "name"), &GitRepository::create_branch);
+	ClassDB::bind_method(D_METHOD("rename_branch", "branch", "new_name"), &GitRepository::rename_branch);
+	ClassDB::bind_method(D_METHOD("delete_branch", "branch"), &GitRepository::delete_branch);
+	ClassDB::bind_method(D_METHOD("get_branch_details", "branch"), &GitRepository::get_branch_details);
 	ClassDB::bind_method(D_METHOD("add_remote", "name", "url"), &GitRepository::add_remote);
 	ClassDB::bind_method(D_METHOD("get_identity"), &GitRepository::get_identity);
 	ClassDB::bind_method(D_METHOD("set_identity", "name", "email", "global"), &GitRepository::set_identity);
@@ -125,6 +128,7 @@ void GitRepository::_bind_methods() {
 
 	ClassDB::bind_static_method("GitRepository", D_METHOD("get_last_error"), &GitRepository::get_last_error);
 	ClassDB::bind_static_method("GitRepository", D_METHOD("get_libgit2_version"), &GitRepository::get_libgit2_version);
+	ClassDB::bind_static_method("GitRepository", D_METHOD("diff_lines", "old", "new"), &GitRepository::diff_lines);
 	ClassDB::bind_static_method("GitRepository", D_METHOD("is_git_installed"), &GitRepository::is_git_installed);
 	ClassDB::bind_static_method("GitRepository", D_METHOD("check_git_installed"), &GitRepository::check_git_installed);
 	ClassDB::bind_static_method("GitRepository", D_METHOD("set_git_program", "program"), &GitRepository::set_git_program);
@@ -421,7 +425,8 @@ PackedStringArray GitRepository::get_remotes() const {
 }
 
 // How the current branch relates to its upstream:
-// { "branch": String, "upstream": String ("" if none), "ahead": int, "behind": int, "has_remotes": bool }
+// { "branch": String, "upstream": String ("" if none), "ahead": int, "behind": int, "has_remotes": bool,
+// "head": HEAD's commit id ("" without commits) }
 Dictionary GitRepository::get_sync_status() const {
 	Dictionary result;
 	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
@@ -435,6 +440,10 @@ Dictionary GitRepository::get_sync_status() const {
 	// ahead/behind counts are. 0 if never fetched.
 	const String fetch_head = String::utf8(git_repository_commondir(repo)).path_join("FETCH_HEAD");
 	result["last_fetched"] = FileAccess::file_exists(fetch_head) ? (int64_t)FileAccess::get_modified_time(fetch_head) : (int64_t)0;
+
+	git_oid head_id;
+	result["head"] = git_reference_name_to_id(&head_id, repo, "HEAD") == 0 ? String(git_oid_tostr_s(&head_id)) : String();
+	git_error_clear(); // No commits yet.
 
 	ReferencePtr head;
 	if (git_repository_head(head.out(), repo) < 0) {

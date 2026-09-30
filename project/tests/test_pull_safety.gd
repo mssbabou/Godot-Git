@@ -103,7 +103,7 @@ func _refused_when_incoming_touches_uncommitted_edit() -> void:
 	var err := r.pull()
 	var message := GitRepository.get_last_error()
 	check("refused", err != OK, message)
-	check("message names the file and what to do", message.contains("x.txt") and message.contains("Commit or discard"), message)
+	check("message names the file and what to do", message.contains("x.txt") and message.contains("Commit, stash or discard"), message)
 	check("HEAD unchanged", git(s.mine, ["rev-parse", "HEAD"]) == head)
 	check("my edit untouched", read(s.mine.path_join("x.txt")) == "x-my-uncommitted\n", read(s.mine.path_join("x.txt")))
 	check("no stash left behind", git(s.mine, ["stash", "list"]) == "", git(s.mine, ["stash", "list"]))
@@ -139,7 +139,7 @@ func _refused_on_fast_forward_too() -> void:
 	teammate_pushes(s, "x.txt", "x-theirs\n")
 	write(s.mine.path_join("x.txt"), "x-my-uncommitted\n")
 	var r := open(s.mine)
-	check("refused with the same clear message", r.pull() != OK and GitRepository.get_last_error().contains("Commit or discard"), GitRepository.get_last_error())
+	check("refused with the same clear message", r.pull() != OK and GitRepository.get_last_error().contains("Commit, stash or discard"), GitRepository.get_last_error())
 	check("my edit untouched", read(s.mine.path_join("x.txt")) == "x-my-uncommitted\n")
 
 

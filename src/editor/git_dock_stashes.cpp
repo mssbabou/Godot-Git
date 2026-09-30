@@ -121,10 +121,7 @@ void GitDock::_fill_stash(TreeItem *p_item) {
 	if (!stash_files.has(hash)) {
 		stash_files[hash] = repo->get_stash_files(hash);
 	}
-	const Array files = stash_files[hash];
-	for (int i = 0; i < files.size(); i++) {
-		_add_commit_file_row(stashes_tree, p_item, files[i], hash);
-	}
+	_add_commit_file_rows(stashes_tree, p_item, stash_files[hash], hash, INT32_MAX);
 }
 
 void GitDock::_on_stash_item_collapsed(TreeItem *p_item) {

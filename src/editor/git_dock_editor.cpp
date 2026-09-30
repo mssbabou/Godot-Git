@@ -6,9 +6,13 @@
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/script_editor.hpp>
 
 #include "editor/filesystem_colors.h"
+#include "editor/git_colors.h"
+#include "editor/git_dock_util.h"
+#include "editor/script_marks.h"
 #include "editor/ui_text.h"
 
 using namespace godot_git;
@@ -149,7 +153,6 @@ void GitDock::_update_filesystem_colors(const Array &p_status) {
 	Dictionary colors;
 	Dictionary badges; // The status letter at the row's right edge; a dot for folders.
 	if (_is_filesystem_colors_enabled()) {
-		const Color text = get_theme_color("font_color", "Tree");
 		Dictionary folder_rank; // Folder -> 1 new, 2 modified, 3 deleted or conflicted.
 		for (int i = 0; i < p_status.size(); i++) {
 			const Dictionary entry = p_status[i];
@@ -159,12 +162,9 @@ void GitDock::_update_filesystem_colors(const Array &p_status) {
 			if (state.is_empty() || !path.begins_with("res://")) {
 				continue;
 			}
-			// Names a quarter of the way to the normal text color: the full status colors read too
-			// saturated for whole names (the maintainer, 2026-09-29). Folders go further (below), so
-			// a changed file still stands out from the folders holding it. The letters keep the
-			// full color: they're small, and they carry the status.
-			colors[path] = _status_color(state).lerp(text, 0.25);
-			badges[path] = Array::make(status_letter(state), _status_color(state));
+			// Name and letter in the same color, the panel's one color for that status (git_colors.h).
+			colors[path] = status_color(state);
+			badges[path] = Array::make(status_letter(state), status_color(state));
 			const int rank = (state == "new" || state == "untracked") ? 1 : (state == "deleted" || state == "conflicted") ? 3
 																														  : 2;
 			for (String folder = path.get_base_dir(); folder != "res://" && folder.begins_with("res://"); folder = folder.get_base_dir()) {
@@ -174,14 +174,75 @@ void GitDock::_update_filesystem_colors(const Array &p_status) {
 				}
 			}
 		}
+		// Folders keep their normal name; a dot in the strongest of their changes' colors says
+		// something inside changed. Colored folder names in a second, softer shade made too many
+		// shades of each color (maintainer, 2026-09-30).
 		const Array folders = folder_rank.keys();
 		for (int i = 0; i < folders.size(); i++) {
 			const int rank = folder_rank[folders[i]];
-			const Color color = _status_color(rank == 1 ? "new" : rank == 3 ? "deleted"
-																			: "modified");
-			colors[folders[i]] = color.lerp(text, 0.45);
-			badges[folders[i]] = Array::make(String::utf8("•"), color);
+			badges[folders[i]] = Array::make(String::utf8("•"), change_color(rank == 1 ? CHANGE_ADDED : rank == 3 ? CHANGE_REMOVED
+																												  : CHANGE_MODIFIED));
 		}
 	}
 	filesystem_colors->set_colors(colors, badges);
+}
+
+// The files (repository paths) with changes in Staged Changes (p_staged) or Changes at or under
+// the FileSystem dock's p_res_paths (folders end in "/"). A file brings its companions along,
+// which the FileSystem dock doesn't list (player.gd.uid), like its row in the list does.
+PackedStringArray GitDock::get_changed_paths(const PackedStringArray &p_res_paths, bool p_staged) const {
+	PackedStringArray result;
+	if (repo.is_null() || !repo->is_open()) {
+		return result;
+	}
+	const PackedStringArray &listed = p_staged ? staged_paths : unstaged_paths;
+	const String workdir = repo->get_workdir().simplify_path().trim_suffix("/") + "/";
+	for (const String &res_path : p_res_paths) {
+		const bool folder = res_path.ends_with("/");
+		const String absolute = ProjectSettings::get_singleton()->globalize_path(res_path).simplify_path();
+		if (!absolute.begins_with(workdir) && absolute != workdir.trim_suffix("/")) {
+			continue; // Outside the repository.
+		}
+		const String path = absolute.substr(workdir.length()).trim_suffix("/");
+		for (const String &changed : listed) {
+			const bool match = folder ? (path.is_empty() || changed.begins_with(vformat("%s/", path))) : (changed == path || companion_owner(changed) == path);
+			if (match && !result.has(changed)) {
+				result.push_back(changed);
+			}
+		}
+	}
+	return result;
+}
+
+// Shows a file's changes in the Diff panel, the unstaged ones if it has both.
+void GitDock::show_change(const String &p_path) {
+	_show_diff(p_path, !unstaged_paths.has(p_path), true);
+}
+
+void GitDock::discard_changes(const PackedStringArray &p_paths) {
+	_confirm_discard(p_paths);
+}
+
+// Our settings live in Editor Settings (under godot_git/), so they follow you to every project and
+// get Godot's revert button. Godot only lists a plugin's settings with "Advanced Settings" ticked
+// (gotcha 49), so the ⋮ menu offers each one too.
+void GitDock::_register_settings() {
+	const Ref<EditorSettings> settings = EditorInterface::get_singleton()->get_editor_settings();
+	if (!settings->has_setting(CHANGE_MARKS_SETTING)) {
+		settings->set_setting(CHANGE_MARKS_SETTING, true);
+	}
+	settings->set_initial_value(CHANGE_MARKS_SETTING, true, false);
+	Dictionary info;
+	info["name"] = CHANGE_MARKS_SETTING;
+	info["type"] = Variant::BOOL;
+	settings->add_property_info(info);
+}
+
+bool GitDock::_is_change_marks_enabled() const {
+	return EditorInterface::get_singleton()->get_editor_settings()->get_setting(CHANGE_MARKS_SETTING);
+}
+
+// A setting changed in Editor Settings rather than through the ⋮ menu.
+void GitDock::_on_editor_settings_changed() {
+	script_marks->set_enabled(_is_change_marks_enabled());
 }

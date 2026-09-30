@@ -192,7 +192,7 @@ void GitDiffDock::_fill_pane(Pane &r_pane, const Rows &p_rows) {
 
 	// The highlighter reads the mirror, where hunk headers and fillers are blank lines. Plain text
 	// has no highlighter, and then no mirror text either: setting a long text costs real time.
-	const Ref<SyntaxHighlighter> code = p_rows.text.is_empty() ? Ref<SyntaxHighlighter>() : _make_code_highlighter();
+	const Ref<SyntaxHighlighter> code = p_rows.text.is_empty() ? Ref<SyntaxHighlighter>() : make_code_highlighter(diff.get("path", String()));
 	PackedStringArray code_lines;
 	if (code.is_valid()) {
 		code_lines = p_rows.text;
@@ -231,8 +231,11 @@ void GitDiffDock::_fill_pane(Pane &r_pane, const Rows &p_rows) {
 
 // The script editor's highlighting for GDScript, a generic one (strings, numbers, comments) for
 // other code and Godot's text formats, none for plain text.
-Ref<SyntaxHighlighter> GitDiffDock::_make_code_highlighter() const {
-	const String extension = String(diff.get("path", String())).get_extension().to_lower();
+// The script editor's highlighting for a file of p_path's type: Godot's own for GDScript, colored
+// strings, numbers and comments for other code, none for plain text. Also used by the script
+// editor's change preview (GitScriptMarks).
+Ref<SyntaxHighlighter> GitDiffDock::make_code_highlighter(const String &p_path) {
+	const String extension = p_path.get_extension().to_lower();
 	if (extension == "gd") {
 		Ref<GDScriptSyntaxHighlighter> gdscript;
 		gdscript.instantiate();

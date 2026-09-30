@@ -166,16 +166,18 @@ void GitFileSystemColors::_paint_tree(bool p_restore_only) {
 			stack.push_back(child);
 		}
 		const Variant path = item->get_metadata(0);
-		const bool changed = !p_restore_only && path.get_type() == Variant::STRING && colors.has(path);
+		const bool is_path = !p_restore_only && path.get_type() == Variant::STRING;
+		// A badge without a name color is a folder's dot: its name stays as it is.
+		if (is_path && badges.has(path)) {
+			const Array badge = badges[path];
+			painted_badges.push_back({ item->get_instance_id(), badge[0], badge[1] });
+		}
+		const bool changed = is_path && colors.has(path);
 		if (changed) {
 			if (!item->has_meta(META_PREVIOUS)) {
 				item->set_meta(META_PREVIOUS, item->get_custom_color(0));
 			}
 			item->set_custom_color(0, colors[path]);
-			if (badges.has(path)) {
-				const Array badge = badges[path];
-				painted_badges.push_back({ item->get_instance_id(), badge[0], badge[1] });
-			}
 		} else if (item->has_meta(META_PREVIOUS)) {
 			const Color previous = item->get_meta(META_PREVIOUS);
 			item->remove_meta(META_PREVIOUS);

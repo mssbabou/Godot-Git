@@ -3,6 +3,9 @@
 // Small helpers shared by GitDock's source files (not part of its interface).
 
 #include <godot_cpp/classes/tree_item.hpp>
+#include <godot_cpp/templates/hash_set.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 
 using namespace godot;
@@ -14,6 +17,10 @@ enum FileColumn {
 	COLUMN_NAME,
 	FILE_COLUMN_COUNT,
 };
+
+// Our settings in Editor Settings (see _register_settings). Plain strings: no global String objects
+// (gotcha 3).
+inline constexpr const char *CHANGE_MARKS_SETTING = "godot_git/script_editor/change_marks";
 
 // What a History row is: "commit", "placeholder" (until the commit is expanded), "note", "file"
 // or "more" (Load More Commits).
@@ -31,6 +38,31 @@ inline String companion_owner(const String &p_path) {
 		}
 	}
 	return String();
+}
+
+// Godot's companion files in p_paths whose file is in p_paths too, by file: {"player.gd":
+// ["player.gd.uid"]}. Those companions get no row of their own; their file's row stands for them.
+inline Dictionary grouped_companions(const PackedStringArray &p_paths) {
+	HashSet<String> listed;
+	for (const String &path : p_paths) {
+		listed.insert(path);
+	}
+	Dictionary companions;
+	for (const String &path : p_paths) {
+		const String owner = companion_owner(path);
+		if (!owner.is_empty() && listed.has(owner)) {
+			PackedStringArray of = companions.get(owner, PackedStringArray());
+			of.push_back(path);
+			companions[owner] = of;
+		}
+	}
+	return companions;
+}
+
+// Whether p_path is shown on its file's row (see grouped_companions).
+inline bool is_grouped(const Dictionary &p_companions, const String &p_path) {
+	const String owner = companion_owner(p_path);
+	return !owner.is_empty() && p_companions.has(owner);
 }
 
 } // namespace godot_git

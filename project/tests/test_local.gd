@@ -10,6 +10,7 @@ func run() -> void:
 	_line_stats()
 	_commit_and_history()
 	_branches()
+	_rename_and_delete_branches()
 	_large_staged_files()
 
 
@@ -118,6 +119,46 @@ func _branches() -> void:
 	check("file missing on another branch", not r.has_file_at("no-addon", "a.txt"))
 	check("file only on another branch", r.has_file_at("no-addon", "b.txt") and not r.has_file_at("HEAD", "b.txt"))
 	check("nested path", not r.has_file_at("HEAD", "addons/godot_git/godot_git.gdextension"))
+
+
+# Rename and delete, checked against what git says; delete tells what it would lose first.
+func _rename_and_delete_branches() -> void:
+	var shared := make_shared("branch-edit")
+	var repo: String = shared.mine
+	var r := open(repo)
+
+	check("rename the current branch", r.rename_branch("main", "trunk") == OK, GitRepository.get_last_error())
+	check("HEAD follows the rename", git(repo, ["symbolic-ref", "--short", "HEAD"]).strip_edges() == "trunk", git(repo, ["symbolic-ref", "HEAD"]))
+	check("upstream moves with it, like git branch -m", git(repo, ["rev-parse", "--abbrev-ref", "trunk@{upstream}"]).strip_edges() == "origin/main")
+	check("old name is gone", not r.get_branches().has("main"), r.get_branches())
+	r.create_branch("other")
+	r.checkout_branch("trunk")
+	check("rename to an existing name refused", r.rename_branch("trunk", "other") != OK and GitRepository.get_last_error().contains("already exists"), GitRepository.get_last_error())
+	check("invalid name refused", r.rename_branch("trunk", "a..b") != OK and GitRepository.get_last_error().contains("valid"), GitRepository.get_last_error())
+
+	# "other" points at the same commit as trunk: nothing to lose, and no upstream.
+	var details := r.get_branch_details("other")
+	check("nothing lost when its commits are elsewhere", details.unique == 0 and details.upstream == "", details)
+	details = r.get_branch_details("trunk")
+	check("upstream named", details.upstream == "origin/main", details)
+
+	# Two commits only "lonely" has.
+	git(repo, ["checkout", "-q", "-b", "lonely"])
+	for i in 2:
+		write(repo.path_join("lonely.txt"), str(i))
+		commit_all(repo, "lonely %d" % i)
+	git(repo, ["checkout", "-q", "trunk"])
+	details = r.get_branch_details("lonely")
+	check("counts commits no other branch has", details.unique == 2, details)
+	git(repo, ["branch", "-q", "keeper", "lonely"])
+	check("not lost while another branch has them", r.get_branch_details("lonely").unique == 0, r.get_branch_details("lonely"))
+	git(repo, ["branch", "-q", "-D", "keeper"])
+
+	check("can't delete the current branch", r.delete_branch("trunk") != OK and GitRepository.get_last_error().contains("Switch to another branch"), GitRepository.get_last_error())
+	check("delete", r.delete_branch("lonely") == OK, GitRepository.get_last_error())
+	check("gone for git too", git(repo, ["branch", "--list", "lonely"]).strip_edges() == "")
+	check("deleting a missing branch refused", r.delete_branch("lonely") != OK)
+	check("remote branch untouched", git(repo, ["branch", "-r"]).contains("origin/main"))
 
 
 # The commit warning for big files: what's staged and at least the given size, largest first.

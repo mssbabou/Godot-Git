@@ -219,7 +219,7 @@ Error fast_forward(git_repository *p_repo, git_reference *p_head, const git_anno
 		opts.progress_payload = &p_ctx;
 		err = checkout_all_or_nothing(p_repo, target, opts);
 		if (err == GIT_ECONFLICT) {
-			return fail("Your local changes would be overwritten by the pull. Commit or discard them first.");
+			return fail("Your local changes would be overwritten by the pull. Commit, stash or discard them first.");
 		}
 	}
 	if (err >= 0) {
@@ -441,7 +441,7 @@ Error GitRepository::pull() {
 	} else if (!blocking.is_empty()) {
 		// Checked before anything is touched, so your edits never end up in a stash only a
 		// terminal can get back.
-		result = fail(vformat("Nothing was pulled: the new commits change %s, and your uncommitted changes there can't be merged in (they touch the same lines, or they're staged, new, deleted or binary). Commit or discard your changes to %s first, then pull again.",
+		result = fail(vformat("Nothing was pulled: the new commits change %s, and your uncommitted changes there can't be merged in (they touch the same lines, or they're staged, new, deleted or binary). Commit, stash or discard your changes to %s first, then pull again.",
 				name_list(blocking),
 				blocking.size() == 1 ? String("it") : String("them")));
 	} else if (repo_uses_lfs(repo)) {

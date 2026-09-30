@@ -162,7 +162,6 @@ private:
 	void _make_pane(PaneIndex p_index, Control *p_parent, int p_number_gutters);
 	void _build_rows(Rows &r_unified, Rows &r_old, Rows &r_new) const;
 	void _fill_pane(Pane &r_pane, const Rows &p_rows);
-	Ref<SyntaxHighlighter> _make_code_highlighter() const;
 	void _draw_gutter(int p_line, int p_gutter, const Rect2 &p_region, int p_pane);
 	void _on_scrolled(double p_value, int p_from);
 
@@ -192,6 +191,8 @@ public:
 
 	// Whether the Diff panel shows p_path as an image (by its extension).
 	static bool is_image_path(const String &p_path);
+	static Ref<SyntaxHighlighter> make_code_highlighter(const String &p_path);
+	static Color row_tint(bool p_added);
 
 	GitDiffDock();
 };

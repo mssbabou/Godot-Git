@@ -14,6 +14,7 @@ func run() -> void:
 	_history_order()
 	_history_cache()
 	_file_bytes()
+	_line_changes()
 
 
 ## `git diff` output as [origins, texts, hunk headers], for comparing with get_diff.
@@ -371,3 +372,97 @@ func _file_bytes() -> void:
 	check("bytes: a file deleted in that commit is gone from it", not r.get_file_bytes(second, "gone.txt").exists and r.get_file_bytes(second + "^1", "gone.txt").exists)
 	check("bytes: no first parent for the first commit", not r.get_file_bytes(git(repo, ["rev-list", "--max-parents=0", "HEAD"]) + "^1", "art/icon.png").exists)
 	check("bytes: not LFS", r.get_file_bytes("HEAD", "art/icon.png").lfs == "")
+
+
+# The script editor's change marks: diff_lines, checked against the hunk headers of git diff -U0.
+func _line_changes() -> void:
+	var old := "a
+b
+c
+d
+e
+"
+	var h := GitRepository.diff_lines(old, "a
+B
+c
+d
+e
+")
+	check("one changed line", h.size() == 1 and h[0].old_start == 2 and h[0].old_count == 1 and h[0].new_start == 2 and h[0].new_count == 1 and h[0].old_lines == PackedStringArray(["b"]), h)
+	h = GitRepository.diff_lines(old, "a
+b
+x
+y
+c
+d
+e
+")
+	check("added lines: no old lines", h.size() == 1 and h[0].old_count == 0 and h[0].new_start == 3 and h[0].new_count == 2, h)
+	h = GitRepository.diff_lines(old, "a
+d
+e
+")
+	check("deleted lines: after the line they followed", h.size() == 1 and h[0].new_count == 0 and h[0].new_start == 1 and h[0].old_lines == PackedStringArray(["b", "c"]), h)
+	h = GitRepository.diff_lines(old, "c
+d
+e
+")
+	check("deleted at the top", h.size() == 1 and h[0].new_start == 0 and h[0].new_count == 0, h)
+	check("CRLF and a missing final newline don't count", GitRepository.diff_lines(old, "a
+b
+c
+d
+e").is_empty(), GitRepository.diff_lines(old, "a
+b
+c
+d
+e"))
+	check("nothing changed", GitRepository.diff_lines(old, old).is_empty())
+	check("new file: all added", GitRepository.diff_lines("", "x
+y
+")[0].new_count == 2)
+
+	# A bigger edit, against git itself.
+	var before := PackedStringArray()
+	for i in 40:
+		before.append("line %d" % i)
+	var after := before.duplicate()
+	after[3] = "changed 3"
+	after.remove_at(10)
+	after.insert(20, "new A")
+	after.insert(21, "new B")
+	after[30] = "changed 30"
+	after.remove_at(35)
+	after.remove_at(35)
+	var dir_path := dir.path_join("line-changes")
+	DirAccess.make_dir_recursive_absolute(dir_path)
+	write(dir_path.path_join("old.txt"), "
+".join(before) + "
+")
+	write(dir_path.path_join("new.txt"), "
+".join(after) + "
+")
+	var out := []
+	OS.execute("git", ["-C", dir_path, "diff", "--no-index", "-U0", "old.txt", "new.txt"], out, true)
+	var git_headers := PackedStringArray()
+	for line in "".join(out).split("
+"):
+		if line.begins_with("@@"):
+			git_headers.append(line.get_slice(" @@", 0))
+	var ours := PackedStringArray()
+	for hunk in GitRepository.diff_lines("
+".join(before) + "
+", "
+".join(after) + "
+"):
+		ours.append("@@ -%d,%d +%d,%d" % [hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count])
+	# git leaves out ",1"; spell its headers out the same way.
+	var normalized := PackedStringArray()
+	for header in git_headers:
+		var parts := header.split(" ")
+		for i in [1, 2]:
+			if not parts[i].contains(","):
+				parts[i] += ",1"
+		normalized.append(" ".join(parts))
+	check("same hunks as git diff -U0", ours == normalized and not ours.is_empty(), [ours, normalized])
+

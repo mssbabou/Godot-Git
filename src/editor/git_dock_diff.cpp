@@ -47,16 +47,33 @@ void GitDock::_update_diff() {
 		const String key = diff_commit + ":" + diff_path;
 		if (key != diff_commit_shown) {
 			diff_commit_shown = key;
+			Dictionary diff;
 			if (diff_stash) {
 				// A new file the stash took along is in its third parent (see get_stash_files).
-				Dictionary diff = repo->get_stash_diff(diff_commit, diff_path);
+				diff = repo->get_stash_diff(diff_commit, diff_path);
 				_add_image_versions(diff, diff_commit + "^1", repo->has_file_at(diff_commit, diff_path) ? diff_commit : diff_commit + "^3");
-				diff_dock->set_diff(diff, "Stash", _file_icon(diff_path));
 			} else {
-				Dictionary diff = repo->get_commit_diff(diff_commit, diff_path);
+				diff = repo->get_commit_diff(diff_commit, diff_path);
 				_add_image_versions(diff, diff_commit + "^1", diff_commit);
-				diff_dock->set_diff(diff, vformat("Commit %s", diff_commit.left(7)), _file_icon(diff_path));
 			}
+			// The companions the file's row stands for (see _add_commit_file_rows): in the same commit.
+			const Array files = (diff_stash ? stash_files : commit_files).get(diff_commit, Array());
+			Array companions;
+			if (companion_owner(diff_path).is_empty()) {
+				for (const char *suffix : { ".import", ".uid" }) {
+					const String path = vformat("%s%s", diff_path, suffix);
+					for (int i = 0; i < files.size(); i++) {
+						if (String(Dictionary(files[i])["path"]) == path) {
+							companions.push_back(diff_stash ? repo->get_stash_diff(diff_commit, path) : repo->get_commit_diff(diff_commit, path));
+							break;
+						}
+					}
+				}
+			}
+			if (!companions.is_empty()) {
+				diff["companions"] = companions;
+			}
+			diff_dock->set_diff(diff, diff_stash ? String("Stash") : vformat("Commit %s", diff_commit.left(7)), _file_icon(diff_path));
 		}
 		_select_diff_row();
 		return;
