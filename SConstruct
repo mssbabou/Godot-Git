@@ -4,6 +4,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(Dir("#").abspath, "tools"))
+import class_profile  # noqa: E402
 import libgit2  # noqa: E402
 import package  # noqa: E402
 
@@ -42,6 +43,16 @@ if not (os.path.isdir("thirdparty/godot-cpp") and os.listdir("thirdparty/godot-c
 # Without this the library requires the macOS version it was built on. godot-cpp only reads this
 # option from the command line, hence setting a default there.
 ARGUMENTS.setdefault("macos_deployment_target", "10.13")
+
+# Smaller libraries, at no speed you'd notice (2026-10-02, Windows: 3.45 MB -> 2.67 MB; a 14,000-file
+# `git status` 75 vs 76 ms, a file's history through 86k commits 878 vs 892 ms): our code and
+# godot-cpp are UI and glue, and git work waits on the disk and network (libgit2 is built for
+# size too, in tools/libgit2.py). Every line of code ships six times (two Windows, two Linux, a
+# universal macOS), so this is what keeps the zip from growing half a megabyte per release.
+ARGUMENTS.setdefault("optimize", "size")
+# Bindings for the engine classes we use, not all ~1000 (see tools/class_profile.py). Saves only
+# ~50 KB (the linker dropped most unused ones already), but compiles godot-cpp several times faster.
+ARGUMENTS.setdefault("build_profile", class_profile.write(Dir("#").abspath, "4.7", os.path.join(Dir("#").abspath, "build", "gen", "build_profile.json")))
 
 env = SConscript("thirdparty/godot-cpp/SConstruct", {"env": env, "customs": customs, "api_version": "4.7"})
 

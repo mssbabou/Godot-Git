@@ -92,7 +92,9 @@ def setup(env, root_dir):
     if not env.GetOption("clean") and not os.path.isfile(os.path.join(lib_dir, lib_file)):
         if shutil.which("cmake") is None:
             raise RuntimeError("CMake is required to build libgit2 but was not found on PATH.")
-        config = "RelWithDebInfo"
+        # Built for size: git work waits on the disk and network, not the CPU (see the measurements
+        # by `optimize` in SConstruct); it took a quarter off the library.
+        config = "MinSizeRel"
         _run(
             ["cmake", "-S", source_dir, "-B", build_dir, "-DCMAKE_BUILD_TYPE=" + config, "-DCMAKE_INSTALL_PREFIX=" + install_dir]
             + _cmake_args(env)
