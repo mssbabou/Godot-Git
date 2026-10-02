@@ -44,7 +44,7 @@ You need a C++ compiler, Python 3 with SCons, CMake and git:
 
 ## Good to know
 
-- **Settings:** script editor marks, FileSystem colors and automatic fetching are on by default; turn them off under *⋮ → Settings...*.
+- **Settings:** script editor marks, FileSystem colors and automatic fetching are on by default; turn them off under *⋮ → Settings...*. The whole plugin can be switched off per project under *Project Settings → Plugins*.
 - **Exports on Godot 4.7:** add `addons/godot_git/*` to your export preset's *Filters to exclude files*, or the game logs one harmless error. Automatic from Godot 4.8.
 - **macOS, zip from a browser:** if macOS blocks the library, run `xattr -dr com.apple.quarantine addons/godot_git` in your project folder.
 

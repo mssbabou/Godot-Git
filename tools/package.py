@@ -82,7 +82,12 @@ def make_zip(version=None, out_dir=None, require_all=False):
                     continue
                 full = os.path.join(dirpath, name)
                 rel = os.path.relpath(full, ADDON_DIR).replace(os.sep, "/")
-                if name.endswith(".gdextension"):
+                if name == "plugin.cfg":
+                    # The version the Plugins list shows: the release's, not "dev".
+                    with open(full, encoding="utf-8") as f:
+                        text = f.read().replace('version="dev"', 'version="{}"'.format(version.lstrip("v")))
+                    zf.writestr("{}/{}".format(ZIP_PREFIX, rel), text)
+                elif name.endswith(".gdextension"):
                     # Hot reload is for developing the plugin. For users it only makes Godot drop
                     # "~" copies of the library into their project (and their git status).
                     with open(full, encoding="utf-8") as f:
