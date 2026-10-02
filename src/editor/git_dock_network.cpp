@@ -75,6 +75,7 @@ void GitDock::_run_network(NetworkOp p_op, bool p_quiet) {
 	}
 
 	network_thread.instantiate();
+	// Switch: the branch; lock and unlock: the path (also in network_branch).
 	const String text = p_op == NETWORK_COMMIT ? network_commit_message : (p_op == NETWORK_REVERT ? pending_revert : network_branch);
 	network_thread->start(callable_mp(this, &GitDock::_network_worker).bind(p_op, repo->get_workdir(), p_quiet, text, network_amend));
 }
@@ -133,6 +134,10 @@ String GitDock::_network_description(int p_op) const {
 			return String(operation.get("kind", String())) == "merge" ? String("Committing the merge") : vformat("Continuing the %s", _operation_name());
 		case NETWORK_REVERT:
 			return vformat("Reverting \"%s\"", pending_revert_summary);
+		case NETWORK_LOCK:
+			return vformat("Locking %s", network_branch.get_file());
+		case NETWORK_UNLOCK:
+			return vformat("Unlocking %s", network_branch.get_file());
 	}
 	return String();
 }
@@ -174,11 +179,25 @@ void GitDock::_network_worker(int p_op, const String &p_workdir, bool p_quiet, c
 			case NETWORK_PULL_MERGE:
 				err = worker_repo->pull(true);
 				break;
+			case NETWORK_LOCK:
+				err = worker_repo->lock_file(p_text);
+				break;
+			case NETWORK_UNLOCK:
+				err = worker_repo->unlock_file(p_text);
+				break;
 		}
 	}
 	const String message = err == OK ? String() : GitRepository::get_last_error();
 	const String upstream = err == OK ? String(worker_repo->get_sync_status().get("upstream", String())) : String();
-	callable_mp(this, &GitDock::_network_done).call_deferred(p_op, (int)err, message, upstream, worker_repo->get_notice(), worker_repo->get_pull_result());
+	Dictionary result = worker_repo->get_pull_result();
+	// Locks are read along with every fetch (and after locking), in repositories that use LFS.
+	if ((p_op == NETWORK_FETCH || p_op == NETWORK_LOCK || p_op == NETWORK_UNLOCK) && worker_repo->is_open() && worker_repo->uses_lfs() && GitRepository::is_lfs_installed()) {
+		const Array locks = worker_repo->get_lfs_locks();
+		if (GitRepository::get_last_error().is_empty()) {
+			result["lfs_locks"] = locks;
+		}
+	}
+	callable_mp(this, &GitDock::_network_done).call_deferred(p_op, (int)err, message, upstream, worker_repo->get_notice(), result);
 }
 
 // Progress from the worker (already deferred to the main thread by GitRepository).
@@ -198,6 +217,15 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	network_op = NETWORK_NONE;
 	const bool quiet = network_quiet;
 	network_quiet = false;
+	if (p_pull_result.has("lfs_locks")) {
+		lfs_locks.clear();
+		const Array locks = p_pull_result["lfs_locks"];
+		for (int i = 0; i < locks.size(); i++) {
+			const Dictionary lock = locks[i];
+			lfs_locks[lock["path"]] = lock;
+		}
+		lfs_locks_read = true;
+	}
 
 	// A pull or switch can change files on disk. Refresh first: the result below uses the new counts.
 	if ((p_op == NETWORK_PULL || p_op == NETWORK_PULL_MERGE || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT) && p_err == OK) {
@@ -229,7 +257,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	if (p_op == NETWORK_COMMIT && p_err != OK) {
 		push_after_commit = false;
 	}
-	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit", "Abort", "Continue", "Revert", "Pull" };
+	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit", "Abort", "Continue", "Revert", "Pull", "Lock", "Unlock" };
 	if (p_err == ERR_SKIP && p_op == NETWORK_COMMIT) {
 		// A post-commit hook may have been running: don't claim nothing happened. History shows it.
 		_set_status(STATUS_NEUTRAL, "Commit canceled.");
@@ -309,7 +337,11 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			_reload_changed_scenes();
 		} break;
 		case NETWORK_ABORT: {
-			_set_status(STATUS_SUCCESS, network_operation == "bisect" ? String("Ended the bisect") : vformat("Aborted the %s", network_operation));
+			if (network_operation_kind == "stash") {
+				_set_status(STATUS_SUCCESS, "Aborted the stash restore: the files are back as they were, and the stash is kept");
+			} else {
+				_set_status(STATUS_SUCCESS, network_operation == "bisect" ? String("Ended the bisect") : vformat("Aborted the %s", network_operation));
+			}
 			_reload_changed_scenes();
 		} break;
 		case NETWORK_CONTINUE: {
@@ -317,9 +349,19 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			if (_in_operation()) {
 				_set_status(STATUS_WARNING, vformat("The %s went on and stopped again: see above.", _operation_name()));
 			} else {
-				_set_status(STATUS_SUCCESS, network_operation_kind == "pull" ? String("Finished the merge: your resolved changes are uncommitted, as before the pull") : (network_operation == "merge" ? String("Committed the merge") : vformat("Finished the %s", network_operation)));
+				if (network_operation_kind == "stash") {
+					_set_status(STATUS_SUCCESS, "Restored the stash and removed it: its changes are uncommitted changes now");
+				} else {
+					_set_status(STATUS_SUCCESS, network_operation_kind == "pull" ? String("Finished the merge: your resolved changes are uncommitted, as before the pull") : (network_operation == "merge" ? String("Committed the merge") : vformat("Finished the %s", network_operation)));
+				}
 			}
 			_reload_changed_scenes();
+		} break;
+		case NETWORK_LOCK: {
+			_set_status(STATUS_SUCCESS, vformat("Locked %s: nobody else can push changes to it until you unlock it", network_branch.get_file()));
+		} break;
+		case NETWORK_UNLOCK: {
+			_set_status(STATUS_SUCCESS, vformat("Unlocked %s", network_branch.get_file()));
 		} break;
 		case NETWORK_REVERT: {
 			_set_status(STATUS_SUCCESS, vformat("Reverted \"%s\" in a new commit, %s", pending_revert_summary, repo->get_commit("HEAD").get("id", String())));

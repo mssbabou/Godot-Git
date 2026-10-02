@@ -12,6 +12,7 @@ func run() -> void:
 	_deleted_on_one_side()
 	_binary()
 	_crlf()
+	_import_settings()
 
 
 const BASE := "one\ntwo\nthree\nfour\nfive\nsix\nseven\n"
@@ -160,3 +161,49 @@ func _crlf() -> void:
 	check("crlf: resolve", r.resolve_conflict("a.txt", "a\nb\n") == OK, GitRepository.get_last_error())
 	check("crlf: written with CRLF", FileAccess.get_file_as_string(repo.path_join("a.txt")) == "a\r\nb\r\n", FileAccess.get_file_as_string(repo.path_join("a.txt")).c_escape())
 	check("crlf: staged as LF", git(repo, ["show", ":a.txt"]) == "a\nb", git(repo, ["show", ":a.txt"]))
+
+
+const IMPORT_BASE := "[remap]
+
+importer=\"texture\"
+type=\"CompressedTexture2D\"
+
+[params]
+
+compress/mode=0
+compress/lossy_quality=0.7
+mipmaps/generate=false
+roughness/mode=0
+"
+
+
+## An .import file: main sets compress/mode to 2 and the lossy quality, feature sets compress/mode
+## to 1 and turns mipmaps on. The lines are next to each other, so git sees one conflict; by setting,
+## only compress/mode is one.
+func _import_settings() -> void:
+	var repo := make_repo("import-settings")
+	write(repo.path_join("icon.png.import"), IMPORT_BASE)
+	commit_all(repo, "first")
+	git(repo, ["checkout", "-q", "-b", "feature"])
+	write(repo.path_join("icon.png.import"), IMPORT_BASE.replace("compress/mode=0", "compress/mode=1").replace("generate=false", "generate=true"))
+	commit_all(repo, "Feature change")
+	git(repo, ["checkout", "-q", "main"])
+	write(repo.path_join("icon.png.import"), IMPORT_BASE.replace("compress/mode=0", "compress/mode=2").replace("quality=0.7", "quality=0.8"))
+	commit_all(repo, "Main change")
+	git(repo, ["merge", "feature"])
+	var r := open(repo)
+	var conflict := r.get_conflict("icon.png.import")
+	check("settings: git sees a conflict", conflict.blocks.size() > 1, conflict)
+	var ids := []
+	for setting in conflict.get("settings", []):
+		ids.append(setting.id)
+	check("settings: only compress/mode is asked about", ids == ["params
+compress/mode"], conflict.get("settings"))
+	check("settings: its three values", conflict.settings[0].base == "0" and conflict.settings[0].mine == "2" and conflict.settings[0].theirs == "1", conflict.settings)
+	check("settings: the importer", conflict.importer == "texture", conflict.importer)
+	check("settings: refused without a choice", r.resolve_settings_conflict("icon.png.import", {}) != OK)
+	check("settings: resolved with theirs", r.resolve_settings_conflict("icon.png.import", {"params
+compress/mode": "theirs"}) == OK, GitRepository.get_last_error())
+	var expected := IMPORT_BASE.replace("compress/mode=0", "compress/mode=1").replace("quality=0.7", "quality=0.8").replace("generate=false", "generate=true")
+	check("settings: theirs' mode, mine's quality, theirs' mipmaps", read(repo.path_join("icon.png.import")) == expected, read(repo.path_join("icon.png.import")))
+	check("settings: staged, no conflicts left", r.get_operation().conflicts.is_empty(), r.get_operation())

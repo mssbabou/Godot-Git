@@ -68,6 +68,8 @@ class GitDock : public EditorDock {
 		MENU_REVERT_COMMIT,
 		MENU_BRANCH_HERE,
 		MENU_IGNORE,
+		MENU_LOCK,
+		MENU_UNLOCK,
 		// "More" (⋮) menu.
 		MORE_REFRESH,
 		MORE_STAGE_ALL,
@@ -97,6 +99,8 @@ class GitDock : public EditorDock {
 		NETWORK_CONTINUE, // Continuing one once its conflicts are resolved (hooks may run).
 		NETWORK_REVERT, // Reverting a commit: a new commit, so hooks may run.
 		NETWORK_PULL_MERGE, // Pulling into conflicts on purpose (Start Merge; GitRepository::pull(true)).
+		NETWORK_LOCK, // Locking a file on the LFS server (git lfs lock).
+		NETWORK_UNLOCK,
 	};
 
 	// What the status strip is showing.
@@ -149,6 +153,15 @@ class GitDock : public EditorDock {
 	TextureRect *status_icon = nullptr;
 	RichTextLabel *status_label = nullptr; // The text, then dimmed: the current step, or "5m ago".
 	Button *status_button = nullptr; // Cancel (busy) or dismiss (warning, error).
+	// Earlier results, newest last ([{ "kind", "text", "time" }], this session, up to 50): what
+	// the panel did this afternoon, behind the clock button on the strip.
+	Array status_log;
+	// Git LFS locks, from the last fetch in a repository that uses LFS ({ path: { "owner", "mine" } }).
+	Dictionary lfs_locks;
+	bool lfs_locks_read = false; // Whether lfs_locks came from the server (some don't do locking).
+	Button *status_log_button = nullptr;
+	PopupPanel *status_log_popup = nullptr;
+	RichTextLabel *status_log_label = nullptr;
 	ProgressBar *status_progress = nullptr;
 	Timer *status_timer = nullptr; // Keeps "5m ago" current.
 
@@ -157,6 +170,13 @@ class GitDock : public EditorDock {
 	PanelContainer *operation_banner = nullptr;
 	Label *operation_label = nullptr;
 	PanelContainer *export_banner = nullptr; // Godot 4.7: offers to keep the addon out of exports.
+	// Copies of your edits left by a pull that didn't finish (git_dock_leftovers.cpp).
+	PanelContainer *leftovers_banner = nullptr;
+	Label *leftovers_label = nullptr;
+	Button *leftovers_put_back = nullptr;
+	Button *leftovers_delete = nullptr;
+	ConfirmationDialog *leftovers_confirm = nullptr;
+	Array leftovers;
 	Label *export_label = nullptr;
 	uint64_t export_presets_time = 0; // export_presets.cfg's modified time when last read.
 	PackedStringArray export_presets_missing; // Presets without the filter.
@@ -242,6 +262,11 @@ class GitDock : public EditorDock {
 	Dictionary stash_files; // Hash -> get_stash_files(). A stash never changes.
 	uint64_t stash_hovered = 0; // The stash row showing Restore and Delete.
 	ConfirmationDialog *stash_delete_confirm = nullptr;
+	// "1 file conflicts with newer commits": restore anyway and resolve (restore_stash with merge).
+	ConfirmationDialog *stash_merge_confirm = nullptr;
+	Label *stash_merge_question = nullptr;
+	Label *stash_merge_files = nullptr;
+	String pending_stash_merge;
 	String pending_stash_delete;
 	ConfirmationDialog *stash_switch_confirm = nullptr; // Offered when changes are in a switch's way.
 	ConfirmationDialog *stash_dialog = nullptr; // What a stash takes, and an optional name.
@@ -438,6 +463,7 @@ class GitDock : public EditorDock {
 	PackedStringArray _selected_paths(Tree *p_tree, bool p_companions = false) const;
 	PackedStringArray _row_paths(TreeItem *p_item) const;
 	PackedStringArray _blocking_paths(TreeItem *p_item) const;
+	String _lock_note(const String &p_path) const;
 	Array _row_button_list(const FilePane &p_pane) const;
 	void _set_hovered(FilePane &p_pane, TreeItem *p_item);
 	Dictionary _row_button_at(const FilePane &p_pane, const Vector2 &p_position) const;
@@ -491,6 +517,7 @@ class GitDock : public EditorDock {
 	void _restore_stash(const String &p_hash);
 	void _confirm_delete_stash(const String &p_hash);
 	void _on_stash_delete_confirmed();
+	void _restore_stash_merging(const String &p_hash);
 
 	// git_dock_ignore.cpp: Ignore..., for new files.
 	void _build_ignore_dialog();
@@ -502,6 +529,10 @@ class GitDock : public EditorDock {
 	void _on_ignore_confirmed();
 
 	// git_dock_export.cpp: keeping the addon out of exports (Godot 4.7).
+	void _build_leftovers_banner(Control *p_parent);
+	void _update_leftovers_banner();
+	void _resolve_leftovers(bool p_put_back);
+	void _resolve_leftovers_confirmed(bool p_put_back);
 	void _build_export_banner(Control *p_parent);
 	void _update_export_banner();
 	void _leave_out_of_exports();
@@ -512,9 +543,11 @@ class GitDock : public EditorDock {
 	void _fill_conflicts(const Array &p_status);
 	void _on_conflict_selected();
 	void _show_conflict(const String &p_path);
-	void _resolve_conflict(const String &p_path, const String &p_text, const String &p_side);
+	void _on_diff_options_changed();
+	void _resolve_conflict(const String &p_path, const String &p_text, const String &p_side, const Dictionary &p_choices = Dictionary());
 	void _on_conflict_text(const String &p_path, const String &p_text);
 	void _on_conflict_side(const String &p_path, const String &p_side);
+	void _on_conflict_settings(const String &p_path, const Dictionary &p_choices);
 
 	// git_dock_diff.cpp: which file the Diff panel shows.
 	void _show_diff(const String &p_path, bool p_staged, bool p_focus);
@@ -530,6 +563,7 @@ class GitDock : public EditorDock {
 	void _update_status();
 	void _update_status_style();
 	void _on_status_button();
+	void _show_status_log();
 	Ref<StyleBoxFlat> _tinted_panel(const Color &p_tint) const;
 	void _build_operation_banner(Control *p_parent);
 	void _update_operation_banner();
@@ -600,6 +634,9 @@ public:
 	bool can_ignore(const String &p_path) const;
 	void set_reload_export_presets(const Callable &p_reload);
 	void show_ignore(const String &p_path);
+	// Git LFS locks, for the FileSystem menu: "lock", "unlock" or "" (neither can be done).
+	String get_lock_action(const String &p_path) const;
+	void lock_file(const String &p_path, bool p_lock);
 
 	GitDock();
 };

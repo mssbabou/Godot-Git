@@ -665,3 +665,75 @@ Dictionary GitRepository::get_pull_result() const {
 	result["conflicts"] = pull_conflicts;
 	return result;
 }
+
+// Copies of your edits a pull set aside and never put back (the editor went down mid-pull): the
+// .git/godot-git-pull* folders, except the one a pull stopped at conflicts still uses.
+// [{ "folder", "files": [{ "path", "copy": the copy's file, "back": the file already has it }] }].
+Array GitRepository::get_pull_leftovers() const {
+	Array result;
+	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+	const String git_dir = String::utf8(git_repository_path(repo));
+	const String in_use = read_pull_state(repo).get("backup", String());
+	Ref<DirAccess> dir = DirAccess::open(git_dir);
+	if (dir.is_null()) {
+		return result;
+	}
+	for (const String &name : dir->get_directories()) {
+		const String folder = git_dir.path_join(name);
+		if (!name.begins_with("godot-git-pull") || folder.simplify_path() == in_use.simplify_path()) {
+			continue;
+		}
+		Array files;
+		for (const String &line : FileAccess::get_file_as_string(folder.path_join("README.txt")).split("\n", false)) {
+			// "3  scenes/level.tscn", after the README's opening sentence.
+			const int gap = line.find("  ");
+			if (gap <= 0 || !line.left(gap).is_valid_int() || !FileAccess::file_exists(folder.path_join(line.left(gap)))) {
+				continue;
+			}
+			Dictionary file;
+			file["path"] = line.substr(gap + 2).strip_edges();
+			file["copy"] = folder.path_join(line.left(gap));
+			const String on_disk = get_workdir().path_join(file["path"]);
+			file["back"] = FileAccess::file_exists(on_disk) && FileAccess::get_file_as_bytes(on_disk) == FileAccess::get_file_as_bytes(file["copy"]);
+			files.push_back(file);
+		}
+		Dictionary leftover;
+		leftover["folder"] = folder;
+		leftover["files"] = files;
+		result.push_back(leftover);
+	}
+	return result;
+}
+
+// Puts the copies in p_folder (get_pull_leftovers) back over the files, byte for byte, or with
+// p_put_back false only deletes them. The folder goes once every copy is back.
+Error GitRepository::resolve_pull_leftovers(const String &p_folder, bool p_put_back) {
+	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
+	git_error_clear();
+	for (const Variant &item : get_pull_leftovers()) {
+		const Dictionary leftover = item;
+		if (String(leftover["folder"]) != p_folder) {
+			continue;
+		}
+		const Array files = leftover["files"];
+		PackedStringArray left;
+		for (int i = 0; i < files.size(); i++) {
+			const Dictionary file = files[i];
+			if (p_put_back && !bool(file["back"])) {
+				const PackedByteArray bytes = FileAccess::get_file_as_bytes(file["copy"]);
+				if (!write_file(get_workdir().path_join(file["path"]), (const char *)bytes.ptr(), bytes.size())) {
+					left.push_back(file["path"]);
+					continue;
+				}
+			}
+			DirAccess::remove_absolute(file["copy"]);
+		}
+		if (!left.is_empty()) {
+			return fail(vformat("Couldn't write %s; the copies are still in %s.", name_list(left), p_folder));
+		}
+		DirAccess::remove_absolute(p_folder.path_join("README.txt"));
+		DirAccess::remove_absolute(p_folder);
+		return OK;
+	}
+	return fail("Those copies are gone already.");
+}

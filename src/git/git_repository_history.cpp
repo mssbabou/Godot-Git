@@ -299,3 +299,50 @@ Dictionary GitRepository::get_commit(const String &p_revision) const {
 	const bool pushed = !remote_tips.is_empty() && git_graph_reachable_from_any(repo, git_commit_id(commit), remote_tips.ptr(), remote_tips.size()) == 1;
 	return commit_item(commit, !get_remotes().is_empty() && !pushed);
 }
+
+// More about one commit, for its expanded row in History: { "parents": [{ "hash" (short),
+// "summary" }], "branches": the local and remote branches that contain it, local first }.
+Dictionary GitRepository::get_commit_details(const String &p_hash) const {
+	Dictionary result;
+	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+	git_oid oid;
+	CommitPtr commit;
+	if (git_oid_fromstr(&oid, p_hash.utf8().get_data()) < 0 || git_commit_lookup(commit.out(), repo, &oid) < 0) {
+		git_error_clear();
+		return result;
+	}
+	Array parents;
+	for (unsigned int i = 0; i < git_commit_parentcount(commit); i++) {
+		CommitPtr parent;
+		if (git_commit_parent(parent.out(), commit, i) == 0) {
+			char hash[8] = {};
+			git_oid_tostr(hash, sizeof(hash), git_commit_id(parent));
+			Dictionary item;
+			item["hash"] = String(hash);
+			const char *summary = git_commit_summary(parent);
+			item["summary"] = summary ? String::utf8(summary) : String();
+			parents.push_back(item);
+		}
+	}
+	result["parents"] = parents;
+	PackedStringArray branches;
+	for (git_branch_t type : { GIT_BRANCH_LOCAL, GIT_BRANCH_REMOTE }) {
+		BranchIteratorPtr it;
+		if (git_branch_iterator_new(it.out(), repo, type) < 0) {
+			continue;
+		}
+		ReferencePtr ref;
+		git_branch_t found;
+		while (git_branch_next(ref.out(), &found, it) == 0) {
+			if (git_reference_type(ref) != GIT_REFERENCE_DIRECT) {
+				continue; // origin/HEAD
+			}
+			const git_oid *tip = git_reference_target(ref);
+			if (git_oid_equal(tip, &oid) || git_graph_descendant_of(repo, tip, &oid) == 1) {
+				branches.push_back(String::utf8(git_reference_shorthand(ref)));
+			}
+		}
+	}
+	result["branches"] = branches;
+	return result;
+}

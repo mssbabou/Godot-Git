@@ -12,7 +12,9 @@ void GitDock::set_diff_dock(GitDiffDock *p_dock) {
 	diff_dock = p_dock;
 	diff_dock->connect("open_requested", callable_mp(this, &GitDock::_open_path));
 	diff_dock->get_conflict_view()->connect("resolve_requested", callable_mp(this, &GitDock::_on_conflict_text));
+	diff_dock->connect("options_changed", callable_mp(this, &GitDock::_on_diff_options_changed));
 	diff_dock->get_conflict_view()->connect("side_requested", callable_mp(this, &GitDock::_on_conflict_side));
+	diff_dock->get_conflict_view()->connect("settings_requested", callable_mp(this, &GitDock::_on_conflict_settings));
 }
 
 // p_focus: also bring the Diff panel up (a click), not just update it (keyboard, right-click).
@@ -47,6 +49,8 @@ void GitDock::_update_diff() {
 	if (!diff_dock || diff_path.is_empty() || repo.is_null() || !repo->is_open()) {
 		return;
 	}
+	// The panel's context lines and whitespace setting (saved per project, read when it's ready).
+	repo->set_diff_options(diff_dock->get_context_lines(), diff_dock->is_ignoring_whitespace());
 	// A conflicted file opens the resolver. The same conflict handed over again changes nothing
 	// in the panel (set_diff skips what's already shown), so a refresh keeps what's been chosen.
 	if (diff_conflict) {
@@ -57,6 +61,9 @@ void GitDock::_update_diff() {
 			if (GitDiffDock::is_image_path(diff_path)) {
 				conflict["image_old"] = repo->get_file_bytes("mine", diff_path);
 				conflict["image_new"] = repo->get_file_bytes("theirs", diff_path);
+			} else if (GitDiffDock::is_audio_path(diff_path)) {
+				conflict["audio_old"] = repo->get_file_bytes("mine", diff_path);
+				conflict["audio_new"] = repo->get_file_bytes("theirs", diff_path);
 			}
 			diff_dock->set_diff(conflict, "Conflict", _file_icon(diff_path));
 			return;
@@ -130,11 +137,12 @@ void GitDock::_update_diff() {
 // An image's two versions, for the Diff panel's before | after (the old one under its old name,
 // for a rename). Versions as in GitRepository::get_file_bytes.
 void GitDock::_add_image_versions(Dictionary &r_diff, const String &p_old_version, const String &p_new_version) {
-	if (!GitDiffDock::is_image_path(diff_path)) {
+	const bool image = GitDiffDock::is_image_path(diff_path);
+	if (!image && !GitDiffDock::is_audio_path(diff_path)) {
 		return;
 	}
-	r_diff["image_old"] = repo->get_file_bytes(p_old_version, r_diff.get("old_path", diff_path));
-	r_diff["image_new"] = repo->get_file_bytes(p_new_version, diff_path);
+	r_diff[image ? "image_old" : "audio_old"] = repo->get_file_bytes(p_old_version, r_diff.get("old_path", diff_path));
+	r_diff[image ? "image_new" : "audio_new"] = repo->get_file_bytes(p_new_version, diff_path);
 }
 
 // Marks the file the Diff panel shows in its list (the lists are rebuilt on every refresh).
@@ -164,4 +172,14 @@ void GitDock::_select_diff_row() {
 			return;
 		}
 	}
+}
+
+// The Diff panel's context lines or whitespace setting changed: read the shown diff again with them.
+void GitDock::_on_diff_options_changed() {
+	if (!diff_dock || repo.is_null()) {
+		return;
+	}
+	repo->set_diff_options(diff_dock->get_context_lines(), diff_dock->is_ignoring_whitespace());
+	diff_commit_shown = String(); // A commit's diff is otherwise never read twice.
+	_update_diff();
 }

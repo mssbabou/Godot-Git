@@ -15,6 +15,7 @@
 
 #include "git/git_lfs.h"
 #include "git/git_util.h"
+#include "git/settings_text.h"
 
 using namespace godot_git;
 
@@ -195,9 +196,112 @@ void side_labels(git_repository *p_repo, const String &p_kind, String &r_mine, S
 		// Your uncommitted edits against what the pull brought (see GitRepository::pull).
 		r_mine = "your changes";
 		r_theirs = read_pull_state(p_repo).get("upstream", String());
+	} else if (p_kind == "stash") {
+		r_theirs = "stash";
 	} else if (p_kind == "revert") {
 		r_theirs = vformat("revert of %s", state_file_commit(p_repo, "REVERT_HEAD"));
 	}
+}
+
+// A `.import` file's conflict merged setting by setting: in each conflict block, a setting only
+// one side changed takes that side's value, one both changed the same way is kept, and one both
+// changed differently is a conflict, decided by p_choices ({ "section\nkey": "mine" or "theirs" }).
+// Each such conflict is added to r_conflicts (when given): { "id", "section", "key", and "base",
+// "mine", "theirs" for the sides that have the setting }. r_complete is false while a conflict has
+// no choice; the text is then only good for listing them.
+String merge_settings(const Array &p_blocks, const Dictionary &p_choices, Array *r_conflicts, bool &r_complete) {
+	r_complete = true;
+	String result;
+	String section;
+	for (int b = 0; b < p_blocks.size(); b++) {
+		const Dictionary block = p_blocks[b];
+		if (String(block["kind"]) == "same") {
+			result += String(block["text"]);
+			settings_units(block["text"], section);
+			continue;
+		}
+		Dictionary values[3]; // base, mine, theirs: { id: value }
+		Dictionary texts[3]; // { id: text }
+		Array units[3];
+		String end_section;
+		const char *const parts[3] = { "base", "mine", "theirs" };
+		for (int side = 0; side < 3; side++) {
+			String side_section = section;
+			units[side] = settings_units(block[parts[side]], side_section);
+			if (side == 1) {
+				end_section = side_section;
+			}
+			for (int u = 0; u < units[side].size(); u++) {
+				const Dictionary unit = units[side][u];
+				if (!String(unit["id"]).is_empty()) {
+					values[side][unit["id"]] = unit["value"];
+					texts[side][unit["id"]] = unit["text"];
+				}
+			}
+		}
+		// Who wins each setting either side has.
+		Dictionary winner;
+		auto decide = [&](const String &p_id) {
+			if (winner.has(p_id)) {
+				return;
+			}
+			const Variant base = values[0].get(p_id, Variant());
+			const Variant mine = values[1].get(p_id, Variant());
+			const Variant theirs = values[2].get(p_id, Variant());
+			if (mine == theirs || theirs == base) {
+				winner[p_id] = "mine";
+			} else if (mine == base) {
+				winner[p_id] = "theirs";
+			} else {
+				if (r_conflicts) {
+					Dictionary conflict;
+					const int split = p_id.find("\n");
+					conflict["id"] = p_id;
+					conflict["section"] = p_id.left(split);
+					conflict["key"] = p_id.substr(split + 1);
+					for (int side = 0; side < 3; side++) {
+						if (values[side].has(p_id)) {
+							conflict[parts[side]] = values[side][p_id];
+						}
+					}
+					r_conflicts->push_back(conflict);
+				}
+				const String choice = p_choices.get(p_id, String());
+				if (choice != "mine" && choice != "theirs") {
+					r_complete = false;
+				}
+				winner[p_id] = choice == "theirs" ? "theirs" : "mine";
+			}
+		};
+		// Mine's lines in their order, each setting from its winner; then settings only theirs has.
+		for (int u = 0; u < units[1].size(); u++) {
+			const Dictionary unit = units[1][u];
+			const String id = unit["id"];
+			if (id.is_empty()) {
+				result += String(unit["text"]);
+				continue;
+			}
+			decide(id);
+			if (String(winner[id]) == "mine") {
+				result += String(unit["text"]);
+			} else if (texts[2].has(id)) {
+				result += String(texts[2][id]);
+			}
+		}
+		for (int u = 0; u < units[2].size(); u++) {
+			const Dictionary unit = units[2][u];
+			const String id = unit["id"];
+			if (id.is_empty() || values[1].has(id)) {
+				continue;
+			}
+			decide(id);
+			if (String(winner[id]) == "theirs") {
+				result += String(unit["text"]);
+			}
+		}
+		section = end_section;
+	}
+	return result;
 }
 
 } // namespace
@@ -208,7 +312,9 @@ void side_labels(git_repository *p_repo, const String &p_kind, String &r_mine, S
 //   "mine_exists", "theirs_exists", "base_exists": whether each version exists,
 //   "binary": a side is binary or the file is stored with LFS (then no blocks: only a whole side
 //   can be taken),
-//   "blocks": [{ "kind": "same", "text" } | { "kind": "conflict", "mine", "base", "theirs" }] }.
+//   "blocks": [{ "kind": "same", "text" } | { "kind": "conflict", "mine", "base", "theirs" }],
+//   and for a `.import` file "settings": the settings both sides changed differently (see
+//   merge_settings; empty when every change merges on its own), "importer": mine's importer }.
 // Texts are as git stores them (LF line endings with core.autocrlf), joined they make the file.
 // "mine" is your side: the current branch, or during a rebase your commit being replayed. Empty
 // if p_path isn't conflicted.
@@ -253,9 +359,40 @@ Dictionary GitRepository::get_conflict(const String &p_path) const {
 		git_merge_file_result_free(&merged);
 		ERR_FAIL_V_MSG(result, "Couldn't merge the versions of " + p_path + ": " + get_last_error());
 	}
-	result["blocks"] = split_merged(String::utf8(merged.ptr, (int)merged.len));
+	const Array blocks = split_merged(String::utf8(merged.ptr, (int)merged.len));
 	git_merge_file_result_free(&merged);
+	result["blocks"] = blocks;
+	if (p_path.ends_with(".import")) {
+		Array settings;
+		bool complete = false;
+		merge_settings(blocks, Dictionary(), &settings, complete);
+		result["settings"] = settings;
+		result["importer"] = settings_value(String::utf8(godot_git::blob_text(sides.mine.get()).c_str()), "remap", "importer").trim_prefix("\"").trim_suffix("\"");
+	}
 	return result;
+}
+
+// Resolves a `.import` file's conflict setting by setting: changes only one side made merge on
+// their own, and p_choices ({ "section\nkey": "mine" / "theirs" }) decides each setting both sides
+// changed differently (get_conflict's "settings"); every one needs a choice. Written and staged.
+Error GitRepository::resolve_settings_conflict(const String &p_path, const Dictionary &p_choices) {
+	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
+	git_error_clear();
+	const Dictionary conflict = get_conflict(p_path);
+	if (conflict.is_empty()) {
+		return fail(vformat("%s has no conflict to resolve.", p_path));
+	}
+	const Array blocks = conflict.get("blocks", Array());
+	if (blocks.is_empty() || !p_path.ends_with(".import")) {
+		return fail(vformat("%s can't be merged setting by setting.", p_path));
+	}
+	bool complete = false;
+	const String text = merge_settings(blocks, p_choices, nullptr, complete);
+	if (!complete) {
+		return fail(vformat("Choose a side for every setting of %s that both sides changed.", p_path.get_file()));
+	}
+	const CharString bytes = text.utf8();
+	return _write_resolution(p_path, bytes.get_data(), bytes.length());
 }
 
 // Resolves p_path with p_text (as git stores it: see get_conflict) as its new content: written to
@@ -319,7 +456,9 @@ Error GitRepository::_write_resolution(const String &p_path, const char *p_data,
 	Error err = stage(p_path);
 	// Resolving one of your edits after a pull leaves it as it was: an uncommitted, unstaged
 	// change (now with the pulled changes in it), not something staged for you.
-	if (err == OK && operation_in_progress(repo) == "pull" && PackedStringArray(read_pull_state(repo).get("edits", PackedStringArray())).has(p_path)) {
+	// The same for a stash restored into conflicts: its changes come back unstaged.
+	const String kind = operation_in_progress(repo);
+	if (err == OK && ((kind == "pull" && PackedStringArray(read_pull_state(repo).get("edits", PackedStringArray())).has(p_path)) || kind == "stash")) {
 		ObjectPtr head_commit;
 		const CharString path = p_path.utf8();
 		char *paths[] = { (char *)path.get_data() };

@@ -182,6 +182,10 @@ String operation_in_progress(git_repository *p_repo);
 // GitRepository::pull): git knows nothing of it, so operation_in_progress reports "pull" for it.
 String pull_state_path(git_repository *p_repo);
 Dictionary read_pull_state(git_repository *p_repo);
+// The same for a stash restored into conflicts (see GitRepository::restore_stash): operation
+// "stash". { "hash", "message", "paths": the files the stash touches }.
+String stash_state_path(git_repository *p_repo);
+Dictionary read_stash_state(git_repository *p_repo);
 
 // FAILED while an operation is in progress, saying so ("Can't commit while a merge is in progress
 // ..."): committing, pulling or switching then would silently lose the operation (a plain commit

@@ -134,6 +134,8 @@ void GitConflictView::_bind_methods() {
 	// "theirs"; side_requested). The Git dock does the writing.
 	ADD_SIGNAL(MethodInfo("resolve_requested", PropertyInfo(Variant::STRING, "path"), PropertyInfo(Variant::STRING, "text")));
 	ADD_SIGNAL(MethodInfo("side_requested", PropertyInfo(Variant::STRING, "path"), PropertyInfo(Variant::STRING, "side")));
+	// A `.import` file's choices, { "section\nkey": "mine" / "theirs" } (GitRepository::resolve_settings_conflict).
+	ADD_SIGNAL(MethodInfo("settings_requested", PropertyInfo(Variant::STRING, "path"), PropertyInfo(Variant::DICTIONARY, "choices")));
 }
 
 GitConflictView::GitConflictView() {
@@ -190,6 +192,43 @@ GitConflictView::GitConflictView() {
 	split->add_child(result_box);
 	result_edit = _make_code(result_box, FRAME_RESULT, true, &result_caption);
 	result_edit->connect("text_changed", callable_mp(this, &GitConflictView::_on_result_changed));
+
+	VBoxContainer *settings_box = memnew(VBoxContainer);
+	settings_box->set_v_size_flags(SIZE_EXPAND_FILL);
+	settings_box->hide();
+	add_child(settings_box);
+	settings_view = settings_box;
+	HFlowContainer *settings_bar = memnew(HFlowContainer);
+	settings_box->add_child(settings_bar);
+	settings_label = memnew(Label);
+	settings_label->set_h_size_flags(SIZE_EXPAND_FILL);
+	settings_label->set_vertical_alignment(VERTICAL_ALIGNMENT_CENTER);
+	settings_bar->add_child(settings_label);
+	Button *as_text_button = memnew(Button);
+	as_text_button->set_text("Resolve as Text");
+	as_text_button->set_tooltip_text("Resolve the file's lines yourself instead, in the text resolver.");
+	as_text_button->connect("pressed", callable_mp(this, &GitConflictView::_resolve_as_text));
+	settings_bar->add_child(as_text_button);
+	for (const char *side : { "mine", "theirs" }) {
+		Button *button = memnew(Button);
+		button->set_text(String(side) == "mine" ? "Keep All Mine" : "Take All Theirs");
+		button->set_tooltip_text(String(side) == "mine" ? "Resolve the file with your whole version, then stage it." : "Resolve the file with their whole version, then stage it.");
+		button->connect("pressed", callable_mp(this, &GitConflictView::_take_whole).bind(side));
+		settings_bar->add_child(button);
+	}
+	settings_resolve_button = memnew(Button);
+	settings_resolve_button->set_text("Resolve File");
+	settings_resolve_button->connect("pressed", callable_mp(this, &GitConflictView::_on_settings_resolve));
+	settings_bar->add_child(settings_resolve_button);
+	settings_tree = memnew(Tree);
+	settings_tree->set_columns(3);
+	settings_tree->set_column_titles_visible(true);
+	settings_tree->set_hide_root(true);
+	settings_tree->set_hide_folding(true);
+	settings_tree->set_select_mode(Tree::SELECT_SINGLE);
+	settings_tree->set_v_size_flags(SIZE_EXPAND_FILL);
+	settings_tree->connect("item_edited", callable_mp(this, &GitConflictView::_on_setting_edited));
+	settings_box->add_child(settings_tree);
 
 	VBoxContainer *whole = memnew(VBoxContainer);
 	whole->hide();
@@ -282,12 +321,35 @@ void GitConflictView::set_conflict(const Dictionary &p_conflict, const Ref<Synta
 	theirs_caption->set_text(theirs_label.is_empty() ? String("Theirs") : vformat(String::utf8("Theirs · %s"), theirs_label));
 	result_caption->set_text("Result: the file as it will be. Choose above, or edit it here.");
 
-	// Whole sides only: binary or LFS files, or a side that deleted the file.
+	// Whole sides only: binary or LFS files, a side that deleted the file, and a `.uid` (one value).
 	const Array conflict_blocks = p_conflict.get("blocks", Array());
-	const bool whole = conflict_blocks.is_empty();
-	toolbar->set_visible(!whole);
-	split->set_visible(!whole);
-	whole_view->set_visible(whole);
+	const bool uid = path.ends_with(".uid") && !conflict_blocks.is_empty();
+	const bool whole = conflict_blocks.is_empty() || uid;
+	as_text = false;
+	settings_mode = !whole && p_conflict.has("settings");
+	whole_mode = whole;
+	_show_mode();
+	if (uid) {
+		// Both sides made a uid for the same file (each created or re-saved it). Scenes committed on
+		// their side point at theirs; anything of yours that uses yours falls back to the file's path
+		// and gets the uid again when it's saved, so theirs is the safe pick (maintainer, 2026-10-02).
+		const String theirs_name = theirs_label.is_empty() ? String("the other side") : theirs_label;
+		String mine_uid, theirs_uid;
+		for (int i = 0; i < conflict_blocks.size(); i++) {
+			const Dictionary block = conflict_blocks[i];
+			if (String(block["kind"]) == "conflict") {
+				mine_uid = String(block["mine"]).strip_edges();
+				theirs_uid = String(block["theirs"]).strip_edges();
+			}
+		}
+		whole_label->set_text(vformat("Both sides gave %s a different uid (mine %s, theirs %s). Usually take theirs: what's committed on %s refers to it. Scenes that use yours still find the file by its path, and pick up the uid when saved again.", path.get_basename().get_file(), mine_uid, theirs_uid, theirs_name));
+		whole_mine_button->set_text("Keep Mine");
+		whole_theirs_button->set_text(vformat("Take Theirs (%s)", theirs_name));
+		return;
+	}
+	if (settings_mode) {
+		_fill_settings(); // The line resolver below is filled too, for Resolve as Text.
+	}
 	if (whole) {
 		const String name = path.get_file();
 		const String mine_name = mine_label.is_empty() ? String("you") : mine_label;
@@ -302,7 +364,7 @@ void GitConflictView::set_conflict(const Dictionary &p_conflict, const Ref<Synta
 			whole_theirs_button->set_text("Delete It");
 		} else {
 			// An image shows both versions above this (the Git Diff panel's image view).
-			whole_label->set_text(GitDiffDock::is_image_path(path) ? vformat("Both sides changed %s. Pick the one to keep.", name) : vformat("%s can't be merged line by line (it's binary, or stored with Git LFS). Keep one version whole.", name));
+			whole_label->set_text(GitDiffDock::is_image_path(path) || GitDiffDock::is_audio_path(path) ? vformat("Both sides changed %s. Pick the one to keep.", name) : vformat("%s can't be merged line by line (it's binary, or stored with Git LFS). Keep one version whole.", name));
 			whole_mine_button->set_text(vformat("Keep Mine (%s)", mine_name));
 			whole_theirs_button->set_text(vformat("Take Theirs (%s)", theirs_name));
 		}
@@ -572,6 +634,117 @@ void GitConflictView::_draw_sign(int p_line, int p_gutter, const Rect2 &p_region
 	const String sign = added ? String("+") : String::utf8("\u2212");
 	const Vector2 at(p_region.position.x + (p_region.size.x - font->get_string_size(sign, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x) / 2, p_region.position.y + (p_region.size.y - font->get_height(size)) / 2 + font->get_ascent(size));
 	edit->draw_string(font, at, sign, HORIZONTAL_ALIGNMENT_LEFT, -1, size, get_theme_color(added ? "success_color" : "error_color", "Editor"));
+}
+
+// Which view is up: the line resolver, the settings list, or whole sides only.
+void GitConflictView::_show_mode() {
+	const bool settings = settings_mode && !as_text;
+	toolbar->set_visible(!whole_mode && !settings);
+	split->set_visible(!whole_mode && !settings);
+	settings_view->set_visible(!whole_mode && settings);
+	whole_view->set_visible(whole_mode);
+}
+
+// One row per setting both sides changed differently, each side's value with a box to tick.
+// Values Godot fills in itself (where the imported copy goes, dependencies) aren't asked about:
+// yours is kept, and Godot writes them again when it reimports.
+void GitConflictView::_fill_settings() {
+	settings_tree->clear();
+	TreeItem *root = settings_tree->create_item();
+	const String importer = conflict.get("importer", String());
+	const String mine_label = conflict.get("mine_label", String());
+	const String theirs_label = conflict.get("theirs_label", String());
+	settings_tree->set_column_title(0, "Setting");
+	settings_tree->set_column_title(1, mine_caption->get_text());
+	settings_tree->set_column_title(2, theirs_caption->get_text());
+	settings_tree->set_column_expand(0, true);
+	settings_tree->set_column_expand_ratio(0, 3);
+	settings_tree->set_column_expand_ratio(1, 2);
+	settings_tree->set_column_expand_ratio(2, 2);
+	const Array settings = conflict.get("settings", Array());
+	int asked = 0;
+	for (int i = 0; i < settings.size(); i++) {
+		const Dictionary setting = settings[i];
+		const String section = setting["section"];
+		const String key = setting["key"];
+		if (GitDiffDock::is_generated_setting(section, key)) {
+			continue;
+		}
+		asked++;
+		TreeItem *row = settings_tree->create_item(root);
+		row->set_metadata(0, setting["id"]);
+		row->set_text(0, GitDiffDock::setting_display_name(section, key));
+		row->set_tooltip_text(0, vformat("%s (in the file: %s)", row->get_text(0), key));
+		row->set_selectable(0, false);
+		for (int side = 1; side <= 2; side++) {
+			const char *part = side == 1 ? "mine" : "theirs";
+			String full;
+			const String value = setting.has(part) ? GitDiffDock::setting_display_value(importer, section, key, setting[part], full) : String("(not set)");
+			row->set_cell_mode(side, TreeItem::CELL_MODE_CHECK);
+			row->set_editable(side, true);
+			row->set_checked(side, false);
+			row->set_text(side, value);
+			row->set_custom_color(side, conflict_side_color(side == 1));
+			String was, was_full;
+			if (setting.has("base")) {
+				was = GitDiffDock::setting_display_value(importer, section, key, setting["base"], was_full);
+			}
+			row->set_tooltip_text(side, vformat("%s%s", full.is_empty() ? value : full, setting.has("base") ? vformat("\nBefore both changes: %s", was) : String("\nNeither side had it before.")));
+		}
+	}
+	const String name = path.get_file().trim_suffix(".import");
+	if (asked == 0) {
+		settings_tree->hide();
+		settings_label->set_text(vformat("Both sides changed different import settings of %s. They merge on their own.", name));
+	} else {
+		settings_tree->show();
+		settings_label->set_text(vformat("Both sides changed %s of %s. Tick the one to keep for each; changes only one side made are merged already.", plural(asked, "import setting", "import settings"), name));
+	}
+	_update_settings_resolve();
+}
+
+// Ticking one side unticks the other: one value per setting.
+void GitConflictView::_on_setting_edited() {
+	TreeItem *row = settings_tree->get_edited();
+	const int column = settings_tree->get_edited_column();
+	if (row && (column == 1 || column == 2) && row->is_checked(column)) {
+		row->set_checked(column == 1 ? 2 : 1, false);
+	}
+	_update_settings_resolve();
+}
+
+void GitConflictView::_update_settings_resolve() {
+	int open = 0;
+	TreeItem *root = settings_tree->get_root();
+	for (TreeItem *row = root ? root->get_first_child() : nullptr; row; row = row->get_next()) {
+		open += row->is_checked(1) || row->is_checked(2) ? 0 : 1;
+	}
+	settings_resolve_button->set_disabled(open > 0);
+	settings_resolve_button->set_tooltip_text(open > 0 ? vformat("%s still without a side ticked.", plural(open, "setting is", "settings are")) : vformat("Write the merged settings to %s and stage it, which marks it resolved. Godot reimports the file with them.", path.get_file()));
+}
+
+void GitConflictView::_on_settings_resolve() {
+	Dictionary choices;
+	// Generated values (not listed) keep yours; Godot writes them again on reimport.
+	const Array settings = conflict.get("settings", Array());
+	for (int i = 0; i < settings.size(); i++) {
+		const Dictionary setting = settings[i];
+		choices[setting["id"]] = "mine";
+	}
+	TreeItem *root = settings_tree->get_root();
+	for (TreeItem *row = root ? root->get_first_child() : nullptr; row; row = row->get_next()) {
+		if (!row->is_checked(1) && !row->is_checked(2)) {
+			return;
+		}
+		choices[row->get_metadata(0)] = row->is_checked(2) ? "theirs" : "mine";
+	}
+	emit_signal("settings_requested", path, choices);
+}
+
+void GitConflictView::_resolve_as_text() {
+	as_text = true;
+	_show_mode();
+	_show_current(true);
 }
 
 Color GitConflictView::_filler_tint() const {

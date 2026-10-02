@@ -1,11 +1,14 @@
 #pragma once
 
+#include <godot_cpp/classes/audio_stream.hpp>
+#include <godot_cpp/classes/audio_stream_player.hpp>
 #include <godot_cpp/classes/button.hpp>
 #include <godot_cpp/classes/code_edit.hpp>
 #include <godot_cpp/classes/editor_dock.hpp>
 #include <godot_cpp/classes/font.hpp>
 #include <godot_cpp/classes/h_box_container.hpp>
 #include <godot_cpp/classes/label.hpp>
+#include <godot_cpp/classes/menu_button.hpp>
 #include <godot_cpp/classes/option_button.hpp>
 #include <godot_cpp/classes/panel_container.hpp>
 #include <godot_cpp/classes/scroll_container.hpp>
@@ -61,6 +64,7 @@ private:
 		VIEW_SPLIT,
 		VIEW_IMAGE, // Before | after, for images. Not saved: images always open this way.
 		VIEW_SETTINGS, // Setting by setting, for `.import` and `.uid` files. Not saved either.
+		VIEW_AUDIO, // Before | after, for sounds: length, waveform, play.
 	};
 
 	enum PaneIndex {
@@ -80,6 +84,7 @@ private:
 		PackedByteArray kinds;
 		PackedInt32Array old_numbers; // All -1 on the split view's new side.
 		PackedInt32Array new_numbers; // All -1 on the split view's old side.
+		Array words; // Per row: the changed words' [start, end) columns, pairs in a PackedInt32Array.
 		int number_gutters = 0; // 2 in the unified view (old and new), 1 in the split view.
 		int first_gutter = 0; // Ours come after CodeEdit's own (breakpoints, line numbers, ...), which are hidden.
 	};
@@ -95,13 +100,26 @@ private:
 		Ref<Texture2D> texture;
 	};
 
+	// One side of the audio view: play button and caption ("Before · 2.4 s · 44.1 kHz · mono"),
+	// the waveform (drawn by _draw_audio_side), or a note instead ("Deleted.").
+	struct AudioSide {
+		Button *play = nullptr;
+		Label *caption = nullptr;
+		PanelContainer *frame = nullptr;
+		Control *wave = nullptr;
+		Label *note = nullptr;
+		Ref<AudioStream> stream;
+		PackedFloat32Array peaks;
+	};
+
 	// The lines of one view, built from the hunks by _build_rows.
 	struct Rows {
 		PackedStringArray text;
 		PackedByteArray kinds;
 		PackedInt32Array old_numbers;
 		PackedInt32Array new_numbers;
-		void add(const String &p_text, RowKind p_kind, int p_old, int p_new);
+		Array words; // See Pane::words.
+		void add(const String &p_text, RowKind p_kind, int p_old, int p_new, const PackedInt32Array &p_words = PackedInt32Array());
 	};
 
 	// Theme values, read once per theme change: the gutters are drawn for every visible row.
@@ -134,6 +152,10 @@ private:
 	Label *added_label = nullptr;
 	Label *removed_label = nullptr;
 	OptionButton *view_select = nullptr;
+	// Context lines (3, 10, 25, the whole file) and ignoring whitespace, saved per project.
+	MenuButton *options_button = nullptr;
+	int context_lines = 3;
+	bool ignore_whitespace = false;
 	Button *open_button = nullptr;
 	Control *header = nullptr;
 
@@ -145,6 +167,10 @@ private:
 	Control *image_view = nullptr;
 	Pane panes[PANE_COUNT];
 	ImageSide image_sides[2];
+	Control *audio_view = nullptr;
+	AudioSide audio_sides[2];
+	AudioStreamPlayer *audio_player = nullptr;
+	int audio_playing = -1; // The side playing, or -1.
 	Control *settings_view = nullptr;
 	Tree *settings_tree = nullptr;
 	// Under any view: the settings of the file's companions (`player.png.import`, `player.gd.uid`),
@@ -173,11 +199,23 @@ private:
 	void _fill_pane(Pane &r_pane, const Rows &p_rows);
 	void _draw_gutter(int p_line, int p_gutter, const Rect2 &p_region, int p_pane);
 	void _on_scrolled(double p_value, int p_from);
+	void _draw_words(int p_pane);
+	void _on_option(int p_id);
+	void _update_options_menu();
 
 	// git_diff_dock_images.cpp
 	void _make_image_side(int p_index, Control *p_parent);
 	void _show_images();
 	void _draw_image_side(int p_index);
+
+	// git_diff_dock_audio.cpp
+	void _make_audio_side(int p_index, Control *p_parent);
+	void _show_audio();
+	void _draw_audio_side(int p_index);
+	void _on_audio_play(int p_index);
+	void _stop_audio();
+	void _update_audio_buttons();
+	void _process_audio();
 
 	// git_diff_dock_settings.cpp
 	Tree *_make_settings_tree(Control *p_parent);
@@ -196,7 +234,8 @@ public:
 	// "Staged", "Commit 4dff129"). Does nothing when it's what's already shown, so a refresh keeps
 	// the scroll position and selection; a changed diff of the same file keeps the scroll position.
 	// For images, p_diff also holds both versions ("image_old", "image_new":
-	// GitRepository::get_file_bytes), shown before | after instead of "binary file". "companions":
+	// GitRepository::get_file_bytes), shown before | after instead of "binary file"; sounds the
+	// same way ("audio_old", "audio_new"). "companions":
 	// the diffs of the file's `.import` / `.uid` companions, shown setting by setting under it.
 	// A dictionary with "conflict" (GitRepository::get_conflict, marked by the Git dock) opens the
 	// resolver instead.
@@ -205,9 +244,19 @@ public:
 
 	// Whether the Diff panel shows p_path as an image (by its extension).
 	static bool is_image_path(const String &p_path);
+	// Whether it shows p_path as a sound (wav, ogg, mp3).
+	static bool is_audio_path(const String &p_path);
 	static Ref<SyntaxHighlighter> make_code_highlighter(const String &p_path);
 	static Color row_tint(bool p_added);
+	// A `.import` setting as the Import dock shows it (see git_diff_dock_settings.cpp).
+	static String setting_display_name(const String &p_section, const String &p_key);
+	static String setting_display_value(const String &p_importer, const String &p_section, const String &p_key, const String &p_raw, String &r_full);
+	static bool is_generated_setting(const String &p_section, const String &p_key);
 	GitConflictView *get_conflict_view() const { return conflict_view; }
+	// The diff options the Git dock asks the repository for (see GitRepository::set_diff_options);
+	// "options_changed" when they change.
+	int get_context_lines() const { return context_lines; }
+	bool is_ignoring_whitespace() const { return ignore_whitespace; }
 
 	GitDiffDock();
 };

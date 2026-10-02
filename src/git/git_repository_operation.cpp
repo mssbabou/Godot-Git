@@ -53,6 +53,9 @@ String operation_subject(git_repository *p_repo, const String &p_kind) {
 	if (p_kind == "pull") {
 		return vformat("Merge your changes with %s", String(read_pull_state(p_repo).get("upstream", String())));
 	}
+	if (p_kind == "stash") {
+		return read_stash_state(p_repo).get("message", String());
+	}
 	if (p_kind == "rebase") {
 		String head = read_git_file(p_repo, "rebase-merge/head-name").strip_edges();
 		if (head.is_empty()) {
@@ -109,6 +112,9 @@ Error GitRepository::abort_operation() {
 	if (kind == "pull") {
 		return _abort_pull();
 	}
+	if (kind == "stash") {
+		return _abort_stash();
+	}
 	PackedStringArray args;
 	if (kind == "bisect") {
 		args = PackedStringArray({ "bisect", "reset" });
@@ -134,6 +140,10 @@ Error GitRepository::continue_operation() {
 	}
 	if (kind == "pull") {
 		_end_pull_merge(read_pull_state(repo)); // The pull is done; your resolved edits stay uncommitted.
+		return OK;
+	}
+	if (kind == "stash") {
+		_end_stash_restore(true); // Every change is back, resolved: the stash goes.
 		return OK;
 	}
 	if (require_identity(repo, "Nothing was continued.") != OK) {

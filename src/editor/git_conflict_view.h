@@ -5,6 +5,7 @@
 #include <godot_cpp/classes/label.hpp>
 #include <godot_cpp/classes/panel_container.hpp>
 #include <godot_cpp/classes/syntax_highlighter.hpp>
+#include <godot_cpp/classes/tree.hpp>
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/classes/v_split_container.hpp>
 #include <godot_cpp/templates/local_vector.hpp>
@@ -18,7 +19,8 @@ using namespace godot;
 // editable) below. The result marks what's still undecided with header rows of its own;
 // choosing a side replaces one block (one undoable edit), and anything can be edited by hand.
 // Nothing is written until Resolve File, which needs every marker gone. Binary files, LFS files
-// and a side that deleted the file can only be taken whole.
+// and a side that deleted the file can only be taken whole. A `.import` file is merged setting by
+// setting, asking only about settings both sides changed differently.
 class GitConflictView : public VBoxContainer {
 	GDCLASS(GitConflictView, VBoxContainer)
 
@@ -57,6 +59,16 @@ class GitConflictView : public VBoxContainer {
 	CodeEdit *result_edit = nullptr;
 	PanelContainer *frames[3] = {};
 
+	// A `.import` file: the settings both sides changed differently, a side ticked for each
+	// (get_conflict's "settings"). "Resolve as Text" switches to the line resolver.
+	Control *settings_view = nullptr;
+	Label *settings_label = nullptr;
+	Tree *settings_tree = nullptr;
+	Button *settings_resolve_button = nullptr;
+	bool as_text = false;
+	bool settings_mode = false;
+	bool whole_mode = false;
+
 	Control *whole_view = nullptr; // Instead of the split, when only whole sides can be taken.
 	Label *whole_label = nullptr;
 	Button *whole_mine_button = nullptr;
@@ -73,6 +85,12 @@ class GitConflictView : public VBoxContainer {
 	void _on_resolve();
 	String _lines(int p_from, int p_to) const;
 	void _draw_sign(int p_line, int p_gutter, const Rect2 &p_region, int p_side);
+	void _show_mode();
+	void _fill_settings();
+	void _on_setting_edited();
+	void _update_settings_resolve();
+	void _on_settings_resolve();
+	void _resolve_as_text();
 	Color _filler_tint() const;
 
 protected:

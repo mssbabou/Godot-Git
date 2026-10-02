@@ -8,6 +8,7 @@ func run() -> void:
 	_unstage_all()
 	_discard()
 	_line_stats()
+	_line_stats_match_git()
 	_commit_and_history()
 	_branches()
 	_rename_and_delete_branches()
@@ -80,6 +81,58 @@ func _line_stats() -> void:
 	check("unstaged stats count a new file's lines", stats.get("new.txt") == Vector2i(3, 0), stats)
 	r.stage("a.txt")
 	check("staged stats", r.get_line_stats(true).get("a.txt") == Vector2i(2, 1), r.get_line_stats(true))
+
+
+## The line counts are worked out in memory (not through libgit2's diff, which was slow): they
+## must say what `git diff --numstat` says, CRLF files with core.autocrlf, deletions and binary
+## files included.
+func _line_stats_match_git() -> void:
+	var repo := make_repo("stats-numstat")
+	git(repo, ["config", "core.autocrlf", "true"])
+	write(repo.path_join("a.txt"), "one
+two
+three
+four
+")
+	write(repo.path_join("gone.txt"), "x
+y
+")
+	write(repo.path_join("s.txt"), "s1
+s2
+")
+	var bin := FileAccess.open(repo.path_join("bin.dat"), FileAccess.WRITE)
+	bin.store_buffer(PackedByteArray([0, 1, 2, 3]))
+	bin.close()
+	commit_all(repo, "init")
+	write(repo.path_join("a.txt"), "one
+TWO
+three
+four
+five
+")
+	DirAccess.remove_absolute(repo.path_join("gone.txt"))
+	bin = FileAccess.open(repo.path_join("bin.dat"), FileAccess.WRITE)
+	bin.store_buffer(PackedByteArray([0, 9, 9, 9]))
+	bin.close()
+	write(repo.path_join("s.txt"), "s1
+S2
+s3
+")
+	git(repo, ["add", "s.txt"])
+	write(repo.path_join("untracked.txt"), "u1
+u2
+")
+	var r := open(repo)
+	for staged in [false, true]:
+		var stats := r.get_line_stats(staged)
+		var expected := {}
+		for line in git(repo, ["diff", "--numstat"] + (["--cached"] if staged else [])).split("
+", false):
+			var parts := line.split("	")
+			expected[parts[2]] = Vector2i(-1, -1) if parts[0] == "-" else Vector2i(parts[0].to_int(), parts[1].to_int())
+		if not staged:
+			expected["untracked.txt"] = Vector2i(2, 0)
+		check("line counts match git diff --numstat (%s)" % ("staged" if staged else "unstaged"), stats == expected, [stats, expected])
 
 
 func _commit_and_history() -> void:

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <godot_cpp/templates/hash_set.hpp>
+
 #include <godot_cpp/classes/ref_counted.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/callable.hpp>
@@ -32,12 +34,19 @@ class GitRepository : public RefCounted {
 	mutable String commits_key;
 	mutable Dictionary commits_cache; // "max|path|query" -> the commits.
 	bool login_prompts_allowed = true;
+	int diff_context_lines = 3; // See set_diff_options.
+	bool diff_ignore_whitespace = false;
 
 	void close();
 	Error _fetch_remote(const String &p_remote);
 	Error _fetch_lfs_files(const char *p_refname, const git_oid *p_commit);
 	Error _commit_with_git(const String &p_message, bool p_amend);
 	Error _write_resolution(const String &p_path, const char *p_data, size_t p_size);
+	Dictionary _line_stats_through_libgit2(bool p_staged) const;
+	Error _run_lfs_lock_command(const PackedStringArray &p_args, const String &p_step, String &r_output);
+	Error _restore_stash_into_conflicts(const String &p_hash, size_t p_index, const PackedStringArray &p_regenerated, const HashSet<String> &p_touched, const HashSet<String> &p_untracked);
+	void _end_stash_restore(bool p_drop);
+	Error _abort_stash();
 	Error _abort_pull();
 	void _end_pull_merge(const Dictionary &p_state);
 	Error _push_with_git(const String &p_remote, const String &p_refspec, bool p_ssh);
@@ -87,7 +96,16 @@ public:
 	Error commit(const String &p_message);
 	Error amend(const String &p_message);
 	Error stash(bool p_staged, const String &p_message = String());
-	Error restore_stash(const String &p_hash);
+	Error restore_stash(const String &p_hash, bool p_merge = false);
+	PackedStringArray get_stash_conflicts(const String &p_hash) const;
+	Array get_lfs_locks();
+	void set_diff_options(int p_context, bool p_ignore_whitespace);
+	Array get_pull_leftovers() const;
+	Error resolve_pull_leftovers(const String &p_folder, bool p_put_back);
+	Dictionary get_commit_details(const String &p_hash) const;
+	bool is_lfs_file(const String &p_path) const;
+	Error lock_file(const String &p_path);
+	Error unlock_file(const String &p_path, bool p_force = false);
 	Error delete_stash(const String &p_hash);
 	bool commit_runs_git(bool p_amend) const;
 	bool is_head_pushed() const;
@@ -106,6 +124,7 @@ public:
 	Dictionary get_conflict(const String &p_path) const;
 	Error resolve_conflict(const String &p_path, const String &p_text);
 	Error resolve_conflict_with(const String &p_path, const String &p_side);
+	Error resolve_settings_conflict(const String &p_path, const Dictionary &p_choices);
 	static bool is_lfs_installed();
 	Error add_remote(const String &p_name, const String &p_url);
 	Dictionary get_identity() const;

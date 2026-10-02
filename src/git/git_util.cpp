@@ -342,7 +342,10 @@ String operation_in_progress(git_repository *p_repo) {
 		case GIT_REPOSITORY_STATE_APPLY_MAILBOX_OR_REBASE:
 			return "apply";
 		default:
-			return FileAccess::file_exists(pull_state_path(p_repo)) ? String("pull") : String();
+			if (FileAccess::file_exists(pull_state_path(p_repo))) {
+				return "pull";
+			}
+			return FileAccess::file_exists(stash_state_path(p_repo)) ? String("stash") : String();
 	}
 }
 
@@ -362,12 +365,25 @@ Dictionary read_pull_state(git_repository *p_repo) {
 	return parsed.get_type() == Variant::DICTIONARY ? Dictionary(parsed) : Dictionary();
 }
 
+String stash_state_path(git_repository *p_repo) {
+	return String::utf8(git_repository_path(p_repo)).path_join("godot-git-stash-state.json");
+}
+
+Dictionary read_stash_state(git_repository *p_repo) {
+	const String path = stash_state_path(p_repo);
+	if (!FileAccess::file_exists(path)) {
+		return Dictionary();
+	}
+	const Variant parsed = JSON::parse_string(FileAccess::get_file_as_string(path));
+	return parsed.get_type() == Variant::DICTIONARY ? Dictionary(parsed) : Dictionary();
+}
+
 Error require_no_operation(git_repository *p_repo, const String &p_action) {
 	const String operation = operation_in_progress(p_repo);
 	if (operation.is_empty()) {
 		return OK;
 	}
-	const String name = operation == "apply" ? String("git am") : operation;
+	const String name = operation == "apply" ? String("git am") : (operation == "pull" ? String("merge") : (operation == "stash" ? String("stash restore") : operation));
 	return fail(vformat("Can't %s while a %s is in progress. Finish it or abort it first.", p_action, name));
 }
 

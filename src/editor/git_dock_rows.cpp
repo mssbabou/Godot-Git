@@ -320,6 +320,15 @@ bool GitDock::_build_file_menu(Tree *p_tree) {
 		}
 	}
 	if (single) {
+		const String lock = get_lock_action(paths[0]);
+		if (lock == "lock") {
+			context_menu->add_icon_item(get_theme_icon("Lock", "EditorIcons"), "Lock (Git LFS)", MENU_LOCK);
+			context_menu->set_item_tooltip(-1, "Lock it on the LFS server, so nobody else can push changes to it until you unlock it.");
+		} else if (lock == "unlock") {
+			context_menu->add_icon_item(get_theme_icon("Unlock", "EditorIcons"), "Unlock (Git LFS)", MENU_UNLOCK);
+		}
+	}
+	if (single) {
 		context_menu->add_separator();
 		if (_to_res_path(paths[0]).begins_with("res://")) {
 			context_menu->add_icon_item(get_theme_icon("Filesystem", "EditorIcons"), "Show in FileSystem", MENU_SHOW_IN_FILESYSTEM);
@@ -356,6 +365,12 @@ void GitDock::_on_context_menu_id(int p_id) {
 		return;
 	}
 	switch (p_id) {
+		case MENU_LOCK:
+		case MENU_UNLOCK: {
+			if (paths.size() == 1) {
+				lock_file(paths[0], p_id == MENU_LOCK);
+			}
+		} break;
 		case MENU_IGNORE: {
 			if (!paths.is_empty()) {
 				show_ignore(paths[0]);

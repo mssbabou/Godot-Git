@@ -13,12 +13,44 @@
 #include <godot_cpp/templates/hash_set.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
+#include <string>
+
 #include "git/git_cli.h"
 #include "git/git_lfs.h"
 #include "git/git_remote_callbacks.h"
 #include "git/git_util.h"
 
 using namespace godot_git;
+
+namespace {
+
+// Files over this many bytes count as binary in the line counts: counting them isn't worth the time.
+constexpr int64_t MAX_COUNTED_SIZE = 2 * 1024 * 1024;
+
+// Whether what's committed differs from the file on disk only by line endings (or LFS, handled
+// apart): no .gitattributes asks for another filter, an ident or a text encoding. Then line counts
+// can compare the bytes directly.
+bool simple_attributes(git_repository *p_repo) {
+	const char *workdir = git_repository_workdir(p_repo);
+	if (!workdir) {
+		return true;
+	}
+	PackedStringArray files;
+	files.push_back(String::utf8(workdir).path_join(".gitattributes"));
+	files.push_back(String::utf8(git_repository_path(p_repo)).path_join("info/attributes"));
+	for (const String &path : files) {
+		if (!FileAccess::file_exists(path)) {
+			continue;
+		}
+		const String text = FileAccess::get_file_as_string(path);
+		if (text.replace("filter=lfs", "").contains("filter=") || text.contains("ident") || text.contains("working-tree-encoding")) {
+			return false;
+		}
+	}
+	return true;
+}
+
+} // namespace
 
 namespace {
 
@@ -93,6 +125,7 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_conflict", "path"), &GitRepository::get_conflict);
 	ClassDB::bind_method(D_METHOD("resolve_conflict", "path", "text"), &GitRepository::resolve_conflict);
 	ClassDB::bind_method(D_METHOD("resolve_conflict_with", "path", "side"), &GitRepository::resolve_conflict_with);
+	ClassDB::bind_method(D_METHOD("resolve_settings_conflict", "path", "choices"), &GitRepository::resolve_settings_conflict);
 	ClassDB::bind_static_method("GitRepository", D_METHOD("is_lfs_installed"), &GitRepository::is_lfs_installed);
 	ClassDB::bind_method(D_METHOD("undo_last_commit"), &GitRepository::undo_last_commit);
 	ClassDB::bind_method(D_METHOD("revert_commit", "hash"), &GitRepository::revert_commit);
@@ -106,7 +139,16 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_stash_files", "hash"), &GitRepository::get_stash_files);
 	ClassDB::bind_method(D_METHOD("get_stash_diff", "hash", "path"), &GitRepository::get_stash_diff);
 	ClassDB::bind_method(D_METHOD("stash", "staged", "message"), &GitRepository::stash, DEFVAL(String()));
-	ClassDB::bind_method(D_METHOD("restore_stash", "hash"), &GitRepository::restore_stash);
+	ClassDB::bind_method(D_METHOD("restore_stash", "hash", "merge"), &GitRepository::restore_stash, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("get_stash_conflicts", "hash"), &GitRepository::get_stash_conflicts);
+	ClassDB::bind_method(D_METHOD("get_lfs_locks"), &GitRepository::get_lfs_locks);
+	ClassDB::bind_method(D_METHOD("set_diff_options", "context", "ignore_whitespace"), &GitRepository::set_diff_options);
+	ClassDB::bind_method(D_METHOD("get_pull_leftovers"), &GitRepository::get_pull_leftovers);
+	ClassDB::bind_method(D_METHOD("resolve_pull_leftovers", "folder", "put_back"), &GitRepository::resolve_pull_leftovers);
+	ClassDB::bind_method(D_METHOD("get_commit_details", "hash"), &GitRepository::get_commit_details);
+	ClassDB::bind_method(D_METHOD("is_lfs_file", "path"), &GitRepository::is_lfs_file);
+	ClassDB::bind_method(D_METHOD("lock_file", "path"), &GitRepository::lock_file);
+	ClassDB::bind_method(D_METHOD("unlock_file", "path", "force"), &GitRepository::unlock_file, DEFVAL(false));
 	ClassDB::bind_method(D_METHOD("delete_stash", "hash"), &GitRepository::delete_stash);
 	ClassDB::bind_method(D_METHOD("get_operation"), &GitRepository::get_operation);
 
@@ -249,15 +291,112 @@ Array GitRepository::get_status() const {
 Dictionary GitRepository::get_line_stats(bool p_staged) const {
 	Dictionary result;
 	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+	if (!simple_attributes(repo)) {
+		return _line_stats_through_libgit2(p_staged);
+	}
 
+	// Which files changed: a diff without contents is cheap (no file is read or filtered).
 	git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
-	opts.max_size = 2 * 1024 * 1024; // Bigger files are treated as binary; counting them isn't worth the time.
-
 	DiffPtr diff;
 	int err = 0;
 	if (p_staged) {
 		ObjectPtr head_tree;
 		git_revparse_single(head_tree.out(), repo, "HEAD^{tree}"); // Stays null before the first commit.
+		err = git_diff_tree_to_index(diff.out(), repo, (git_tree *)head_tree.get(), nullptr, &opts);
+		if (err >= 0) {
+			git_diff_find_similar(diff, nullptr);
+		}
+	} else {
+		opts.flags = GIT_DIFF_INCLUDE_UNTRACKED | GIT_DIFF_RECURSE_UNTRACKED_DIRS;
+		err = git_diff_index_to_workdir(diff.out(), repo, nullptr, &opts);
+	}
+	if (err < 0) {
+		return result;
+	}
+	const bool uses_lfs = repo_uses_lfs(repo);
+	const String workdir = get_workdir();
+	const size_t count = git_diff_num_deltas(diff);
+	for (size_t i = 0; i < count; i++) {
+		const git_diff_delta *delta = git_diff_get_delta(diff, i);
+		const char *path = delta->new_file.path ? delta->new_file.path : delta->old_file.path;
+		const String key = String::utf8(path);
+		if (delta->status == GIT_DELTA_TYPECHANGE || (uses_lfs && is_lfs_path(repo, path))) {
+			result[key] = Vector2i(-1, -1);
+			continue;
+		}
+		// The old side is always a blob; the new one a blob (staged) or the file on disk.
+		BlobPtr old_blob, new_blob;
+		const char *old_data = "";
+		size_t old_size = 0;
+		if (delta->status != GIT_DELTA_ADDED && delta->status != GIT_DELTA_UNTRACKED && git_blob_lookup(old_blob.out(), repo, &delta->old_file.id) == 0) {
+			old_data = (const char *)git_blob_rawcontent(old_blob);
+			old_size = (size_t)git_blob_rawsize(old_blob);
+		}
+		std::string file_data;
+		const char *new_data = "";
+		size_t new_size = 0;
+		if (delta->status != GIT_DELTA_DELETED) {
+			if (p_staged) {
+				if (git_blob_lookup(new_blob.out(), repo, &delta->new_file.id) == 0) {
+					new_data = (const char *)git_blob_rawcontent(new_blob);
+					new_size = (size_t)git_blob_rawsize(new_blob);
+				}
+			} else {
+				const String absolute = workdir.path_join(key);
+				Ref<FileAccess> file = FileAccess::open(absolute, FileAccess::READ);
+				if (file.is_null()) {
+					continue;
+				}
+				if (file->get_length() > MAX_COUNTED_SIZE) {
+					result[key] = Vector2i(-1, -1);
+					continue;
+				}
+				const PackedByteArray bytes = file->get_buffer(file->get_length());
+				file_data.assign((const char *)bytes.ptr(), bytes.size());
+				// What committing would store: with core.autocrlf (or eol attributes) CRLF becomes
+				// LF, so a file whose committed version has none compares without them.
+				if (file_data.find('\r') != std::string::npos && memchr(old_data, '\r', old_size) == nullptr) {
+					std::string stripped;
+					stripped.reserve(file_data.size());
+					for (size_t c = 0; c < file_data.size(); c++) {
+						if (!(file_data[c] == '\r' && c + 1 < file_data.size() && file_data[c + 1] == '\n')) {
+							stripped += file_data[c];
+						}
+					}
+					file_data.swap(stripped);
+				}
+				new_data = file_data.data();
+				new_size = file_data.size();
+			}
+		}
+		if (old_size > MAX_COUNTED_SIZE || new_size > MAX_COUNTED_SIZE || memchr(old_data, 0, MIN(old_size, (size_t)8000)) || memchr(new_data, 0, MIN(new_size, (size_t)8000))) {
+			result[key] = Vector2i(-1, -1);
+			continue;
+		}
+		// No paths given: libgit2 then doesn't look up attributes (a diff driver) for each file,
+		// which is what made counting slow (see Performance in CLAUDE.md).
+		PatchPtr patch;
+		size_t added = 0, removed = 0;
+		if (git_patch_from_buffers(patch.out(), old_data, old_size, nullptr, new_data, new_size, nullptr, nullptr) == 0 && patch && git_patch_line_stats(nullptr, &added, &removed, patch) == 0) {
+			result[key] = Vector2i((int32_t)added, (int32_t)removed);
+		}
+	}
+	return result;
+}
+
+// get_line_stats the plain libgit2 way, for repositories whose .gitattributes ask for filters
+// other than LFS (or text encodings): only libgit2's filters know what those do to a file. Slow
+// (2.6 ms a file on Windows: it looks attributes up afresh for each), but exact.
+Dictionary GitRepository::_line_stats_through_libgit2(bool p_staged) const {
+	Dictionary result;
+	git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+	opts.max_size = MAX_COUNTED_SIZE; // Bigger files are treated as binary; counting them isn't worth the time.
+
+	DiffPtr diff;
+	int err = 0;
+	if (p_staged) {
+		ObjectPtr head_tree;
+		git_revparse_single(head_tree.out(), repo, "HEAD^{tree}");
 		err = git_diff_tree_to_index(diff.out(), repo, (git_tree *)head_tree.get(), nullptr, &opts);
 		if (err >= 0) {
 			git_diff_find_similar(diff, nullptr);
@@ -269,28 +408,21 @@ Dictionary GitRepository::get_line_stats(bool p_staged) const {
 	if (err < 0) {
 		return result;
 	}
-
-	// Checked per file only in repositories that use LFS: an attribute lookup costs about half a
-	// millisecond per file on Windows, a second for 2,000 changed files.
 	const bool uses_lfs = repo_uses_lfs(repo);
 	const size_t count = git_diff_num_deltas(diff);
 	for (size_t i = 0; i < count; i++) {
-		// An LFS file's diff would be of its pointer text, which says nothing about the real file,
-		// and computing it runs the whole file through git-lfs.
 		const git_diff_delta *lfs_delta = git_diff_get_delta(diff, i);
 		const char *lfs_path = lfs_delta->new_file.path ? lfs_delta->new_file.path : lfs_delta->old_file.path;
 		if (uses_lfs && is_lfs_path(repo, lfs_path)) {
 			result[String::utf8(lfs_path)] = Vector2i(-1, -1);
 			continue;
 		}
-
 		PatchPtr patch;
 		if (git_patch_from_diff(patch.out(), diff, i) < 0 || !patch) {
 			continue;
 		}
 		const git_diff_delta *delta = git_patch_get_delta(patch);
 		const char *path = delta->new_file.path ? delta->new_file.path : delta->old_file.path;
-
 		size_t added = 0, removed = 0;
 		if (delta->flags & GIT_DIFF_FLAG_BINARY) {
 			result[String::utf8(path)] = Vector2i(-1, -1);

@@ -18,6 +18,7 @@ const SUITES := [
 	"res://tests/test_credentials.gd",
 	"res://tests/test_ssh.gd",
 	"res://tests/test_lfs.gd",
+	"res://tests/test_lfs_locks.gd",
 	"res://tests/test_no_git.gd",
 	"res://tests/test_setup.gd",
 	"res://tests/test_operation.gd",

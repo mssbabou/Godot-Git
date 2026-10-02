@@ -370,3 +370,23 @@ void GitDock::_on_setting_toggled(bool p_on, int p_index) {
 		last_auto_fetch_attempt = 0; // Turned back on: may fetch at the next check.
 	}
 }
+
+// Git LFS locks from the FileSystem dock and the Changes list. Only for LFS files, once the
+// server's locks have been read (a fetch reads them): before that, whether it's locked is unknown.
+String GitDock::get_lock_action(const String &p_path) const {
+	if (p_path.is_empty() || !lfs_locks_read || repo.is_null() || !repo->is_open() || !repo->is_lfs_file(p_path) || network_op != NETWORK_NONE) {
+		return String();
+	}
+	if (!lfs_locks.has(p_path)) {
+		return "lock";
+	}
+	return bool(Dictionary(lfs_locks[p_path]).get("mine", false)) ? String("unlock") : String();
+}
+
+void GitDock::lock_file(const String &p_path, bool p_lock) {
+	if (network_op != NETWORK_NONE || p_path.is_empty()) {
+		return;
+	}
+	network_branch = p_path; // The worker's text: the path.
+	_run_network(p_lock ? NETWORK_LOCK : NETWORK_UNLOCK, false);
+}

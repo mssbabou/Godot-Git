@@ -66,6 +66,19 @@ void GitDock::_build_stashes(Control *p_parent) {
 	stash_dialog->register_text_enter(stash_name_edit);
 
 	stash_delete_confirm = _make_confirm("Delete Stash", "Delete", callable_mp(this, &GitDock::_on_stash_delete_confirmed));
+
+	// Like the pull's question (see _ask_to_start_merge): short, the files small under it.
+	stash_merge_confirm = _make_confirm("Restore Stash", "Restore and Merge", callable_mp(this, &GitDock::_restore_stash_merging).bind(String()));
+	stash_merge_confirm->get_ok_button()->set_tooltip_text("Restore it anyway and stop at the conflicts, to resolve them under Conflicts. Abort puts the files back and keeps the stash.");
+	VBoxContainer *merge_box = memnew(VBoxContainer);
+	stash_merge_confirm->add_child(merge_box);
+	stash_merge_question = memnew(Label);
+	merge_box->add_child(stash_merge_question);
+	stash_merge_files = memnew(Label);
+	stash_merge_files->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	stash_merge_files->set_custom_minimum_size(Vector2(300 * EditorInterface::get_singleton()->get_editor_scale(), 0)); // Gotcha 28.
+	stash_merge_files->set_modulate(Color(1, 1, 1, 0.6));
+	merge_box->add_child(stash_merge_files);
 	stash_switch_confirm = _make_confirm("Changes in the Way", "Stash and Switch", callable_mp(this, &GitDock::_stash_and_switch));
 }
 
@@ -297,6 +310,17 @@ void GitDock::_restore_stash(const String &p_hash) {
 			message = Dictionary(stash)["message"];
 		}
 	}
+	// Conflicts with commits made since: ask first, then restore into them (_restore_stash_merging).
+	const PackedStringArray conflicts = repo->get_stash_conflicts(p_hash);
+	if (!conflicts.is_empty()) {
+		pending_stash_merge = p_hash;
+		stash_merge_confirm->set_text(String());
+		stash_merge_question->set_text(vformat("%s with newer commits", conflicts.size() == 1 ? String("1 file conflicts") : vformat("%d files conflict", conflicts.size())));
+		stash_merge_files->set_text(join_list(conflicts, 5));
+		stash_merge_confirm->reset_size();
+		stash_merge_confirm->popup_centered();
+		return;
+	}
 	_remember_open_scenes();
 	const Error err = repo->restore_stash(p_hash);
 	_report(err, "Restore");
@@ -312,6 +336,26 @@ void GitDock::_restore_stash(const String &p_hash) {
 			_set_status(STATUS_WARNING, notice);
 		}
 		_reload_changed_scenes();
+	}
+}
+
+// Restores the stash anyway, stopped at its conflicts: on to the first one.
+void GitDock::_restore_stash_merging(const String &p_hash) {
+	const String hash = p_hash.is_empty() ? pending_stash_merge : p_hash;
+	pending_stash_merge = String();
+	_remember_open_scenes();
+	const Error err = repo->restore_stash(hash, true);
+	_report(err, "Restore");
+	if (err == OK) {
+		EditorInterface::get_singleton()->get_resource_filesystem()->scan();
+	}
+	refresh();
+	if (err == OK) {
+		_reload_changed_scenes();
+		if (!conflicted_paths.is_empty()) {
+			_set_status(STATUS_SUCCESS, vformat("Restored the stash: resolve %s under Conflicts, then finish the restore", plural(conflicted_paths.size(), "file", "files")));
+			_show_conflict(conflicted_paths[0]);
+		}
 	}
 }
 

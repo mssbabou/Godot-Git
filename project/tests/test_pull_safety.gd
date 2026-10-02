@@ -14,6 +14,7 @@ func run() -> void:
 	_edit_on_other_lines_carried_through_a_merge()
 	_carried_edit_restored_when_the_merge_conflicts()
 	_carried_edit_keeps_crlf()
+	_leftovers()
 
 
 const DOC := "a\nb\nc\nd\ne\nf\ng\n"
@@ -182,3 +183,27 @@ func _unrelated_edits_survive_a_refused_conflict() -> void:
 	check("staged edit restored and still staged", git(s.mine, ["diff", "--cached", "--name-only"]) == "y.txt", git(s.mine, ["status", "--short"]))
 	check("no stash left behind", git(s.mine, ["stash", "list"]) == "")
 	check("not stuck mid-merge", not exists(s.mine.path_join(".git/MERGE_HEAD")))
+
+
+## A pull that never finished (the editor went down) leaves your edits in .git/godot-git-pull:
+## listed, put back byte for byte, or deleted.
+func _leftovers() -> void:
+	var repo := make_repo("leftovers")
+	write(repo.path_join("a.txt"), "committed
+")
+	commit_all(repo, "first")
+	var folder := repo.path_join(".git/godot-git-pull")
+	DirAccess.make_dir_recursive_absolute(folder)
+	write(folder.path_join("0"), "my edit
+")
+	write(folder.path_join("README.txt"), "Your uncommitted edits, saved by the Godot Git panel while it pulled.
+
+0  a.txt
+")
+	var r := open(repo)
+	var leftovers := r.get_pull_leftovers()
+	check("leftovers: listed", leftovers.size() == 1 and leftovers[0].files.size() == 1 and leftovers[0].files[0].path == "a.txt" and not leftovers[0].files[0].back, leftovers)
+	check("leftovers: put back", r.resolve_pull_leftovers(leftovers[0].folder, true) == OK, GitRepository.get_last_error())
+	check("leftovers: the edit is back, byte for byte", FileAccess.get_file_as_string(repo.path_join("a.txt")) == "my edit
+")
+	check("leftovers: the copies are gone", not DirAccess.dir_exists_absolute(folder) and r.get_pull_leftovers().is_empty())

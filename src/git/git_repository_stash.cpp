@@ -11,6 +11,7 @@
 
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/json.hpp>
 #include <godot_cpp/templates/hash_set.hpp>
 #include <godot_cpp/templates/local_vector.hpp>
 
@@ -195,11 +196,34 @@ Error GitRepository::stash(bool p_staged, const String &p_message) {
 	return to_error(err);
 }
 
+// The files where stash p_hash changes the same lines as commits made since it: restoring it
+// would conflict there (restore_stash with p_merge). Empty when it fits.
+PackedStringArray GitRepository::get_stash_conflicts(const String &p_hash) const {
+	ERR_FAIL_NULL_V_MSG(repo, PackedStringArray(), "Repository is not open.");
+	git_oid stash_id;
+	CommitPtr stash_commit, base_commit;
+	TreePtr stash_tree, base_tree;
+	ObjectPtr head;
+	if (git_oid_fromstr(&stash_id, p_hash.utf8().get_data()) < 0 || git_commit_lookup(stash_commit.out(), repo, &stash_id) < 0 ||
+			git_commit_tree(stash_tree.out(), stash_commit) < 0 || git_commit_parent(base_commit.out(), stash_commit, 0) < 0 ||
+			git_commit_tree(base_tree.out(), base_commit) < 0 || git_revparse_single(head.out(), repo, "HEAD^{tree}") < 0) {
+		return PackedStringArray();
+	}
+	return merge_conflicts(repo, base_tree, (git_tree *)head.get(), stash_tree);
+}
+
 // Puts stash p_hash's changes back and removes the stash, or refuses and changes nothing: when
 // your current edits touch files the stash changes too, or when the stash changes the same lines
 // as commits made since. What was staged comes back staged, unless that part conflicts (then it
 // comes back unstaged, and get_notice() says so).
-Error GitRepository::restore_stash(const String &p_hash) {
+//
+// With p_merge, a stash that conflicts with commits made since is restored anyway, stopped at
+// its conflicts (in the index, for the resolver: mine is the branch, theirs the stash), as an
+// operation of its own ("stash", .git/godot-git-stash-state.json): finishing it removes the stash,
+// aborting it puts the files back as they were and keeps the stash. Its changes come back
+// unstaged, as resolved files do. Refused while anything is staged (git's stash apply needs a
+// clean index, and finishing must not mix the two).
+Error GitRepository::restore_stash(const String &p_hash, bool p_merge) {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
 	git_error_clear();
 	notice = String();
@@ -260,8 +284,11 @@ Error GitRepository::restore_stash(const String &p_hash) {
 
 	// Commits made since the stash that change the same lines: a restore would conflict.
 	const PackedStringArray conflicts = merge_conflicts(repo, base_tree, head_tree, stash_tree);
+	if (!conflicts.is_empty() && !p_merge) {
+		return fail(vformat("Nothing was restored: the stash changes the same lines as commits made since, in %s.", name_list(conflicts)));
+	}
 	if (!conflicts.is_empty()) {
-		return fail(vformat("Nothing was restored: the stash changes the same lines as commits made since, in %s. Restoring it would need resolving conflicts, which the panel can't do yet.", name_list(conflicts)));
+		return _restore_stash_into_conflicts(p_hash, index, regenerated, touched, untracked);
 	}
 	const bool staged_fits = merge_conflicts(repo, base_tree, head_tree, index_tree).is_empty();
 
@@ -281,6 +308,127 @@ Error GitRepository::restore_stash(const String &p_hash) {
 		notice = "Restored the stash. What was staged in it came back unstaged: it no longer fits the staged state since new commits.";
 	}
 	return to_error(git_stash_drop(repo, index));
+}
+
+Error GitRepository::_restore_stash_into_conflicts(const String &p_hash, size_t p_index, const PackedStringArray &p_regenerated, const HashSet<String> &p_touched, const HashSet<String> &p_untracked) {
+	for (const Variant &entry : get_status()) {
+		if (!String(Dictionary(entry)["index"]).is_empty()) {
+			return fail("Nothing was restored: you have staged changes. Commit or unstage them first, so the stash's changes can be told apart from them.");
+		}
+	}
+	String message;
+	for (const Variant &stash : get_stashes()) {
+		if (String(Dictionary(stash)["hash"]) == p_hash) {
+			message = Dictionary(stash)["message"];
+		}
+	}
+	PackedStringArray paths;
+	for (const String &path : p_touched) {
+		paths.push_back(path);
+	}
+	for (const String &path : p_untracked) {
+		if (!paths.has(path)) {
+			paths.push_back(path);
+		}
+	}
+	paths.sort();
+	// Written first: if the editor dies halfway, the banner still offers Abort.
+	Dictionary state;
+	state["hash"] = p_hash;
+	state["message"] = message;
+	state["paths"] = paths;
+	const CharString json = JSON::stringify(state, "\t").utf8();
+	if (!write_file(stash_state_path(repo), json.get_data(), json.length())) {
+		return fail("Nothing was restored: couldn't write a note about it into the .git folder.");
+	}
+	const String workdir = get_workdir();
+	for (const String &path : p_regenerated) {
+		DirAccess::remove_absolute(workdir.path_join(path));
+	}
+	git_stash_apply_options opts = GIT_STASH_APPLY_OPTIONS_INIT;
+	opts.checkout_options.checkout_strategy = GIT_CHECKOUT_SAFE;
+	const int err = git_stash_apply(repo, p_index, &opts);
+	if (err < 0) {
+		const String reason = last_git_error();
+		_abort_stash();
+		return fail(vformat("The stash couldn't be restored, and it's kept. %s", reason));
+	}
+	// The files that applied cleanly come back unstaged, like a plain restore; the conflicted ones
+	// stay in the index for the resolver.
+	const PackedStringArray conflicted = get_operation()["conflicts"];
+	LocalVector<CharString> clean_utf8;
+	for (const String &path : paths) {
+		if (!conflicted.has(path)) {
+			clean_utf8.push_back(path.utf8());
+		}
+	}
+	LocalVector<char *> clean;
+	for (CharString &path : clean_utf8) {
+		clean.push_back(path.ptrw());
+	}
+	ObjectPtr head_commit;
+	if (!clean.is_empty() && git_revparse_single(head_commit.out(), repo, "HEAD") == 0) {
+		git_strarray pathspec = { clean.ptr(), clean.size() };
+		git_reset_default(repo, head_commit, &pathspec);
+	}
+	return OK;
+}
+
+// Ends a stash restored into conflicts: the stash goes (its changes are all back), and so does
+// the note.
+void GitRepository::_end_stash_restore(bool p_drop) {
+	const Dictionary state = read_stash_state(repo);
+	size_t index = 0;
+	if (p_drop && find_stash(repo, state.get("hash", String()), index)) {
+		git_stash_drop(repo, index);
+	}
+	DirAccess::remove_absolute(stash_state_path(repo));
+}
+
+// Undoes a stash restored into conflicts: the stash's files back to HEAD's version (index and
+// disk; files only the stash had are removed), the stash kept. Your other changes weren't touched
+// by it (restore_stash refuses when your edits overlap the stash), so they stay.
+Error GitRepository::_abort_stash() {
+	const Dictionary state = read_stash_state(repo);
+	const PackedStringArray paths = state.get("paths", PackedStringArray());
+	LocalVector<CharString> paths_utf8;
+	for (const String &path : paths) {
+		paths_utf8.push_back(path.utf8());
+	}
+	LocalVector<char *> raw;
+	for (CharString &path : paths_utf8) {
+		raw.push_back(path.ptrw());
+	}
+	int err = 0;
+	if (!raw.is_empty()) {
+		git_strarray pathspec = { raw.ptr(), raw.size() };
+		ObjectPtr head_commit;
+		err = git_revparse_single(head_commit.out(), repo, "HEAD");
+		if (err >= 0) {
+			err = git_reset_default(repo, head_commit, &pathspec);
+		}
+		if (err >= 0) {
+			git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
+			opts.checkout_strategy = GIT_CHECKOUT_FORCE | GIT_CHECKOUT_DISABLE_PATHSPEC_MATCH | GIT_CHECKOUT_REMOVE_UNTRACKED;
+			opts.paths = pathspec;
+			err = git_checkout_head(repo, &opts);
+		}
+		// What only the stash had (new files) isn't in HEAD: checkout leaves it, so it goes here.
+		ObjectPtr head_tree;
+		if (err >= 0 && git_revparse_single(head_tree.out(), repo, "HEAD^{tree}") == 0) {
+			for (const String &path : paths) {
+				TreeEntryPtr entry;
+				if (git_tree_entry_bypath(entry.out(), (git_tree *)head_tree.get(), path.utf8().get_data()) == GIT_ENOTFOUND) {
+					DirAccess::remove_absolute(get_workdir().path_join(path));
+				}
+			}
+		}
+	}
+	if (err < 0) {
+		return to_error(err);
+	}
+	_end_stash_restore(false);
+	return OK;
 }
 
 // Deletes stash p_hash for good.

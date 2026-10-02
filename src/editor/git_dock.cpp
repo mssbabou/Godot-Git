@@ -36,6 +36,7 @@ void GitDock::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("show_commit", "hash"), &GitDock::show_commit);
 	ClassDB::bind_method(D_METHOD("can_ignore", "path"), &GitDock::can_ignore);
 	ClassDB::bind_method(D_METHOD("show_ignore", "path"), &GitDock::show_ignore);
+	ClassDB::bind_method(D_METHOD("get_lock_action", "path"), &GitDock::get_lock_action);
 }
 
 GitDock::GitDock() {
@@ -72,6 +73,7 @@ GitDock::GitDock() {
 
 	_build_status_strip(repo_vb);
 	_build_operation_banner(repo_vb);
+	_build_leftovers_banner(repo_vb);
 	_build_export_banner(repo_vb);
 
 	// Syncing with the remote, in one row sharing the width: Fetch, then Pull / Push labeled with
@@ -504,6 +506,7 @@ void GitDock::refresh() {
 	set_title(status.is_empty() ? String("Git") : vformat("Git (%d)", status.size()));
 
 	_update_filesystem_colors(status);
+	_update_leftovers_banner();
 	_update_export_banner();
 	_fill_history();
 	_fill_stashes();

@@ -161,6 +161,30 @@ void GitDock::_fill_commit(TreeItem *p_item) {
 	if (bool(commit.get("merge", false))) {
 		add_note("Merge: what it brought into this branch", "A merge commit. Its files and diffs show what it brought into this branch (compared with its first parent).");
 	}
+	// Where it comes from and where it is: its parents, and the branches that have it.
+	const Dictionary details = repo->get_commit_details(hash);
+	const Array parents = details.get("parents", Array());
+	const PackedStringArray branches = details.get("branches", PackedStringArray());
+	PackedStringArray parent_hashes, parent_lines;
+	for (int i = 0; i < parents.size(); i++) {
+		const Dictionary parent = parents[i];
+		parent_hashes.push_back(parent["hash"]);
+		parent_lines.push_back(vformat("%s %s", parent["hash"], parent["summary"]));
+	}
+	PackedStringArray parts;
+	if (!parent_hashes.is_empty()) {
+		parts.push_back(vformat("%s %s", parent_hashes.size() == 1 ? "Parent" : "Parents", String(", ").join(parent_hashes)));
+	}
+	if (!branches.is_empty()) {
+		parts.push_back(vformat("on %s", join_list(branches, 3)));
+	}
+	if (!parts.is_empty()) {
+		String tooltip = parent_lines.is_empty() ? String() : vformat("%s:\n%s", parent_lines.size() == 1 ? "Parent" : "Parents", String("\n").join(parent_lines));
+		if (!branches.is_empty()) {
+			tooltip += vformat("%sOn %s.", tooltip.is_empty() ? "" : "\n\n", join_list(branches, 20));
+		}
+		add_note(String::utf8(" · ").join(parts), tooltip);
+	}
 
 	if (!commit_files.has(hash)) {
 		commit_files[hash] = repo->get_commit_files(hash);

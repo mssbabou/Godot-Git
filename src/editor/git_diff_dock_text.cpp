@@ -9,6 +9,7 @@
 #include <godot_cpp/classes/gd_script_syntax_highlighter.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/core/math.hpp>
+#include <godot_cpp/templates/local_vector.hpp>
 
 #include "editor/ui_text.h"
 
@@ -49,6 +50,102 @@ CommentStyle comment_style(const String &p_extension) {
 	return {};
 }
 
+// A line cut into words, runs of spaces, and single other characters, for word-level highlights.
+void tokenize(const String &p_line, PackedStringArray &r_tokens, PackedInt32Array &r_starts) {
+	auto kind = [](char32_t c) {
+		if (c == ' ' || c == '\t') {
+			return 1;
+		}
+		if (c == '_' || (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c > 127) {
+			return 2;
+		}
+		return 3;
+	};
+	int i = 0;
+	while (i < p_line.length()) {
+		const int start = i;
+		const int k = kind(p_line[i]);
+		i++;
+		while (k != 3 && i < p_line.length() && kind(p_line[i]) == k) {
+			i++;
+		}
+		r_tokens.push_back(p_line.substr(start, i - start));
+		r_starts.push_back(start);
+	}
+}
+
+// Which parts of a removed line and the added line that replaces it differ, as [start, end)
+// column pairs, by a longest common subsequence of their tokens. Nothing when the lines have
+// little in common: highlighting all of both says nothing the row tint doesn't.
+void word_diff(const String &p_old, const String &p_new, PackedInt32Array &r_old, PackedInt32Array &r_new) {
+	PackedStringArray a, b;
+	PackedInt32Array a_starts, b_starts;
+	tokenize(p_old, a, a_starts);
+	tokenize(p_new, b, b_starts);
+	const int n = a.size();
+	const int m = b.size();
+	if (n == 0 || m == 0 || n * m > 250000) {
+		return;
+	}
+	LocalVector<int> lcs;
+	lcs.resize((n + 1) * (m + 1));
+	for (int i = n; i >= 0; i--) {
+		for (int j = m; j >= 0; j--) {
+			int &cell = lcs[i * (m + 1) + j];
+			if (i == n || j == m) {
+				cell = 0;
+			} else if (a[i] == b[j]) {
+				cell = lcs[(i + 1) * (m + 1) + j + 1] + 1;
+			} else {
+				cell = MAX(lcs[(i + 1) * (m + 1) + j], lcs[i * (m + 1) + j + 1]);
+			}
+		}
+	}
+	LocalVector<bool> a_same, b_same;
+	a_same.resize(n);
+	b_same.resize(m);
+	for (int i = 0; i < n; i++) {
+		a_same[i] = false;
+	}
+	for (int j = 0; j < m; j++) {
+		b_same[j] = false;
+	}
+	int same_chars = 0;
+	for (int i = 0, j = 0; i < n && j < m;) {
+		if (a[i] == b[j]) {
+			a_same[i] = b_same[j] = true;
+			same_chars += a[i].strip_edges().length();
+			i++;
+			j++;
+		} else if (lcs[(i + 1) * (m + 1) + j] >= lcs[i * (m + 1) + j + 1]) {
+			i++;
+		} else {
+			j++;
+		}
+	}
+	const int longest = MAX(p_old.strip_edges().length(), p_new.strip_edges().length());
+	if (longest == 0 || same_chars * 10 < longest * 4) {
+		return; // Under 40% in common: a different line, not an edited one.
+	}
+	auto spans = [](const PackedStringArray &p_tokens, const PackedInt32Array &p_starts, const LocalVector<bool> &p_same, PackedInt32Array &r_spans) {
+		for (int i = 0; i < p_tokens.size(); i++) {
+			if (p_same[i]) {
+				continue;
+			}
+			const int start = p_starts[i];
+			const int end = start + p_tokens[i].length();
+			if (r_spans.size() >= 2 && r_spans[r_spans.size() - 1] == start) {
+				r_spans.set(r_spans.size() - 1, end); // Joined with the span before it.
+			} else {
+				r_spans.push_back(start);
+				r_spans.push_back(end);
+			}
+		}
+	};
+	spans(a, a_starts, a_same, r_old);
+	spans(b, b_starts, b_same, r_new);
+}
+
 } // namespace
 
 void GitDiffHighlighter::setup(const Ref<SyntaxHighlighter> &p_code, const PackedByteArray &p_kinds, const Color &p_header_color) {
@@ -72,7 +169,8 @@ Dictionary GitDiffHighlighter::_get_line_syntax_highlighting(int32_t p_line) con
 	return code.is_valid() ? code->get_line_syntax_highlighting(p_line) : Dictionary();
 }
 
-void GitDiffDock::Rows::add(const String &p_text, RowKind p_kind, int p_old, int p_new) {
+void GitDiffDock::Rows::add(const String &p_text, RowKind p_kind, int p_old, int p_new, const PackedInt32Array &p_words) {
+	words.push_back(p_words);
 	text.push_back(p_text);
 	kinds.push_back(p_kind);
 	old_numbers.push_back(p_old);
@@ -119,6 +217,8 @@ void GitDiffDock::_make_pane(PaneIndex p_index, Control *p_parent, int p_number_
 
 	pane.highlighter.instantiate();
 	edit->set_syntax_highlighter(pane.highlighter);
+	// Changed words, under the text (TextEdit draws its rows on a canvas item above this one).
+	edit->connect("draw", callable_mp(this, &GitDiffDock::_draw_words).bind(p_index));
 }
 
 // The rows of both views. The unified view lists each hunk's lines in order. The split view puts
@@ -142,9 +242,37 @@ void GitDiffDock::_build_rows(Rows &r_unified, Rows &r_old, Rows &r_new) const {
 			r_new.add(header_text, ROW_HEADER, -1, -1);
 		}
 
+		// Each removed line next to the added line that replaces it (by position in their runs):
+		// which words changed.
+		Array words;
+		words.resize(origins.size());
+		for (int i = 0; i < origins.size();) {
+			if (origins[i] != '-') {
+				i++;
+				continue;
+			}
+			const int removed_start = i;
+			while (i < origins.size() && origins[i] == '-') {
+				i++;
+			}
+			const int added_start = i;
+			while (i < origins.size() && origins[i] == '+') {
+				i++;
+			}
+			for (int r = 0; r < MIN(added_start - removed_start, i - added_start); r++) {
+				PackedInt32Array old_words, new_words;
+				word_diff(lines[removed_start + r], lines[added_start + r], old_words, new_words);
+				words[removed_start + r] = old_words;
+				words[added_start + r] = new_words;
+			}
+		}
+		auto words_of = [&](int p_index) {
+			return words[p_index].get_type() == Variant::PACKED_INT32_ARRAY ? PackedInt32Array(words[p_index]) : PackedInt32Array();
+		};
+
 		for (int i = 0; i < origins.size(); i++) {
 			const RowKind kind = origins[i] == '+' ? ROW_ADDED : (origins[i] == '-' ? ROW_REMOVED : ROW_CONTEXT);
-			r_unified.add(lines[i], kind, old_numbers[i], new_numbers[i]);
+			r_unified.add(lines[i], kind, old_numbers[i], new_numbers[i], words_of(i));
 		}
 
 		int i = 0;
@@ -167,12 +295,12 @@ void GitDiffDock::_build_rows(Rows &r_unified, Rows &r_old, Rows &r_new) const {
 			const int added = i - added_start;
 			for (int r = 0; r < MAX(removed, added); r++) {
 				if (r < removed) {
-					r_old.add(lines[removed_start + r], ROW_REMOVED, old_numbers[removed_start + r], -1);
+					r_old.add(lines[removed_start + r], ROW_REMOVED, old_numbers[removed_start + r], -1, words_of(removed_start + r));
 				} else {
 					r_old.add(String(), ROW_FILLER, -1, -1);
 				}
 				if (r < added) {
-					r_new.add(lines[added_start + r], ROW_ADDED, -1, new_numbers[added_start + r]);
+					r_new.add(lines[added_start + r], ROW_ADDED, -1, new_numbers[added_start + r], words_of(added_start + r));
 				} else {
 					r_new.add(String(), ROW_FILLER, -1, -1);
 				}
@@ -189,6 +317,7 @@ void GitDiffDock::_fill_pane(Pane &r_pane, const Rows &p_rows) {
 	r_pane.kinds = p_rows.kinds;
 	r_pane.old_numbers = p_rows.old_numbers;
 	r_pane.new_numbers = p_rows.new_numbers;
+	r_pane.words = p_rows.words;
 
 	// The highlighter reads the mirror, where hunk headers and fillers are blank lines. Plain text
 	// has no highlighter, and then no mirror text either: setting a long text costs real time.
@@ -312,4 +441,41 @@ void GitDiffDock::_on_scrolled(double p_value, int p_from) {
 	syncing_scroll = true;
 	panes[p_from == PANE_OLD ? PANE_NEW : PANE_OLD].edit->set_v_scroll(p_value);
 	syncing_scroll = false;
+}
+
+// The changed words of the visible rows, in a stronger tint of the row's color.
+void GitDiffDock::_draw_words(int p_pane) {
+	const Pane &pane = panes[p_pane];
+	CodeEdit *edit = pane.edit;
+	if (pane.words.is_empty()) {
+		return;
+	}
+	const int first = edit->get_first_visible_line();
+	const int last = MIN(edit->get_last_full_visible_line() + 2, pane.words.size() - 1);
+	for (int line = first; line <= last; line++) {
+		const PackedInt32Array spans = pane.words[line];
+		if (spans.is_empty()) {
+			continue;
+		}
+		const bool added = pane.kinds[line] == ROW_ADDED;
+		const Color color = (added ? theme.added : theme.removed) * Color(1, 1, 1, 0.3);
+		const int length = edit->get_line(line).length();
+		for (int i = 0; i + 1 < spans.size(); i += 2) {
+			const int start = spans[i];
+			const int end = MIN(spans[i + 1], length);
+			if (start >= end) {
+				continue;
+			}
+			// In 4.7.2 the rect for column c is the character before it (c - 1; column 0 gives the
+			// first character too), so a column's left edge is the right edge of that rect.
+			const Rect2i before = edit->get_rect_at_line_column(line, start);
+			const Rect2i last = edit->get_rect_at_line_column(line, end);
+			if (before.position.x < 0 || last.position.x < 0) {
+				continue; // Scrolled out sideways, or wrapped.
+			}
+			const float left = start == 0 ? before.position.x : before.position.x + before.size.x;
+			const float right = last.position.x + last.size.x;
+			edit->draw_rect(Rect2(left, before.position.y, right - left, edit->get_line_height()), color);
+		}
+	}
 }

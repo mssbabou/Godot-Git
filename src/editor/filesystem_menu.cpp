@@ -35,6 +35,15 @@ void GitFileSystemMenu::_popup_menu(const PackedStringArray &p_paths) {
 	if (p_paths.size() == 1 && !p_paths[0].ends_with("/") && git_dock->can_ignore(git_dock->get_repo_path(p_paths[0]))) {
 		add_context_menu_item("Ignore...", callable_mp(this, &GitFileSystemMenu::_ignore), theme->get_icon("Hide", "EditorIcons"));
 	}
+	// One Git LFS file: lock it before working on it, unlock it when done.
+	if (p_paths.size() == 1 && !p_paths[0].ends_with("/")) {
+		const String action = git_dock->get_lock_action(git_dock->get_repo_path(p_paths[0]));
+		if (action == "lock") {
+			add_context_menu_item("Lock (Git LFS)", callable_mp(this, &GitFileSystemMenu::_lock).bind(true), theme->get_icon("Lock", "EditorIcons"));
+		} else if (action == "unlock") {
+			add_context_menu_item("Unlock (Git LFS)", callable_mp(this, &GitFileSystemMenu::_lock).bind(false), theme->get_icon("Unlock", "EditorIcons"));
+		}
+	}
 	// Discard only touches what isn't staged (like the Changes list), so it says so when that's
 	// not everything.
 	if (!unstaged.is_empty()) {
@@ -74,5 +83,12 @@ void GitFileSystemMenu::_ignore(const PackedStringArray &p_paths) {
 	GitDock *git_dock = _get_dock();
 	if (git_dock && !p_paths.is_empty()) {
 		git_dock->show_ignore(git_dock->get_repo_path(p_paths[0]));
+	}
+}
+
+void GitFileSystemMenu::_lock(const PackedStringArray &p_paths, bool p_lock) {
+	GitDock *git_dock = _get_dock();
+	if (git_dock && !p_paths.is_empty()) {
+		git_dock->lock_file(git_dock->get_repo_path(p_paths[0]), p_lock);
 	}
 }

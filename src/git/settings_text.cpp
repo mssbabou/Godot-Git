@@ -85,7 +85,8 @@ Dictionary change(const String &p_id) {
 } // namespace
 
 bool is_settings_path(const String &p_path) {
-	return p_path.ends_with(".import") || p_path.ends_with(".uid");
+	const String name = p_path.get_file();
+	return p_path.ends_with(".import") || p_path.ends_with(".uid") || name == "project.godot" || name == "export_presets.cfg" || name == "override.cfg";
 }
 
 Array settings_changes(const String &p_path, const String &p_old_text, const String &p_new_text) {
@@ -111,6 +112,39 @@ Array settings_changes(const String &p_path, const String &p_old_text, const Str
 		}
 	}
 	return result;
+}
+
+Array settings_units(const String &p_text, String &r_section) {
+	Array units;
+	const PackedStringArray lines = p_text.split("\n");
+	// split() leaves one empty string after a final newline: that's not a line.
+	const int count = p_text.ends_with("\n") ? lines.size() - 1 : lines.size();
+	for (int i = 0; i < count; i++) {
+		const bool last = i == lines.size() - 1;
+		String text = last ? lines[i] : lines[i] + String("\n");
+		const String line = lines[i].strip_edges();
+		Dictionary unit;
+		unit["id"] = String();
+		if (line.begins_with("[") && line.ends_with("]")) {
+			r_section = line.substr(1, line.length() - 2);
+		} else if (!line.begins_with(";") && !line.begins_with("#") && line.find("=") > 0) {
+			const int equals = line.find("=");
+			String value = line.substr(equals + 1).strip_edges();
+			bool in_string = false;
+			int depth = bracket_depth(value, in_string);
+			while ((depth > 0 || in_string) && i + 1 < count) {
+				i++;
+				value += "\n" + lines[i];
+				text += i == lines.size() - 1 ? lines[i] : lines[i] + String("\n");
+				depth += bracket_depth(lines[i], in_string);
+			}
+			unit["id"] = vformat("%s\n%s", r_section, line.left(equals).strip_edges());
+			unit["value"] = value;
+		}
+		unit["text"] = text;
+		units.push_back(unit);
+	}
+	return units;
 }
 
 String settings_value(const String &p_text, const String &p_section, const String &p_key) {

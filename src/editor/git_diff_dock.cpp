@@ -13,6 +13,7 @@
 #include <godot_cpp/classes/h_split_container.hpp>
 #include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/classes/margin_container.hpp>
+#include <godot_cpp/classes/popup_menu.hpp>
 #include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/classes/scene_tree_timer.hpp>
 #include <godot_cpp/classes/style_box_empty.hpp>
@@ -37,6 +38,7 @@ EditorSettings *editor_settings() {
 
 void GitDiffDock::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("open_requested", PropertyInfo(Variant::STRING, "path")));
+	ADD_SIGNAL(MethodInfo("options_changed")); // Context lines or whitespace: the Git dock reads the diff again.
 }
 
 GitDiffDock::GitDiffDock() {
@@ -96,6 +98,13 @@ GitDiffDock::GitDiffDock() {
 	copy_hash_button->connect("pressed", callable_mp(this, &GitDiffDock::_on_copy_hash));
 	right_hb->add_child(copy_hash_button);
 
+	options_button = memnew(MenuButton);
+	options_button->set_flat(true);
+	options_button->set_text("Context");
+	options_button->set_tooltip_text("How much of the file around each change to show, and whether changes to whitespace alone count.");
+	options_button->get_popup()->connect("id_pressed", callable_mp(this, &GitDiffDock::_on_option));
+	right_hb->add_child(options_button);
+
 	view_select = memnew(OptionButton);
 	view_select->add_item("Unified", VIEW_UNIFIED);
 	view_select->add_item("Side by Side", VIEW_SPLIT);
@@ -140,6 +149,15 @@ GitDiffDock::GitDiffDock() {
 	_make_image_side(0, images);
 	_make_image_side(1, images);
 
+	HBoxContainer *sounds = memnew(HBoxContainer);
+	sounds->set_v_size_flags(SIZE_EXPAND_FILL);
+	body->add_child(sounds);
+	audio_view = sounds;
+	_make_audio_side(0, sounds);
+	_make_audio_side(1, sounds);
+	audio_player = memnew(AudioStreamPlayer);
+	add_child(audio_player);
+
 	PanelContainer *settings_frame = memnew(PanelContainer);
 	settings_frame->set_v_size_flags(SIZE_EXPAND_FILL);
 	body->add_child(settings_frame);
@@ -174,6 +192,9 @@ void GitDiffDock::_notification(int p_what) {
 		case NOTIFICATION_READY: {
 			const int view = editor_settings()->get_project_metadata("godot_git", "diff_view", (int)VIEW_UNIFIED);
 			text_view = view == VIEW_SPLIT ? VIEW_SPLIT : VIEW_UNIFIED;
+			context_lines = editor_settings()->get_project_metadata("godot_git", "diff_context", 3);
+			ignore_whitespace = editor_settings()->get_project_metadata("godot_git", "diff_ignore_whitespace", false);
+			_update_options_menu();
 			// Again: at THEME_CHANGED the CodeEdit's code font size isn't final yet (gotcha 20),
 			// and the gutter numbers came out smaller than the code.
 			_update_theme();
@@ -183,6 +204,14 @@ void GitDiffDock::_notification(int p_what) {
 			_update_theme();
 			if (is_node_ready()) {
 				_render(); // Row colors come from the theme.
+			}
+		} break;
+		case NOTIFICATION_PROCESS: {
+			_process_audio();
+		} break;
+		case NOTIFICATION_VISIBILITY_CHANGED: {
+			if (!is_visible_in_tree()) {
+				_stop_audio(); // Not playing on behind another tab, with no way to stop it.
 			}
 		} break;
 	}
@@ -231,6 +260,12 @@ void GitDiffDock::_update_theme() {
 		side.caption->add_theme_color_override("font_color", theme.dim);
 		side.note->add_theme_color_override("font_color", theme.dim);
 	}
+	for (AudioSide &side : audio_sides) {
+		side.frame->add_theme_stylebox_override("panel", get_theme_stylebox("read_only", "CodeEdit"));
+		side.caption->add_theme_color_override("font_color", theme.dim);
+		side.note->add_theme_color_override("font_color", theme.dim);
+	}
+	_update_audio_buttons();
 	Ref<StyleBoxEmpty> no_box;
 	no_box.instantiate();
 	for (Control *frame : { settings_view, companion_view }) {
@@ -326,13 +361,17 @@ void GitDiffDock::_render() {
 	const bool resolving = diff.has("conflict");
 	conflict_view->set_visible(resolving);
 	if (resolving) {
-		for (Control *view : { unified_view, split_view, image_view, settings_view, message_view, companion_view }) {
+		for (Control *view : { unified_view, split_view, image_view, audio_view, settings_view, message_view, companion_view }) {
 			view->hide();
 		}
-		// An image conflict: both pictures, the choice under them.
+		// An image or sound conflict: both versions, the choice under them.
 		image_view->set_visible(diff.has("image_new"));
+		audio_view->set_visible(diff.has("audio_new"));
 		_show_images();
-		conflict_view->set_v_size_flags(diff.has("image_new") ? SIZE_FILL : SIZE_EXPAND_FILL);
+		if (diff != conflict_shown) {
+			_show_audio();
+		}
+		conflict_view->set_v_size_flags(diff.has("image_new") || diff.has("audio_new") ? SIZE_FILL : SIZE_EXPAND_FILL);
 		if (diff != conflict_shown) {
 			conflict_shown = diff;
 			const String path = diff.get("path", String());
@@ -343,7 +382,7 @@ void GitDiffDock::_render() {
 	conflict_shown = Dictionary();
 
 	const View view = _current_view();
-	const bool own_view = view == VIEW_IMAGE || view == VIEW_SETTINGS;
+	const bool own_view = view == VIEW_IMAGE || view == VIEW_SETTINGS || view == VIEW_AUDIO;
 	const String text = own_view ? String() : _empty_text();
 	message_label->set_text(text);
 	message_view->set_visible(!text.is_empty());
@@ -352,7 +391,9 @@ void GitDiffDock::_render() {
 	split_view->set_visible(text.is_empty() && split);
 	image_view->set_visible(view == VIEW_IMAGE);
 	settings_view->set_visible(view == VIEW_SETTINGS);
+	audio_view->set_visible(view == VIEW_AUDIO);
 	_show_images();
+	_show_audio();
 	_show_settings();
 
 	// Only the visible view holds lines; the others are emptied.
@@ -374,6 +415,9 @@ GitDiffDock::View GitDiffDock::_current_view() const {
 	}
 	if (diff.has("settings") && (!has_lines || !as_text)) {
 		return VIEW_SETTINGS;
+	}
+	if (diff.has("audio_new")) {
+		return VIEW_AUDIO; // Never text.
 	}
 	return text_view;
 }
@@ -434,6 +478,8 @@ void GitDiffDock::_update_header() {
 		view_select->add_item("Side by Side", VIEW_SPLIT);
 	}
 	view_select->select(view_select->get_item_index(_current_view()));
+	const View shown_view = _current_view();
+	options_button->set_visible(kind == "text" && (shown_view == VIEW_UNIFIED || shown_view == VIEW_SPLIT) && !diff.has("conflict"));
 	view_select->set_visible(view_select->get_item_count() > 1);
 	const bool deleted = diff.get("status", String()) == "deleted";
 	open_button->set_disabled(deleted);
@@ -472,6 +518,9 @@ String GitDiffDock::_empty_text() const {
 	if (status == "deleted") {
 		return vformat("%s was an empty file and is deleted.", name);
 	}
+	if (bool(diff.get("whitespace_ignored", false))) {
+		return vformat("Only whitespace changed in %s, and whitespace is ignored (see the context menu above).", name);
+	}
 	return "The content is the same; only the file's permissions changed.";
 }
 
@@ -486,6 +535,37 @@ void GitDiffDock::_on_view_selected(int p_index) {
 		editor_settings()->set_project_metadata("godot_git", "diff_view", (int)view);
 	}
 	_render();
+}
+
+enum OptionId {
+	OPTION_IGNORE_WHITESPACE = 1000,
+};
+
+void GitDiffDock::_update_options_menu() {
+	PopupMenu *menu = options_button->get_popup();
+	menu->clear();
+	for (const int lines : { 3, 10, 25, -1 }) {
+		menu->add_radio_check_item(lines < 0 ? String("Whole File") : vformat("%d Lines Around Changes", lines), lines < 0 ? 0 : lines);
+		menu->set_item_checked(-1, lines == context_lines);
+	}
+	menu->add_separator();
+	menu->add_check_item("Ignore Whitespace", OPTION_IGNORE_WHITESPACE);
+	menu->set_item_checked(-1, ignore_whitespace);
+	menu->set_item_tooltip(-1, "Leave out changes to spaces and tabs alone (like git diff -w).");
+	options_button->set_text(context_lines < 0 ? String("Whole File") : vformat("%d Lines", context_lines));
+	options_button->set_tooltip_text(vformat("How much of the file around each change to show, and whether changes to whitespace alone count.%s", ignore_whitespace ? String("\nIgnoring whitespace.") : String()));
+}
+
+void GitDiffDock::_on_option(int p_id) {
+	if (p_id == OPTION_IGNORE_WHITESPACE) {
+		ignore_whitespace = !ignore_whitespace;
+	} else {
+		context_lines = p_id == 0 ? -1 : p_id;
+	}
+	editor_settings()->set_project_metadata("godot_git", "diff_context", context_lines);
+	editor_settings()->set_project_metadata("godot_git", "diff_ignore_whitespace", ignore_whitespace);
+	_update_options_menu();
+	emit_signal("options_changed");
 }
 
 void GitDiffDock::_on_open_pressed() {

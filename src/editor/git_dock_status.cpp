@@ -48,6 +48,24 @@ void GitDock::_build_status_strip(Control *p_parent) {
 	status_label->set_context_menu_enabled(true);
 	status_hb->add_child(status_label);
 
+	status_log_button = memnew(Button);
+	status_log_button->set_flat(true);
+	status_log_button->set_v_size_flags(SIZE_SHRINK_BEGIN);
+	status_log_button->set_tooltip_text("Earlier results: what the panel did this session.");
+	status_log_button->hide();
+	status_log_button->connect("pressed", callable_mp(this, &GitDock::_show_status_log));
+	status_hb->add_child(status_log_button);
+
+	status_log_popup = memnew(PopupPanel);
+	add_child(status_log_popup);
+	status_log_label = memnew(RichTextLabel);
+	status_log_label->set_fit_content(true);
+	status_log_label->set_scroll_active(true);
+	status_log_label->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+	status_log_label->set_selection_enabled(true);
+	status_log_label->set_context_menu_enabled(true);
+	status_log_popup->add_child(status_log_label);
+
 	status_button = memnew(Button);
 	status_button->set_flat(true);
 	status_button->set_v_size_flags(SIZE_SHRINK_BEGIN);
@@ -82,6 +100,17 @@ void GitDock::_report(Error p_err, const String &p_action) {
 // Replaces what the strip shows. Results stay until the next one; there are no timeouts.
 // If the dock is hidden behind another tab, a toast says it too, so nothing goes unnoticed.
 void GitDock::_set_status(StatusKind p_kind, const String &p_text) {
+	// The result being replaced goes into the log, so nothing that was shown is lost.
+	if (status_kind != STATUS_BUSY && status_kind != STATUS_IDLE && !status_text.is_empty()) {
+		Dictionary entry;
+		entry["kind"] = (int)status_kind;
+		entry["text"] = status_text;
+		entry["time"] = status_time;
+		status_log.push_back(entry);
+		if (status_log.size() > 50) {
+			status_log.pop_front();
+		}
+	}
 	status_kind = p_kind;
 	status_text = p_text;
 	status_step = String();
@@ -153,6 +182,7 @@ void GitDock::_update_status() {
 
 	const bool dismissable = status_kind == STATUS_WARNING || status_kind == STATUS_ERROR;
 	status_button->set_visible(dismissable || (status_kind == STATUS_BUSY && status_cancellable));
+	status_log_button->set_visible(!status_log.is_empty() && status_kind != STATUS_BUSY);
 	status_button->set_tooltip_text(status_kind == STATUS_BUSY ? String("Cancel") : String("Dismiss"));
 	status_strip->show();
 }
@@ -187,6 +217,7 @@ void GitDock::_update_status_style() {
 	status_strip->add_theme_stylebox_override("panel", panel);
 
 	status_icon->set_texture(icon.is_empty() ? Ref<Texture2D>() : get_theme_icon(icon, "EditorIcons"));
+	status_log_button->set_button_icon(get_theme_icon("History", "EditorIcons"));
 	status_icon->set_visible(!icon.is_empty());
 	// As tall as one line of text, so the icon is centered on the first line when the text wraps.
 	const Ref<Font> font = status_label->get_theme_font("normal_font");
@@ -205,6 +236,40 @@ void GitDock::_on_status_button() {
 	} else {
 		_set_status(STATUS_IDLE, String());
 	}
+}
+
+// The earlier results, newest first, each with its icon and how long ago.
+void GitDock::_show_status_log() {
+	const float scale = EditorInterface::get_singleton()->get_editor_scale();
+	const int icon_size = Math::round(16 * scale);
+	status_log_label->clear();
+	for (int i = status_log.size() - 1; i >= 0; i--) {
+		const Dictionary entry = status_log[i];
+		const int kind = entry["kind"];
+		const char *icon = kind == STATUS_SUCCESS ? "StatusSuccess" : (kind == STATUS_WARNING ? "StatusWarning" : (kind == STATUS_ERROR ? "StatusError" : nullptr));
+		if (icon) {
+			status_log_label->add_image(get_theme_icon(icon, "EditorIcons"), icon_size, icon_size);
+			status_log_label->add_text(" ");
+		}
+		if (kind == STATUS_NEUTRAL) {
+			status_log_label->push_color(_dim_color());
+		}
+		status_log_label->add_text(entry["text"]); // Plain text: messages are user data.
+		if (kind == STATUS_NEUTRAL) {
+			status_log_label->pop();
+		}
+		status_log_label->push_color(_dim_color());
+		status_log_label->add_text(String::utf8("  · ") + time_ago(entry["time"]).replace(" ", String::utf8(" ")));
+		status_log_label->pop();
+		if (i > 0) {
+			status_log_label->add_text("\n\n");
+		}
+	}
+	const float width = MAX(status_strip->get_size().x, 300 * scale);
+	status_log_label->set_custom_minimum_size(Vector2(width, 0));
+	status_log_popup->reset_size();
+	const Vector2 at = status_strip->get_screen_position() + Vector2(0, status_strip->get_size().y);
+	status_log_popup->popup(Rect2i(at, Vector2(width, MIN(status_log_label->get_content_height() + 16 * scale, 400 * scale))));
 }
 
 // The strip's and the operation banner's background: a faint rounded tint of p_tint (transparent
@@ -270,6 +335,9 @@ String GitDock::_operation_name() const {
 	if (kind == "pull") {
 		return "merge"; // Your edits merged with a pull (see GitRepository::pull): a merge to you.
 	}
+	if (kind == "stash") {
+		return "stash restore"; // A stash restored into conflicts (see GitRepository::restore_stash).
+	}
 	return kind == "apply" ? String("git am") : kind;
 }
 
@@ -280,8 +348,9 @@ void GitDock::_update_operation_banner() {
 	}
 	const float scale = EditorInterface::get_singleton()->get_editor_scale();
 	const String raw_kind = operation["kind"];
-	const bool own = raw_kind == "pull"; // The panel's own merge: no git needed to finish or abort it.
-	const String kind = own ? String("merge") : raw_kind;
+	// The panel's own operations: no git needed to finish or abort them.
+	const bool own = raw_kind == "pull" || raw_kind == "stash";
+	const String kind = raw_kind == "pull" ? String("merge") : raw_kind;
 	const String name = _operation_name();
 	const String subject = operation.get("subject", String());
 	const PackedStringArray conflicts = operation.get("conflicts", PackedStringArray());
@@ -295,6 +364,8 @@ void GitDock::_update_operation_banner() {
 		text = vformat("A %s is in progress.", name);
 	} else if (kind == "merge") {
 		text = vformat("A merge is in progress: %s.", subject);
+	} else if (kind == "stash") {
+		text = vformat("Restoring the stash of %s.", subject);
 	} else {
 		text = vformat("A %s of %s is in progress.", name, subject);
 	}
@@ -302,6 +373,8 @@ void GitDock::_update_operation_banner() {
 		text += vformat(" %s: resolve %s under Conflicts.", plural(conflicts.size(), "file has conflicts", "files have conflicts"), conflicts.size() == 1 ? "it" : "them");
 	} else if (kind == "merge") {
 		text += " No conflicts left: finish the merge when you're ready.";
+	} else if (kind == "stash") {
+		text += " No conflicts left: finish to remove the stash.";
 	} else if (kind != "bisect") {
 		text += " No conflicts left: continue to finish it.";
 	}
@@ -310,19 +383,29 @@ void GitDock::_update_operation_banner() {
 
 	const bool busy = _shown_network_op() != NETWORK_NONE;
 	const String needs_git = git_missing && !own ? vformat("Finishing or aborting the %s needs git, which isn't installed (or isn't on the PATH). Install it from git-scm.com.", name) : String();
-	operation_abort->set_text(kind == "bisect" ? String("End Bisect") : (kind == "apply" ? String("Abort") : vformat("Abort %s", name.capitalize().replace(" ", "-"))));
+	operation_abort->set_text(kind == "bisect" ? String("End Bisect") : (kind == "apply" ? String("Abort") : (kind == "stash" ? String("Abort Restore") : vformat("Abort %s", name.capitalize().replace(" ", "-")))));
 	operation_abort->set_disabled(busy || !needs_git.is_empty());
-	operation_abort->set_tooltip_text(!needs_git.is_empty() ? needs_git : (kind == "bisect" ? String("End the bisect: go back to the branch you started it on.") : vformat("Undo the %s: the branch and files go back to how they were before it started.", name)));
+	if (kind == "stash") {
+		operation_abort->set_tooltip_text("Undo the restore: the stash's files go back to how they were, and the stash is kept.");
+	} else {
+		operation_abort->set_tooltip_text(!needs_git.is_empty() ? needs_git : (kind == "bisect" ? String("End the bisect: go back to the branch you started it on.") : vformat("Undo the %s: the branch and files go back to how they were before it started.", name)));
+	}
 
 	operation_continue->set_visible(kind != "bisect");
-	operation_continue->set_text(kind == "merge" ? String("Finish Merge") : String("Continue"));
+	operation_continue->set_text(kind == "merge" ? String("Finish Merge") : (kind == "stash" ? String("Finish Restore") : String("Continue")));
 	operation_continue->set_disabled(busy || !conflicts.is_empty() || !needs_git.is_empty());
 	if (!needs_git.is_empty()) {
 		operation_continue->set_tooltip_text(needs_git);
 	} else if (!conflicts.is_empty()) {
 		operation_continue->set_tooltip_text(vformat("Resolve the conflicts first: %s still %s them.", plural(conflicts.size(), "file", "files"), conflicts.size() == 1 ? "has" : "have"));
 	} else {
-		operation_continue->set_tooltip_text(kind == "merge" ? String("Finish the merge: a merge commit with git's prepared message.") : vformat("Let the %s go on: it may stop at conflicts again.", name));
+		if (kind == "stash") {
+			operation_continue->set_tooltip_text("Finish the restore: the stash is removed, its changes stay as uncommitted changes.");
+		} else if (raw_kind == "pull") {
+			operation_continue->set_tooltip_text("Finish the merge: your resolved changes stay uncommitted, as before the pull.");
+		} else {
+			operation_continue->set_tooltip_text(kind == "merge" ? String("Finish the merge: a merge commit with git's prepared message.") : vformat("Let the %s go on: it may stop at conflicts again.", name));
+		}
 	}
 
 	// Warning-tinted like the strip's warnings: it needs attention, but nothing failed.

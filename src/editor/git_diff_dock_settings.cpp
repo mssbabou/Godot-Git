@@ -5,6 +5,7 @@
 #include "editor/git_diff_dock.h"
 
 #include <godot_cpp/classes/editor_interface.hpp>
+#include <godot_cpp/classes/os.hpp>
 
 #include "editor/ui_text.h"
 
@@ -114,10 +115,74 @@ const char *choice_names(const String &p_importer, const String &p_key) {
 	return nullptr;
 }
 
+// The number after "p_key": in one event's text, or -1.
+int64_t event_number(const String &p_event, const String &p_key) {
+	const int at = p_event.find(vformat("\"%s\":", p_key));
+	if (at < 0) {
+		return -1;
+	}
+	String digits;
+	for (int i = at + p_key.length() + 3; i < p_event.length(); i++) {
+		const char32_t c = p_event[i];
+		if ((c >= '0' && c <= '9') || (c == '-' && digits.is_empty())) {
+			digits += String::chr(c);
+		} else if (c != ' ') {
+			break;
+		}
+	}
+	return digits.is_empty() ? -1 : digits.to_int();
+}
+
+// An input action's value ({"deadzone": 0.2, "events": [Object(InputEventKey, ...), ...]}) as
+// its keys and buttons, the way the Input Map shows them: "W, Ctrl+S, Joypad Button 0".
+String input_events_text(const String &p_raw) {
+	PackedStringArray shown;
+	const PackedStringArray parts = p_raw.split("Object(");
+	for (int i = 1; i < parts.size(); i++) {
+		const String event = parts[i];
+		String text;
+		if (event.begins_with("InputEventKey")) {
+			int64_t code = event_number(event, "keycode");
+			if (code <= 0) {
+				code = event_number(event, "physical_keycode");
+			}
+			if (code <= 0) {
+				code = event_number(event, "key_label");
+			}
+			text = code > 0 ? OS::get_singleton()->get_keycode_string((Key)code) : String("Key");
+		} else if (event.begins_with("InputEventMouseButton")) {
+			static const char *const buttons[] = { "", "Left Mouse Button", "Right Mouse Button", "Middle Mouse Button", "Mouse Wheel Up", "Mouse Wheel Down", "Mouse Wheel Left", "Mouse Wheel Right", "Mouse Button 8", "Mouse Button 9" };
+			const int64_t index = event_number(event, "button_index");
+			text = index > 0 && index < 10 ? String(buttons[index]) : vformat("Mouse Button %d", index);
+		} else if (event.begins_with("InputEventJoypadButton")) {
+			text = vformat("Joypad Button %d", event_number(event, "button_index"));
+		} else if (event.begins_with("InputEventJoypadMotion")) {
+			text = vformat("Joypad Axis %d %s", event_number(event, "axis"), event.contains("\"axis_value\":-") ? "-" : "+");
+		} else {
+			text = event.get_slice(",", 0);
+		}
+		// Modifiers, in the Input Map's order.
+		if (event.begins_with("InputEventKey") || event.begins_with("InputEventMouseButton")) {
+			for (const char *modifier : { "shift", "alt", "ctrl", "meta" }) {
+				if (event.contains(vformat("\"%s_pressed\":true", modifier))) {
+					text = vformat("%s+%s", String(modifier).capitalize(), text);
+				}
+			}
+		}
+		shown.push_back(text);
+	}
+	return shown.is_empty() ? String("No inputs") : String(", ").join(shown);
+}
+
 // A value as the Import dock would show it: On / Off, a choice's name, a string without quotes.
 // Long values (a scene's per-node options) are shortened; r_full is the whole value for the tooltip.
 String setting_value(const String &p_importer, const String &p_section, const String &p_key, const String &p_raw, String &r_full) {
 	r_full = String();
+	// An input action (project.godot's [input]): its keys and buttons.
+	if (p_section == "input" && p_raw.contains("\"events\"")) {
+		r_full = p_raw;
+		return input_events_text(p_raw);
+	}
 	if (p_raw == "true") {
 		return "On";
 	}
@@ -162,6 +227,18 @@ void set_cell(TreeItem *p_item, int p_column, const String &p_text, const Color 
 }
 
 } // namespace
+
+String GitDiffDock::setting_display_name(const String &p_section, const String &p_key) {
+	return setting_name(p_section, p_key);
+}
+
+String GitDiffDock::setting_display_value(const String &p_importer, const String &p_section, const String &p_key, const String &p_raw, String &r_full) {
+	return setting_value(p_importer, p_section, p_key, p_raw, r_full);
+}
+
+bool GitDiffDock::is_generated_setting(const String &p_section, const String &p_key) {
+	return is_generated(p_section, p_key);
+}
 
 Tree *GitDiffDock::_make_settings_tree(Control *p_parent) {
 	Tree *tree = memnew(Tree);
@@ -230,7 +307,9 @@ void GitDiffDock::_fill_settings(Tree *p_tree, TreeItem *p_parent, const Diction
 		const String name = setting_name(section, key);
 		const bool has_old = change.has("old");
 		const bool has_new = change.has("new");
-		if (!whole_file && has_old != has_new) {
+		// Folded only for import settings, where they're the importer's options coming and going;
+		// in project.godot a new setting (an input action, an autoload) is the change itself.
+		if (!whole_file && has_old != has_new && String(p_diff.get("path", String())).ends_with(".import")) {
 			(has_new ? added : removed).push_back(name);
 			continue;
 		}

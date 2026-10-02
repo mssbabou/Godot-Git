@@ -98,9 +98,14 @@ void GitDock::_show_conflict(const String &p_path) {
 
 // From the resolver: its result (p_text) or a whole side (p_side), written and staged. Then the
 // next conflicted file, if any, or this file's staged change.
-void GitDock::_resolve_conflict(const String &p_path, const String &p_text, const String &p_side) {
+void GitDock::_resolve_conflict(const String &p_path, const String &p_text, const String &p_side, const Dictionary &p_choices) {
 	_remember_open_scenes();
-	const Error err = p_side.is_empty() ? repo->resolve_conflict(p_path, p_text) : repo->resolve_conflict_with(p_path, p_side);
+	Error err;
+	if (!p_choices.is_empty()) {
+		err = repo->resolve_settings_conflict(p_path, p_choices);
+	} else {
+		err = p_side.is_empty() ? repo->resolve_conflict(p_path, p_text) : repo->resolve_conflict_with(p_path, p_side);
+	}
 	_report(err, "Resolve");
 	if (err != OK) {
 		return;
@@ -132,4 +137,8 @@ void GitDock::_on_conflict_text(const String &p_path, const String &p_text) {
 
 void GitDock::_on_conflict_side(const String &p_path, const String &p_side) {
 	_resolve_conflict(p_path, String(), p_side);
+}
+
+void GitDock::_on_conflict_settings(const String &p_path, const Dictionary &p_choices) {
+	_resolve_conflict(p_path, String(), String(), p_choices);
 }

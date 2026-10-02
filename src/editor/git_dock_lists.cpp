@@ -324,6 +324,10 @@ void GitDock::_show_line_stats(FilePane &p_pane) {
 			tooltip += vformat("\nWith %s, which Godot keeps next to it: staged, unstaged and discarded together.", String(", ").join(with));
 		}
 		const PackedStringArray blocking = _blocking_paths(item);
+		const String lock_note = _lock_note(path);
+		if (!lock_note.is_empty()) {
+			tooltip += "\n\n" + lock_note;
+		}
 		if (!blocking.is_empty()) {
 			const String upstream = sync_status.get("upstream", String());
 			const String which = blocking.size() == 1 && blocking[0] == path ? String("this file") : String(", ").join(blocking);
@@ -482,6 +486,16 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 			right -= 4 * scale;
 		}
 
+		// A Git LFS lock: yours dim, someone else's in the warning color (your changes to it can't
+		// be pushed).
+		if (lfs_locks.has(path)) {
+			const bool mine = Dictionary(lfs_locks[path]).get("mine", false);
+			const Ref<Texture2D> lock = get_theme_icon("Lock", "EditorIcons");
+			right -= lock->get_width();
+			lock->draw(canvas, Vector2(right, p_rect.position.y + (p_rect.size.y - lock->get_height()) / 2), mine ? _dim_color() : get_theme_color("warning_color", "Editor"));
+			right -= 4 * scale;
+		}
+
 		if (p_item->get_instance_id() == pane->hovered_item) {
 			right = _draw_row_buttons(p_item, *pane, p_rect, right) - 4 * scale;
 		}
@@ -580,4 +594,16 @@ float GitDock::_draw_row_buttons(TreeItem *p_item, const FilePane &p_pane, const
 	}
 	p_item->set_meta("git_button_rects", rects);
 	return right;
+}
+
+// What a Git LFS lock on p_path means for you, or "".
+String GitDock::_lock_note(const String &p_path) const {
+	if (!lfs_locks.has(p_path)) {
+		return String();
+	}
+	const Dictionary lock = lfs_locks[p_path];
+	if (bool(lock.get("mine", false))) {
+		return "Locked by you (Git LFS): nobody else can push changes to it. Unlock it from its right-click menu when you're done.";
+	}
+	return vformat("Locked by %s (Git LFS): your changes to it can't be pushed until they unlock it. Ask them, or set your changes aside.", String(lock.get("owner", String())));
 }

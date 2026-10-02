@@ -152,12 +152,22 @@ Dictionary describe_file_diff(git_repository *p_repo, git_diff *p_diff, const St
 
 Array list_files(git_repository *repo, git_diff *diff); // Below, with get_commit_files.
 
+// The Diff panel's options (see GitRepository::set_diff_options) on p_options.
+void apply_diff_options(git_diff_options &r_options, int p_context, bool p_ignore_whitespace) {
+	// "The whole file" as more context than any file the panel shows has lines (it stops at 2 MB).
+	r_options.context_lines = p_context < 0 ? 1000000 : (uint32_t)p_context;
+	if (p_ignore_whitespace) {
+		r_options.flags |= GIT_DIFF_IGNORE_WHITESPACE;
+	}
+}
+
 // What p_hash (a commit, full or short hash) changed: the diff from its first parent (or from
 // nothing, for the first commit) to it, with renames found. A merge is compared with its first
 // parent, like `git log --first-parent`: what merging brought into the branch.
 // p_stash: p_hash is a stash, whose first parent is the commit it was made on and whose third
 // parent (if any) holds the new, untracked files it took along; those are added as new files.
-int commit_diff(git_repository *p_repo, const String &p_hash, git_diff **r_diff, bool p_stash = false) {
+// p_options: context lines and whitespace for the Diff panel (see GitRepository::set_diff_options).
+int commit_diff(git_repository *p_repo, const String &p_hash, git_diff **r_diff, bool p_stash = false, const git_diff_options *p_options = nullptr) {
 	ObjectPtr object;
 	int err = git_revparse_single(object.out(), p_repo, p_hash.utf8().get_data());
 	CommitPtr commit;
@@ -180,6 +190,9 @@ int commit_diff(git_repository *p_repo, const String &p_hash, git_diff **r_diff,
 		return err;
 	}
 	git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+	if (p_options) {
+		opts = *p_options;
+	}
 	opts.max_size = MAX_DIFF_SIZE;
 	err = git_diff_tree_to_tree(r_diff, p_repo, parent_tree, tree, &opts);
 	if (err >= 0) {
@@ -245,6 +258,7 @@ Dictionary GitRepository::get_diff(const String &p_path, bool p_staged) const {
 	ERR_FAIL_NULL_V_MSG(repo, Dictionary(), "Repository is not open.");
 
 	git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+	apply_diff_options(opts, diff_context_lines, diff_ignore_whitespace);
 	opts.max_size = MAX_DIFF_SIZE;
 
 	DiffPtr diff;
@@ -262,7 +276,7 @@ Dictionary GitRepository::get_diff(const String &p_path, bool p_staged) const {
 		// Like get_status, unstaged changes aren't matched up as renames, so one path is enough.
 		SinglePathspec pathspec(p_path);
 		opts.pathspec = pathspec.array;
-		opts.flags = GIT_DIFF_DISABLE_PATHSPEC_MATCH | GIT_DIFF_INCLUDE_UNTRACKED | GIT_DIFF_RECURSE_UNTRACKED_DIRS | GIT_DIFF_SHOW_UNTRACKED_CONTENT;
+		opts.flags |= GIT_DIFF_DISABLE_PATHSPEC_MATCH | GIT_DIFF_INCLUDE_UNTRACKED | GIT_DIFF_RECURSE_UNTRACKED_DIRS | GIT_DIFF_SHOW_UNTRACKED_CONTENT;
 		err = git_diff_index_to_workdir(diff.out(), repo, nullptr, &opts);
 	}
 	if (err < 0) {
@@ -270,6 +284,7 @@ Dictionary GitRepository::get_diff(const String &p_path, bool p_staged) const {
 	}
 	Dictionary result = describe_file_diff(repo, diff, p_path);
 	add_settings(this, result, p_staged ? "HEAD" : "index", p_staged ? "index" : "workdir");
+	result["whitespace_ignored"] = diff_ignore_whitespace;
 	return result;
 }
 
@@ -301,10 +316,13 @@ Array GitRepository::get_stash_files(const String &p_hash) const {
 Dictionary GitRepository::get_stash_diff(const String &p_hash, const String &p_path) const {
 	ERR_FAIL_NULL_V_MSG(repo, Dictionary(), "Repository is not open.");
 	DiffPtr diff;
-	if (commit_diff(repo, p_hash, diff.out(), true) < 0) {
+	git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+	apply_diff_options(opts, diff_context_lines, diff_ignore_whitespace);
+	if (commit_diff(repo, p_hash, diff.out(), true, &opts) < 0) {
 		return Dictionary();
 	}
 	Dictionary result = describe_file_diff(repo, diff, p_path);
+	result["whitespace_ignored"] = diff_ignore_whitespace;
 	// A new file the stash took along is in its third parent, not in the stash itself.
 	add_settings(this, result, vformat("%s^1", p_hash), has_file_at(p_hash, p_path) ? p_hash : vformat("%s^3", p_hash));
 	return result;
@@ -344,12 +362,23 @@ Array list_files(git_repository *repo, git_diff *diff) {
 Dictionary GitRepository::get_commit_diff(const String &p_hash, const String &p_path) const {
 	ERR_FAIL_NULL_V_MSG(repo, Dictionary(), "Repository is not open.");
 	DiffPtr diff;
-	if (commit_diff(repo, p_hash, diff.out()) < 0) {
+	git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+	apply_diff_options(opts, diff_context_lines, diff_ignore_whitespace);
+	if (commit_diff(repo, p_hash, diff.out(), false, &opts) < 0) {
 		return Dictionary();
 	}
 	Dictionary result = describe_file_diff(repo, diff, p_path);
 	add_settings(this, result, vformat("%s^1", p_hash), p_hash);
+	result["whitespace_ignored"] = diff_ignore_whitespace;
 	return result;
+}
+
+// How the Diff panel's diffs are made (get_diff, get_commit_diff, get_stash_diff): p_context
+// lines around each change (git's default is 3; -1 for the whole file), and whether changes to
+// whitespace alone are left out (git diff -w). Line counts are always without these.
+void GitRepository::set_diff_options(int p_context, bool p_ignore_whitespace) {
+	diff_context_lines = p_context;
+	diff_ignore_whitespace = p_ignore_whitespace;
 }
 
 // A file's content in one version: p_version is "workdir" (the file on disk), "index" (what's
