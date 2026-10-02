@@ -36,6 +36,7 @@ class GitRepository : public RefCounted {
 	Error _fetch_remote(const String &p_remote);
 	Error _fetch_lfs_files(const char *p_refname, const git_oid *p_commit);
 	Error _commit_with_git(const String &p_message, bool p_amend);
+	Error _write_resolution(const String &p_path, const char *p_data, size_t p_size);
 	Error _push_with_git(const String &p_remote, const String &p_refspec, bool p_ssh);
 	Error _fetch_with_git(const String &p_remote);
 	Error _run_operation_step(const PackedStringArray &p_args, const String &p_step);
@@ -99,6 +100,9 @@ public:
 	PackedStringArray get_paths_ignored_by(const String &p_ignore_file, const PackedStringArray &p_lines, const PackedStringArray &p_paths);
 	Error add_ignore_lines(const String &p_ignore_file, const PackedStringArray &p_lines);
 	Error track_with_lfs(const PackedStringArray &p_patterns, const PackedStringArray &p_paths);
+	Dictionary get_conflict(const String &p_path) const;
+	Error resolve_conflict(const String &p_path, const String &p_text);
+	Error resolve_conflict_with(const String &p_path, const String &p_side);
 	static bool is_lfs_installed();
 	Error add_remote(const String &p_name, const String &p_url);
 	Dictionary get_identity() const;

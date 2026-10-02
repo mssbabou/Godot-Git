@@ -11,12 +11,15 @@ using namespace godot_git;
 void GitDock::set_diff_dock(GitDiffDock *p_dock) {
 	diff_dock = p_dock;
 	diff_dock->connect("open_requested", callable_mp(this, &GitDock::_open_path));
+	diff_dock->get_conflict_view()->connect("resolve_requested", callable_mp(this, &GitDock::_on_conflict_text));
+	diff_dock->get_conflict_view()->connect("side_requested", callable_mp(this, &GitDock::_on_conflict_side));
 }
 
 // p_focus: also bring the Diff panel up (a click), not just update it (keyboard, right-click).
 void GitDock::_show_diff(const String &p_path, bool p_staged, bool p_focus) {
 	diff_path = p_path;
 	diff_staged = p_staged;
+	diff_conflict = false;
 	diff_commit = String();
 	diff_commit_shown = String();
 	diff_stash = false;
@@ -31,6 +34,7 @@ void GitDock::_show_commit_diff(const String &p_hash, const String &p_path, bool
 	diff_path = p_path;
 	diff_commit = p_hash;
 	diff_stash = p_stash;
+	diff_conflict = false;
 	_update_diff();
 	if (p_focus && diff_dock) {
 		diff_dock->make_visible();
@@ -42,6 +46,22 @@ void GitDock::_show_commit_diff(const String &p_hash, const String &p_path, bool
 void GitDock::_update_diff() {
 	if (!diff_dock || diff_path.is_empty() || repo.is_null() || !repo->is_open()) {
 		return;
+	}
+	// A conflicted file opens the resolver. The same conflict handed over again changes nothing
+	// in the panel (set_diff skips what's already shown), so a refresh keeps what's been chosen.
+	if (diff_conflict) {
+		if (conflicted_paths.has(diff_path)) {
+			Dictionary conflict = repo->get_conflict(diff_path);
+			conflict["conflict"] = true;
+			conflict["status"] = "conflicted";
+			if (GitDiffDock::is_image_path(diff_path)) {
+				conflict["image_old"] = repo->get_file_bytes("mine", diff_path);
+				conflict["image_new"] = repo->get_file_bytes("theirs", diff_path);
+			}
+			diff_dock->set_diff(conflict, "Conflict", _file_icon(diff_path));
+			return;
+		}
+		diff_conflict = false; // Resolved elsewhere (a terminal): show what's left of it.
 	}
 	if (!diff_commit.is_empty()) {
 		const String key = diff_commit + ":" + diff_path;

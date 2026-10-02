@@ -120,12 +120,18 @@ void GitDiffDock::_show_images() {
 	for (int i = 0; i < 2; i++) {
 		ImageSide &side = image_sides[i];
 		const Dictionary version = diff.get(i == 0 ? "image_old" : "image_new", Dictionary());
-		String caption = i == 0 ? "Before" : "After";
+		// A conflict's sides are mine and theirs, named after their branches.
+		const bool conflict = diff.has("conflict");
+		const String label = diff.get(i == 0 ? "mine_label" : "theirs_label", String());
+		String caption = conflict ? (i == 0 ? String("Mine") : String("Theirs")) : (i == 0 ? String("Before") : String("After"));
+		if (conflict && !label.is_empty()) {
+			caption += vformat(String::utf8(" · %s"), label);
+		}
 		String note;
 		if (_current_view() != VIEW_IMAGE) {
 			// Not shown; drop the textures.
 		} else if (!bool(version.get("exists", false))) {
-			note = i == 0 ? "Not in the old version: this is a new file." : "Not in the new version: the file is deleted.";
+			note = conflict ? String("Deleted on this side.") : (i == 0 ? String("Not in the old version: this is a new file.") : String("Not in the new version: the file is deleted."));
 		} else if (String(version.get("lfs", String())) == "missing") {
 			note = "Stored with Git LFS, and this version hasn't been downloaded.";
 		} else {

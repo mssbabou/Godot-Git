@@ -15,6 +15,8 @@
 #include <godot_cpp/classes/tree.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
+#include "editor/git_conflict_view.h"
+
 using namespace godot;
 
 // Highlights one side of a diff: code lines like the script editor would, hunk headers dimmed.
@@ -152,6 +154,9 @@ private:
 	Tree *companion_tree = nullptr;
 	Label *message_label = nullptr;
 	Control *message_view = nullptr;
+	// A conflicted file (the Git dock marks it "!"): the resolver instead of a diff.
+	GitConflictView *conflict_view = nullptr;
+	Dictionary conflict_shown; // What the resolver was last set to; anything else starts it over.
 	bool syncing_scroll = false;
 
 	void _update_theme();
@@ -193,6 +198,8 @@ public:
 	// For images, p_diff also holds both versions ("image_old", "image_new":
 	// GitRepository::get_file_bytes), shown before | after instead of "binary file". "companions":
 	// the diffs of the file's `.import` / `.uid` companions, shown setting by setting under it.
+	// A dictionary with "conflict" (GitRepository::get_conflict, marked by the Git dock) opens the
+	// resolver instead.
 	void set_diff(const Dictionary &p_diff, const String &p_source, const Ref<Texture2D> &p_icon);
 	void scroll_to_line(int p_new_line);
 
@@ -200,6 +207,7 @@ public:
 	static bool is_image_path(const String &p_path);
 	static Ref<SyntaxHighlighter> make_code_highlighter(const String &p_path);
 	static Color row_tint(bool p_added);
+	GitConflictView *get_conflict_view() const { return conflict_view; }
 
 	GitDiffDock();
 };

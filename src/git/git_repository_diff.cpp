@@ -353,7 +353,8 @@ Dictionary GitRepository::get_commit_diff(const String &p_hash, const String &p_
 }
 
 // A file's content in one version: p_version is "workdir" (the file on disk), "index" (what's
-// staged) or a revision ("HEAD", a commit hash, "<hash>^1" for its first parent).
+// staged) or a revision ("HEAD", a commit hash, "<hash>^1" for its first parent), or for a
+// conflicted file "mine" / "theirs" (its two sides; see get_conflict).
 // { "exists": bool, "bytes": PackedByteArray, "lfs": "" | "cached" | "missing" }.
 // Git stores an LFS file as a small pointer; its real content is read from git-lfs's local cache,
 // which holds every version that was checked out or pulled. "missing": not in the cache (a version
@@ -374,10 +375,17 @@ Dictionary GitRepository::get_file_bytes(const String &p_version, const String &
 		bytes = FileAccess::get_file_as_bytes(path);
 	} else {
 		git_oid blob_id;
-		if (p_version == "index") {
+		if (p_version == "index" || p_version == "mine" || p_version == "theirs") {
+			// A conflict's sides are index stages 2 (ours) and 3 (theirs), swapped in a rebase,
+			// where "ours" is the branch being rebased onto.
+			int stage = 0;
+			if (p_version != "index") {
+				const bool swapped = operation_in_progress(repo) == "rebase";
+				stage = (p_version == "mine") != swapped ? 2 : 3;
+			}
 			IndexPtr index;
 			const git_index_entry *entry = nullptr;
-			if (git_repository_index(index.out(), repo) < 0 || !(entry = git_index_get_bypath(index, p_path.utf8().get_data(), 0))) {
+			if (git_repository_index(index.out(), repo) < 0 || !(entry = git_index_get_bypath(index, p_path.utf8().get_data(), stage))) {
 				return result;
 			}
 			git_oid_cpy(&blob_id, &entry->id);

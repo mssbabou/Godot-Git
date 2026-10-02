@@ -33,6 +33,7 @@ void GitDock::_build_lists(Control *p_parent) {
 	panes->set_h_size_flags(SIZE_EXPAND_FILL);
 	scroll->add_child(panes);
 
+	_build_conflicts(panes);
 	_make_file_pane(staged_pane, panes, "Staged Changes", true);
 	_make_file_pane(changes_pane, panes, "Changes", false);
 	_build_stashes(panes);
@@ -200,8 +201,8 @@ void GitDock::_fill_file_pane(FilePane &p_pane, const Array &p_status) {
 	for (int i = 0; i < p_status.size(); i++) {
 		const Dictionary entry = p_status[i];
 		const String state = entry[key];
-		if (state.is_empty()) {
-			continue;
+		if (state.is_empty() || state == "conflicted" || String(entry["worktree"]) == "conflicted") {
+			continue; // Conflicted files are listed under Conflicts.
 		}
 		const String path = entry["path"];
 		files++;

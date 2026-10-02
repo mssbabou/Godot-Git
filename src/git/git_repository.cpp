@@ -90,6 +90,9 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_paths_ignored_by", "ignore_file", "lines", "paths"), &GitRepository::get_paths_ignored_by);
 	ClassDB::bind_method(D_METHOD("add_ignore_lines", "ignore_file", "lines"), &GitRepository::add_ignore_lines);
 	ClassDB::bind_method(D_METHOD("track_with_lfs", "patterns", "paths"), &GitRepository::track_with_lfs);
+	ClassDB::bind_method(D_METHOD("get_conflict", "path"), &GitRepository::get_conflict);
+	ClassDB::bind_method(D_METHOD("resolve_conflict", "path", "text"), &GitRepository::resolve_conflict);
+	ClassDB::bind_method(D_METHOD("resolve_conflict_with", "path", "side"), &GitRepository::resolve_conflict_with);
 	ClassDB::bind_static_method("GitRepository", D_METHOD("is_lfs_installed"), &GitRepository::is_lfs_installed);
 	ClassDB::bind_method(D_METHOD("undo_last_commit"), &GitRepository::undo_last_commit);
 	ClassDB::bind_method(D_METHOD("revert_commit", "hash"), &GitRepository::revert_commit);

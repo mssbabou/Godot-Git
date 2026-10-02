@@ -146,6 +146,10 @@ GitDiffDock::GitDiffDock() {
 	settings_view = settings_frame;
 	settings_tree = _make_settings_tree(settings_frame);
 
+	conflict_view = memnew(GitConflictView);
+	conflict_view->hide();
+	body->add_child(conflict_view);
+
 	CenterContainer *center = memnew(CenterContainer);
 	center->set_v_size_flags(SIZE_EXPAND_FILL);
 	body->add_child(center);
@@ -317,6 +321,27 @@ void GitDiffDock::scroll_to_line(int p_new_line) {
 void GitDiffDock::_render() {
 	_update_header();
 
+	// A conflicted file: the resolver. Started over only for a different conflict, never by a
+	// redraw (a theme change, a refresh), which would throw away what's been chosen so far.
+	const bool resolving = diff.has("conflict");
+	conflict_view->set_visible(resolving);
+	if (resolving) {
+		for (Control *view : { unified_view, split_view, image_view, settings_view, message_view, companion_view }) {
+			view->hide();
+		}
+		// An image conflict: both pictures, the choice under them.
+		image_view->set_visible(diff.has("image_new"));
+		_show_images();
+		conflict_view->set_v_size_flags(diff.has("image_new") ? SIZE_FILL : SIZE_EXPAND_FILL);
+		if (diff != conflict_shown) {
+			conflict_shown = diff;
+			const String path = diff.get("path", String());
+			conflict_view->set_conflict(diff, make_code_highlighter(path), make_code_highlighter(path), make_code_highlighter(path));
+		}
+		return;
+	}
+	conflict_shown = Dictionary();
+
 	const View view = _current_view();
 	const bool own_view = view == VIEW_IMAGE || view == VIEW_SETTINGS;
 	const String text = own_view ? String() : _empty_text();
@@ -368,6 +393,17 @@ void GitDiffDock::_update_header() {
 	source_label->set_text(old_path != path ? vformat("%s, renamed from %s", shown_source, old_path.get_file()) : shown_source);
 	copy_hash_button->set_visible(!commit.is_empty());
 	const String status = diff.get("status", String());
+	if (diff.has("conflict")) {
+		// "Merge · main ← feature": what's being resolved, and between what.
+		const String operation = diff.get("kind", String());
+		const String mine = diff.get("mine_label", String());
+		const String theirs = diff.get("theirs_label", String());
+		String what = operation.is_empty() ? String("Conflict") : operation.capitalize();
+		if (!mine.is_empty() && !theirs.is_empty()) {
+			what += vformat(String::utf8(" \u00b7 %s \u2190 %s"), mine, theirs);
+		}
+		source_label->set_text(what);
+	}
 	status_label->set_visible(!status.is_empty() && status != "unchanged");
 	status_label->set_text(status == "untracked" ? String("Untracked") : status_name(status));
 	status_label->add_theme_color_override("font_color", status_color(status));
@@ -376,8 +412,8 @@ void GitDiffDock::_update_header() {
 
 	const int added = diff.get("added", 0);
 	const int removed = diff.get("removed", 0);
-	added_label->set_visible(kind == "text" && added > 0);
-	removed_label->set_visible(kind == "text" && removed > 0);
+	added_label->set_visible(kind == "text" && added > 0 && !diff.has("conflict"));
+	removed_label->set_visible(kind == "text" && removed > 0 && !diff.has("conflict"));
 	added_label->set_text(vformat("+%d", added));
 	removed_label->set_text(vformat("%s%d", minus(), removed));
 	added_label->set_tooltip_text(plural(added, "line added", "lines added"));

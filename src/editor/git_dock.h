@@ -221,6 +221,10 @@ class GitDock : public EditorDock {
 	Label *branch_dialog_label = nullptr;
 
 	// Stashes: a section that only shows while there are stashes (git_dock_stashes.cpp).
+	FoldableContainer *conflicts_pane = nullptr; // Only while files are conflicted.
+	Control *conflicts_header_strut = nullptr;
+	Tree *conflicts_tree = nullptr;
+	PackedStringArray conflicted_paths;
 	FoldableContainer *stashes_pane = nullptr;
 	Control *stashes_header_strut = nullptr;
 	Tree *stashes_tree = nullptr;
@@ -325,6 +329,7 @@ class GitDock : public EditorDock {
 	bool diff_staged = false;
 	String diff_commit; // Set when the file shown is from a commit (History), not uncommitted.
 	bool diff_stash = false; // diff_commit is a stash (Stashes), not a commit.
+	bool diff_conflict = false; // diff_path is conflicted: the panel shows the resolver.
 	String diff_commit_shown; // "hash:path" already in the panel; commit diffs never change.
 
 	// Line counts (+/-) for the two lists. Counted on a worker thread with its own GitRepository:
@@ -493,6 +498,15 @@ class GitDock : public EditorDock {
 	void _update_export_banner();
 	void _leave_out_of_exports();
 	void _dismiss_export_offer();
+
+	// git_dock_conflicts.cpp: the Conflicts section, and resolving.
+	void _build_conflicts(Control *p_parent);
+	void _fill_conflicts(const Array &p_status);
+	void _on_conflict_selected();
+	void _show_conflict(const String &p_path);
+	void _resolve_conflict(const String &p_path, const String &p_text, const String &p_side);
+	void _on_conflict_text(const String &p_path, const String &p_text);
+	void _on_conflict_side(const String &p_path, const String &p_side);
 
 	// git_dock_diff.cpp: which file the Diff panel shows.
 	void _show_diff(const String &p_path, bool p_staged, bool p_focus);

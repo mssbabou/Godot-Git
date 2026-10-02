@@ -64,6 +64,7 @@ void initialize_godot_git_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_INTERNAL_CLASS(GitDock);
 		GDREGISTER_INTERNAL_CLASS(GitDiffHighlighter);
 		GDREGISTER_INTERNAL_CLASS(GitDiffDock);
+		GDREGISTER_INTERNAL_CLASS(GitConflictView);
 		GDREGISTER_INTERNAL_CLASS(GitFileSystemColors);
 		GDREGISTER_INTERNAL_CLASS(GitFileSystemMenu);
 		GDREGISTER_INTERNAL_CLASS(GitScriptMarks);

@@ -243,7 +243,7 @@ void GitDock::_update_icons() {
 	// nothing): they were 36, 40 and 28 px tall, and a little more room reads better (maintainer,
 	// 2026-09-30).
 	const float header_height = Math::round(30 * EditorInterface::get_singleton()->get_editor_scale());
-	for (Control *control : { (Control *)staged_pane.buttons_margin, (Control *)changes_pane.buttons_margin, (Control *)history_search_button, stashes_header_strut }) {
+	for (Control *control : { (Control *)staged_pane.buttons_margin, (Control *)changes_pane.buttons_margin, (Control *)history_search_button, stashes_header_strut, conflicts_header_strut }) {
 		control->set_custom_minimum_size(Vector2(control->get_custom_minimum_size().x, header_height));
 	}
 	_style_branch_button();
@@ -317,7 +317,7 @@ void GitDock::_update_icons() {
 	status_progress->add_theme_stylebox_override("fill", fill);
 	_update_status_style();
 
-	for (FoldableContainer *section : { staged_pane.container, changes_pane.container, stashes_pane, history_pane }) {
+	for (FoldableContainer *section : { conflicts_pane, staged_pane.container, changes_pane.container, stashes_pane, history_pane }) {
 		_round_section(section);
 	}
 
@@ -494,6 +494,7 @@ void GitDock::refresh() {
 	operation = repo->get_operation();
 	// Mid-merge, Pull waits for the operation anyway: a pull warning on the rows would be noise.
 	pull_blockers = (int)sync_status.get("behind", 0) > 0 && !_in_operation() ? repo->get_pull_blockers() : PackedStringArray();
+	_fill_conflicts(status);
 	_fill_file_pane(staged_pane, status);
 	_fill_file_pane(changes_pane, status);
 	_start_line_stats();

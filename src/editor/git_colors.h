@@ -2,6 +2,7 @@
 
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/theme.hpp>
+#include <godot_cpp/core/math.hpp>
 #include <godot_cpp/variant/color.hpp>
 #include <godot_cpp/variant/string.hpp>
 
@@ -52,6 +53,18 @@ inline Color status_color(const String &p_state) {
 		return change_color(CHANGE_REMOVED);
 	}
 	return change_color(CHANGE_MODIFIED);
+}
+
+// The two sides of a conflict in the resolver (GitConflictView): mine in the theme's accent color,
+// theirs in its opposite hue (orange next to the default blue). Neither is green (added) or red
+// (removed). Tried and dropped (maintainer, 2026-10-02): a purple made from the accent, and the
+// neutral text color, which blended into everything else.
+inline Color conflict_side_color(bool p_mine) {
+	Color color = EditorInterface::get_singleton()->get_editor_theme()->get_color("accent_color", "Editor");
+	if (!p_mine) {
+		color.set_hsv(Math::fposmod(color.get_h() + 0.5f, 1.0f), color.get_s(), color.get_v(), color.a);
+	}
+	return color;
 }
 
 } // namespace godot_git

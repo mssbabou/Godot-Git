@@ -294,9 +294,9 @@ void GitDock::_update_operation_banner() {
 		text = vformat("A %s of %s is in progress.", name, subject);
 	}
 	if (!conflicts.is_empty()) {
-		text += vformat(" %s: fix the conflict markers, then stage each file to mark it resolved.", plural(conflicts.size(), "file has conflicts", "files have conflicts"));
+		text += vformat(" %s: resolve %s under Conflicts.", plural(conflicts.size(), "file has conflicts", "files have conflicts"), conflicts.size() == 1 ? "it" : "them");
 	} else if (kind == "merge") {
-		text += " No conflicts left: commit the merge to finish it.";
+		text += " No conflicts left: finish the merge when you're ready.";
 	} else if (kind != "bisect") {
 		text += " No conflicts left: continue to finish it.";
 	}
@@ -310,14 +310,14 @@ void GitDock::_update_operation_banner() {
 	operation_abort->set_tooltip_text(!needs_git.is_empty() ? needs_git : (kind == "bisect" ? String("End the bisect: go back to the branch you started it on.") : vformat("Undo the %s: the branch and files go back to how they were before it started.", name)));
 
 	operation_continue->set_visible(kind != "bisect");
-	operation_continue->set_text(kind == "merge" ? String("Commit Merge") : String("Continue"));
+	operation_continue->set_text(kind == "merge" ? String("Finish Merge") : String("Continue"));
 	operation_continue->set_disabled(busy || !conflicts.is_empty() || !needs_git.is_empty());
 	if (!needs_git.is_empty()) {
 		operation_continue->set_tooltip_text(needs_git);
 	} else if (!conflicts.is_empty()) {
 		operation_continue->set_tooltip_text(vformat("Resolve the conflicts first: %s still %s them.", plural(conflicts.size(), "file", "files"), conflicts.size() == 1 ? "has" : "have"));
 	} else {
-		operation_continue->set_tooltip_text(kind == "merge" ? String("Commit the merge with git's prepared message.") : vformat("Let the %s go on: it may stop at conflicts again.", name));
+		operation_continue->set_tooltip_text(kind == "merge" ? String("Finish the merge: a merge commit with git's prepared message.") : vformat("Let the %s go on: it may stop at conflicts again.", name));
 	}
 
 	// Warning-tinted like the strip's warnings: it needs attention, but nothing failed.
