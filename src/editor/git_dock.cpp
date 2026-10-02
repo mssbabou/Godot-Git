@@ -34,6 +34,8 @@ void GitDock::_bind_methods() {
 	// For the smoke test.
 	ClassDB::bind_method(D_METHOD("show_file_history", "path"), &GitDock::show_file_history);
 	ClassDB::bind_method(D_METHOD("show_commit", "hash"), &GitDock::show_commit);
+	ClassDB::bind_method(D_METHOD("can_ignore", "path"), &GitDock::can_ignore);
+	ClassDB::bind_method(D_METHOD("show_ignore", "path"), &GitDock::show_ignore);
 }
 
 GitDock::GitDock() {
@@ -70,6 +72,7 @@ GitDock::GitDock() {
 
 	_build_status_strip(repo_vb);
 	_build_operation_banner(repo_vb);
+	_build_export_banner(repo_vb);
 
 	// Syncing with the remote, in one row sharing the width: Fetch, then Pull / Push labeled with
 	// how many commits each would move.
@@ -154,8 +157,12 @@ GitDock::GitDock() {
 	unsaved_skip = unsaved_confirm->add_button("", false, "skip");
 
 	large_confirm = _make_confirm("Large Files", "Commit Anyway", callable_mp(this, &GitDock::_on_large_confirmed));
+	large_lfs_button = large_confirm->add_button("Track with Git LFS", false, "lfs");
+	large_ignore_button = large_confirm->add_button("Unstage and Ignore", false, "ignore");
+	large_confirm->connect("custom_action", callable_mp(this, &GitDock::_on_large_custom_action));
 	revert_confirm = _make_confirm("Revert Commit", "Revert", callable_mp(this, &GitDock::_on_revert_confirmed));
 	_build_settings_dialog();
+	_build_ignore_dialog();
 
 	filesystem_colors = memnew(GitFileSystemColors);
 	add_child(filesystem_colors);
@@ -290,7 +297,7 @@ void GitDock::_update_icons() {
 
 	const Color dim = _dim_color();
 	const int text_inset = changes_pane.tree->get_theme_constant("inner_item_margin_left");
-	for (Label *label : { staged_pane.empty_label, changes_pane.empty_label, history_empty }) {
+	for (Label *label : { staged_pane.empty_label, changes_pane.empty_label, stashes_empty, history_empty }) {
 		label->add_theme_color_override("font_color", dim);
 		Object::cast_to<MarginContainer>(label->get_parent())->add_theme_constant_override("margin_left", text_inset);
 	}
@@ -418,8 +425,10 @@ void GitDock::_draw_own_icons() {
 }
 
 Ref<Texture2D> GitDock::_file_icon(const String &p_path) {
-	// Files inside the Godot project get the same icon the FileSystem dock shows.
-	const String local = _to_res_path(p_path);
+	// Files inside the Godot project get the same icon the FileSystem dock shows. A companion file
+	// (coin.png.import) gets its file's: its row stands for that file (see _draw_file_row).
+	const String owner = companion_owner(p_path);
+	const String local = _to_res_path(owner.is_empty() ? p_path : owner);
 	const String type = local.begins_with("res://") ? _file_type(local) : String();
 	if (!file_icons.has(type)) {
 		// Theme lookups add up over thousands of rows, so each type's icon is looked up once.
@@ -493,6 +502,7 @@ void GitDock::refresh() {
 	set_title(status.is_empty() ? String("Git") : vformat("Git (%d)", status.size()));
 
 	_update_filesystem_colors(status);
+	_update_export_banner();
 	_fill_history();
 	_fill_stashes();
 	_update_actions();

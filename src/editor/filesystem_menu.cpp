@@ -31,6 +31,10 @@ void GitFileSystemMenu::_popup_menu(const PackedStringArray &p_paths) {
 	if (p_paths.size() == 1 && !p_paths[0].ends_with("/") && (!unstaged.is_empty() || !staged.is_empty())) {
 		add_context_menu_item("Show Uncommitted Changes", callable_mp(this, &GitFileSystemMenu::_show_change), theme->get_icon("VCSCommit", "EditorIcons"));
 	}
+	// One new file: keep it out of git.
+	if (p_paths.size() == 1 && !p_paths[0].ends_with("/") && git_dock->can_ignore(git_dock->get_repo_path(p_paths[0]))) {
+		add_context_menu_item("Ignore...", callable_mp(this, &GitFileSystemMenu::_ignore), theme->get_icon("Hide", "EditorIcons"));
+	}
 	// Discard only touches what isn't staged (like the Changes list), so it says so when that's
 	// not everything.
 	if (!unstaged.is_empty()) {
@@ -63,5 +67,12 @@ void GitFileSystemMenu::_discard(const PackedStringArray &p_paths) {
 	GitDock *git_dock = _get_dock();
 	if (git_dock) {
 		git_dock->discard_changes(git_dock->get_changed_paths(p_paths, false));
+	}
+}
+
+void GitFileSystemMenu::_ignore(const PackedStringArray &p_paths) {
+	GitDock *git_dock = _get_dock();
+	if (git_dock && !p_paths.is_empty()) {
+		git_dock->show_ignore(git_dock->get_repo_path(p_paths[0]));
 	}
 }

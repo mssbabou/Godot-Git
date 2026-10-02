@@ -22,7 +22,6 @@ void GitDock::_build_stashes(Control *p_parent) {
 	stashes_header_strut->set_mouse_filter(MOUSE_FILTER_IGNORE);
 	stashes_pane->add_title_bar_control(stashes_header_strut);
 	stashes_pane->set_title("Stashes");
-	stashes_pane->hide();
 	p_parent->add_child(stashes_pane);
 
 	stashes_tree = memnew(Tree);
@@ -41,7 +40,8 @@ void GitDock::_build_stashes(Control *p_parent) {
 	stashes_tree->connect("button_clicked", callable_mp(this, &GitDock::_on_stash_button_clicked));
 	stashes_tree->connect("gui_input", callable_mp(this, &GitDock::_on_stashes_gui_input));
 	stashes_tree->connect("mouse_exited", callable_mp(this, &GitDock::_set_stash_hovered).bind((TreeItem *)nullptr));
-	_make_body(stashes_pane, stashes_tree);
+	stashes_empty = _make_body(stashes_pane, stashes_tree);
+	stashes_empty->set_text("No stashes.");
 
 	// Stashing asks once: it shows exactly what goes, and takes an optional name. Enter stashes.
 	const float scale = EditorInterface::get_singleton()->get_editor_scale();
@@ -73,7 +73,9 @@ void GitDock::_build_stashes(Control *p_parent) {
 // the selection survive the refresh every save triggers.
 void GitDock::_fill_stashes() {
 	const Array stashes = repo->get_stashes();
-	stashes_pane->set_visible(!stashes.is_empty());
+	// Always there, like the other sections (a section that came and went read as a trick).
+	stashes_tree->set_visible(!stashes.is_empty());
+	stashes_empty->get_parent_control()->set_visible(stashes.is_empty());
 	stashes_pane->set_title(stashes.is_empty() ? String("Stashes") : vformat("Stashes (%d)", stashes.size()));
 	TreeItem *root = stashes_tree->get_root();
 	if (root && stashes == stashes_shown) {

@@ -322,6 +322,19 @@ func _run() -> void:
 	_check(rows.call() == PackedStringArray(["Create branch \"double-jump\""]), "a name no branch has offers to create it (%s)" % ", ".join(rows.call()))
 	branch_popup.hide()
 
+	# Ignore...: offered for a new file only, and says what the rule would hide (closed unconfirmed).
+	_check(dock.can_ignore("coin.gd") and not dock.can_ignore("player.gd"), "Ignore is offered for a new file, not a tracked one")
+	dock.show_ignore("coin.gd")
+	await _frames()
+	var ignore_dialog: ConfirmationDialog = null
+	for dialog: ConfirmationDialog in dock.find_children("*", "ConfirmationDialog", true, false):
+		if dialog.title == "Ignore":
+			ignore_dialog = dialog
+	var ignore_text := " ".join(_texts(ignore_dialog)) if ignore_dialog else ""
+	_check(ignore_dialog and ignore_dialog.visible and ignore_text.contains("Hides") and ignore_text.contains("/coin.gd"), "the Ignore dialog shows what the rule hides (%s)" % ignore_text.left(120))
+	if ignore_dialog:
+		ignore_dialog.hide()
+
 	# The dock at every width from its narrowest up. Layout loops depend on the width (gotcha 40,
 	# and the header alignment loop of 2026-09-30, which crashed about one run in four at whatever
 	# width the editor picked): 1 px steps through the range around the dock's minimum width, where
@@ -434,7 +447,9 @@ func _stash_done() -> void:
 	var strip := ""
 	for label: RichTextLabel in _smoke_dock().find_children("*", "RichTextLabel", true, false):
 		strip += label.get_parsed_text()
-	_smoke_check(staged.size() == 1 and not _smoke_section("Stashes").visible, "restoring puts it back, staged, and the section goes away (strip: %s)" % strip)
+	var stashes := _smoke_section("Stashes")
+	var empty := stashes != null and stashes.visible and " ".join(_texts(stashes)).contains("No stashes.")
+	_smoke_check(staged.size() == 1 and empty, "restoring puts it back, staged, and the section says there are none (strip: %s)" % strip)
 	# Change marks: open a changed script in the script editor.
 	EditorInterface.edit_script(load("res://player.gd"))
 	get_tree().create_timer(1.5).timeout.connect(_marks_check)

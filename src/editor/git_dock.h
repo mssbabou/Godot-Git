@@ -66,6 +66,7 @@ class GitDock : public EditorDock {
 		MENU_UNDO_COMMIT,
 		MENU_REVERT_COMMIT,
 		MENU_BRANCH_HERE,
+		MENU_IGNORE,
 		// "More" (⋮) menu.
 		MORE_REFRESH,
 		MORE_STAGE_ALL,
@@ -153,6 +154,11 @@ class GitDock : public EditorDock {
 	// usually left by a terminal): what it is, its conflicts, Abort and Continue.
 	PanelContainer *operation_banner = nullptr;
 	Label *operation_label = nullptr;
+	PanelContainer *export_banner = nullptr; // Godot 4.7: offers to keep the addon out of exports.
+	Label *export_label = nullptr;
+	uint64_t export_presets_time = 0; // export_presets.cfg's modified time when last read.
+	PackedStringArray export_presets_missing; // Presets without the filter.
+	Callable reload_export_presets; // GitEditorPlugin's; makes the editor read the presets again.
 	Button *operation_abort = nullptr;
 	Button *operation_continue = nullptr;
 	ConfirmationDialog *abort_confirm = nullptr;
@@ -182,6 +188,9 @@ class GitDock : public EditorDock {
 	int message_history_index = -1;
 	ConfirmationDialog *large_confirm = nullptr; // Staged files big enough to regret committing.
 	bool large_checked = false;
+	Button *large_lfs_button = nullptr;
+	Button *large_ignore_button = nullptr;
+	PackedStringArray large_paths; // The files the question was about.
 	PackedStringArray pull_blockers; // Uncommitted files the new commits change too (Pull refuses).
 
 	FilePane staged_pane;
@@ -215,6 +224,7 @@ class GitDock : public EditorDock {
 	FoldableContainer *stashes_pane = nullptr;
 	Control *stashes_header_strut = nullptr;
 	Tree *stashes_tree = nullptr;
+	Label *stashes_empty = nullptr;
 	Array stashes_shown; // GitRepository::get_stashes(), as the section shows them.
 	Dictionary stashes_expanded; // Hashes of expanded stashes, kept across rebuilds.
 	Dictionary stash_files; // Hash -> get_stash_files(). A stash never changes.
@@ -226,6 +236,15 @@ class GitDock : public EditorDock {
 	Label *stash_files_label = nullptr;
 	LineEdit *stash_name_edit = nullptr;
 	bool stash_dialog_staged = false;
+
+	ConfirmationDialog *ignore_dialog = nullptr; // Ignore...: this file, its type, or a folder.
+	CheckBox *ignore_options[3] = {};
+	OptionButton *ignore_folder_select = nullptr;
+	Label *ignore_effect_label = nullptr;
+	String ignore_path; // The file the dialog is for (repository path).
+	String ignore_file; // The .gitignore the rule goes into.
+	PackedStringArray ignore_untracked; // Untracked files when the dialog opened.
+	PackedStringArray ignore_hidden; // Of those, what the chosen rule hides.
 
 	Control *no_repo_ui = nullptr; // "Not a git repository yet", with Initialize Repository.
 	Label *no_repo_hint = nullptr;
@@ -379,6 +398,7 @@ class GitDock : public EditorDock {
 	void _commit();
 	bool _ask_about_large_files();
 	void _on_large_confirmed();
+	void _on_large_custom_action(const StringName &p_action);
 	void _after_commit();
 	String _web_commit_url(const String &p_hash) const;
 	void _report_commit(bool p_amended, int p_files, const String &p_old_id);
@@ -459,6 +479,21 @@ class GitDock : public EditorDock {
 	void _confirm_delete_stash(const String &p_hash);
 	void _on_stash_delete_confirmed();
 
+	// git_dock_ignore.cpp: Ignore..., for new files.
+	void _build_ignore_dialog();
+	String _ignore_file_for(const String &p_path) const;
+	PackedStringArray _file_ignore_lines(const String &p_path, const String &p_ignore_file, const PackedStringArray &p_untracked) const;
+	void _on_ignore_folder_selected(int p_index);
+	PackedStringArray _ignore_lines() const;
+	void _update_ignore_effect();
+	void _on_ignore_confirmed();
+
+	// git_dock_export.cpp: keeping the addon out of exports (Godot 4.7).
+	void _build_export_banner(Control *p_parent);
+	void _update_export_banner();
+	void _leave_out_of_exports();
+	void _dismiss_export_offer();
+
 	// git_dock_diff.cpp: which file the Diff panel shows.
 	void _show_diff(const String &p_path, bool p_staged, bool p_focus);
 	void _show_commit_diff(const String &p_hash, const String &p_path, bool p_focus, bool p_stash = false);
@@ -536,6 +571,9 @@ public:
 	void show_file_history(const String &p_path);
 	void show_commit(const String &p_hash);
 	void show_line_commit(const String &p_path, const String &p_text, int p_line);
+	bool can_ignore(const String &p_path) const;
+	void set_reload_export_presets(const Callable &p_reload);
+	void show_ignore(const String &p_path);
 
 	GitDock();
 };

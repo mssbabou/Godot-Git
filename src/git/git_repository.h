@@ -95,6 +95,11 @@ public:
 	Error revert_commit(const String &p_hash);
 	Error rename_branch(const String &p_branch, const String &p_new_name);
 	Error delete_branch(const String &p_branch);
+	String get_ignore_file(const String &p_dir) const;
+	PackedStringArray get_paths_ignored_by(const String &p_ignore_file, const PackedStringArray &p_lines, const PackedStringArray &p_paths);
+	Error add_ignore_lines(const String &p_ignore_file, const PackedStringArray &p_lines);
+	Error track_with_lfs(const PackedStringArray &p_patterns, const PackedStringArray &p_paths);
+	static bool is_lfs_installed();
 	Error add_remote(const String &p_name, const String &p_url);
 	Dictionary get_identity() const;
 	Error set_identity(const String &p_name, const String &p_email, bool p_global);

@@ -15,6 +15,7 @@ func run() -> void:
 	await _switch_branch()
 	await _changes()
 	_file_bytes()
+	_track_with_lfs()
 
 
 ## Like make_shared(), with *.png stored in LFS and one image (icon.png) in the first commit.
@@ -137,3 +138,26 @@ func _file_bytes() -> void:
 	check("LFS: found the cached object to remove", DirAccess.remove_absolute(object) == OK, object)
 	var missing := r.get_file_bytes("HEAD", "icon.png")
 	check("LFS: a version not in the cache says so, with no bytes", missing.exists and missing.lfs == "missing" and missing.bytes.is_empty(), missing)
+
+
+# The large-file question's Track with Git LFS: a file staged into git normally goes into LFS
+# instead, and what's committed is a pointer, as git itself sees it.
+func _track_with_lfs() -> void:
+	var repo := make_repo("track")
+	git(repo, ["lfs", "install", "--local"])
+	write(repo.path_join("readme.txt"), "hello
+")
+	commit_all(repo, "First")
+	_write_image(repo.path_join("big.psd"), 4000)
+	var r := open(repo)
+	check("staged normally first", r.stage("big.psd") == OK)
+	check("not LFS yet", not r.uses_lfs())
+	check("track with LFS", r.track_with_lfs(["*.psd"], ["big.psd"]) == OK, GitRepository.get_last_error())
+	check("the rule is in .gitattributes", read(repo.path_join(".gitattributes")).contains("*.psd filter=lfs diff=lfs merge=lfs -text"), read(repo.path_join(".gitattributes")))
+	check("tracking twice adds no second line", r.track_with_lfs(["*.psd"], ["big.psd"]) == OK and read(repo.path_join(".gitattributes")).count("*.psd") == 1)
+	check("commit", r.commit("Add big.psd") == OK, GitRepository.get_last_error())
+	check("committed into LFS", git(repo, ["lfs", "ls-files", "-n"]).split("
+").has("big.psd"), git(repo, ["lfs", "ls-files", "-n"]))
+	check("git holds only a pointer", git(repo, ["cat-file", "-s", "HEAD:big.psd"]).to_int() < 200, git(repo, ["cat-file", "-s", "HEAD:big.psd"]))
+	check(".gitattributes committed with it", git(repo, ["ls-files", ".gitattributes"]).strip_edges() == ".gitattributes")
+	check("status clean", r.get_status().is_empty(), r.get_status())

@@ -86,6 +86,11 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_line_commit", "path", "text", "line"), &GitRepository::get_line_commit);
 	ClassDB::bind_method(D_METHOD("create_branch_at", "name", "hash"), &GitRepository::create_branch_at);
 	ClassDB::bind_method(D_METHOD("restore_file_version", "revision", "path"), &GitRepository::restore_file_version);
+	ClassDB::bind_method(D_METHOD("get_ignore_file", "dir"), &GitRepository::get_ignore_file);
+	ClassDB::bind_method(D_METHOD("get_paths_ignored_by", "ignore_file", "lines", "paths"), &GitRepository::get_paths_ignored_by);
+	ClassDB::bind_method(D_METHOD("add_ignore_lines", "ignore_file", "lines"), &GitRepository::add_ignore_lines);
+	ClassDB::bind_method(D_METHOD("track_with_lfs", "patterns", "paths"), &GitRepository::track_with_lfs);
+	ClassDB::bind_static_method("GitRepository", D_METHOD("is_lfs_installed"), &GitRepository::is_lfs_installed);
 	ClassDB::bind_method(D_METHOD("undo_last_commit"), &GitRepository::undo_last_commit);
 	ClassDB::bind_method(D_METHOD("revert_commit", "hash"), &GitRepository::revert_commit);
 	ClassDB::bind_method(D_METHOD("uses_lfs"), &GitRepository::uses_lfs);
@@ -585,6 +590,10 @@ String GitRepository::get_last_error() {
 // Whether git itself is installed (checked once; see git_installed()).
 bool GitRepository::is_git_installed() {
 	return git_installed();
+}
+
+bool GitRepository::is_lfs_installed() {
+	return lfs_installed();
 }
 
 // Checks again whether git is installed, e.g. when the editor gets focus back.

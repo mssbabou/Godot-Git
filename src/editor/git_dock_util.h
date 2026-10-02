@@ -7,6 +7,7 @@
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/variant.hpp>
 
 using namespace godot;
 
@@ -41,6 +42,31 @@ inline String companion_owner(const String &p_path) {
 		}
 	}
 	return String();
+}
+
+// What a companion-only change means, for the row's tooltip. "" if p_path isn't a companion.
+inline String companion_note(const String &p_path, const String &p_state) {
+	const String file = companion_owner(p_path).get_file();
+	if (file.is_empty()) {
+		return String();
+	}
+	const bool added = p_state == "new" || p_state == "untracked";
+	if (p_path.ends_with(".import")) {
+		if (added) {
+			return vformat("The import settings of %s are new; the file itself didn't change.", file);
+		}
+		if (p_state == "deleted") {
+			return vformat("The import settings of %s were deleted; the file itself didn't change. Godot writes new ones with the default settings.", file);
+		}
+		return vformat("Only the import settings of %s changed, not the file itself.", file);
+	}
+	if (added) {
+		return vformat("The uid file of %s is new. Commit it, so %s has the same uid on every machine.", file, file);
+	}
+	if (p_state == "deleted") {
+		return vformat("The uid file of %s was deleted. Godot gives it a new uid, and scenes that refer to it by the old one fall back to its path, with a warning, until they're saved again.", file);
+	}
+	return vformat("The uid of %s changed. Scenes that refer to it by the old uid fall back to its path, with a warning, until they're saved again. If Godot made a new uid because the .uid file went missing, discard this change to keep the old one.", file);
 }
 
 // Godot's companion files in p_paths whose file is in p_paths too, by file: {"player.gd":

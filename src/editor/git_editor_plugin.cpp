@@ -1,11 +1,14 @@
 #include "editor/git_editor_plugin.h"
 
+#include <godot_cpp/classes/editor_export_platform_extension.hpp>
+
 void GitEditorPlugin::_enter_tree() {
 	dock = memnew(GitDock);
 	add_dock(dock);
 	diff_dock = memnew(GitDiffDock);
 	add_dock(diff_dock);
 	dock->set_diff_dock(diff_dock);
+	dock->set_reload_export_presets(callable_mp(this, &GitEditorPlugin::_reload_export_presets));
 	filesystem_menu.instantiate();
 	filesystem_menu->set_dock(dock);
 	add_context_menu_plugin(EditorContextMenuPlugin::CONTEXT_SLOT_FILESYSTEM, filesystem_menu);
@@ -36,4 +39,15 @@ void GitEditorPlugin::_exit_tree() {
 		memdelete(diff_dock); // Deleted after the Git dock, which points at it.
 		diff_dock = nullptr;
 	}
+}
+
+// Makes the editor read export_presets.cfg again, after the dock edited it (see
+// _leave_out_of_exports). There's no API for that, or for changing a preset's filters, but the
+// editor reloads the file whenever an export platform comes or goes (EditorExport::
+// should_reload_presets, 4.7.2): so one comes and goes, before the editor's next frame.
+void GitEditorPlugin::_reload_export_presets() {
+	Ref<EditorExportPlatformExtension> platform;
+	platform.instantiate();
+	add_export_platform(platform);
+	remove_export_platform(platform);
 }

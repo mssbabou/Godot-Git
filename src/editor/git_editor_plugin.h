@@ -18,6 +18,8 @@ class GitEditorPlugin : public EditorPlugin {
 	Ref<GitFileSystemMenu> filesystem_menu;
 	Ref<GitScriptMenu> script_menu;
 
+	void _reload_export_presets();
+
 protected:
 	static void _bind_methods() {}
 

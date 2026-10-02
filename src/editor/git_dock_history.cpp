@@ -227,7 +227,8 @@ TreeItem *GitDock::_add_commit_file_row(Tree *p_tree, TreeItem *p_parent, const 
 	if (added > 0 || removed > 0) {
 		what += vformat(String::utf8(" · +%d %s%d"), added, minus(), removed);
 	}
-	item->set_tooltip_text(0, vformat("%s\n%s", path, what));
+	const String note = companion_note(path, state);
+	item->set_tooltip_text(0, note.is_empty() ? vformat("%s\n%s", path, what) : vformat("%s\n%s\n%s", path, what, note));
 	item->set_selectable(1, false);
 	// The status letter in the ages' column, so it lines up with the letters of the lists
 	// above (at the right edge) instead of stopping short of this column.

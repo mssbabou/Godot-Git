@@ -314,6 +314,10 @@ bool GitDock::_build_file_menu(Tree *p_tree) {
 	} else {
 		context_menu->add_icon_item(_icon("Add"), "Stage" + count, MENU_STAGE);
 		context_menu->add_icon_item(get_theme_icon("UndoRedo", "EditorIcons"), "Discard Changes..." + count, MENU_DISCARD);
+		if (single && can_ignore(paths[0])) {
+			context_menu->add_icon_item(get_theme_icon("Hide", "EditorIcons"), "Ignore...", MENU_IGNORE);
+			context_menu->set_item_tooltip(-1, "Keep this file (or every file of its type, or its folder) out of git, through .gitignore.");
+		}
 	}
 	if (single) {
 		context_menu->add_separator();
@@ -352,6 +356,11 @@ void GitDock::_on_context_menu_id(int p_id) {
 		return;
 	}
 	switch (p_id) {
+		case MENU_IGNORE: {
+			if (!paths.is_empty()) {
+				show_ignore(paths[0]);
+			}
+		} break;
 		case MENU_OPEN: {
 			if (!paths.is_empty()) {
 				_open_path(paths[0]);

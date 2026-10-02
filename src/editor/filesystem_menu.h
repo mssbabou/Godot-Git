@@ -17,6 +17,7 @@ class GitFileSystemMenu : public EditorContextMenuPlugin {
 	void _show_change(const PackedStringArray &p_paths);
 	void _show_history(const PackedStringArray &p_paths);
 	void _discard(const PackedStringArray &p_paths);
+	void _ignore(const PackedStringArray &p_paths);
 
 protected:
 	static void _bind_methods() {}

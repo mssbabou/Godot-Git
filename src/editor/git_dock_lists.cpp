@@ -314,6 +314,10 @@ void GitDock::_show_line_stats(FilePane &p_pane) {
 		}
 		// The row itself stays calm (totals are in the header); the tooltip has this file's counts.
 		String tooltip = lines.is_empty() ? vformat("%s\n%s", path, status_name(state)) : vformat(String::utf8("%s\n%s · %s"), path, status_name(state), lines);
+		const String note = companion_note(path, state);
+		if (!note.is_empty()) {
+			tooltip += "\n" + note;
+		}
 		const PackedStringArray with = item->get_meta("git_companions", PackedStringArray());
 		if (!with.is_empty()) {
 			tooltip += vformat("\nWith %s, which Godot keeps next to it: staged, unstaged and discarded together.", String(", ").join(with));
@@ -475,7 +479,9 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 	}
 
 	float x = p_rect.position.x;
-	const bool deleted = state == "deleted";
+	// A companion's row without its file stands for that file: "coin.png + .import".
+	const String owner = companion_owner(path);
+	const bool deleted = state == "deleted" && owner.is_empty(); // A deleted .import isn't a deleted asset.
 	const Ref<Texture2D> icon = p_item->get_meta("git_icon", Variant());
 	if (icon.is_valid()) {
 		icon->draw(canvas, Vector2(x, p_rect.position.y + (p_rect.size.y - icon->get_height()) / 2), Color(1, 1, 1, deleted ? 0.5 : 1));
@@ -501,20 +507,32 @@ void GitDock::_draw_file_row(TreeItem *p_item, const Rect2 &p_rect) {
 	// Too long a name loses its middle, not its end: files often differ only at the end
 	// ("..._frame_012_variant_b.png"), and 500 rows of "final_boss_phase_two_attack_..." looked
 	// identical. The folder then has no room and is left out (it's in the tooltip).
-	// Companions shown on this row ("+import"), dimmed like the folder; see _fill_file_pane.
+	// Companions shown on this row ("+ .import"), dimmed like the folder; see _fill_file_pane. A
+	// companion's own row (only it changed) reads as its file's, with the companion in its status
+	// color: "background.png + .import" (the tooltip says what that means; see companion_note).
 	String extras;
 	for (const String &companion : PackedStringArray(p_item->get_meta("git_companions", PackedStringArray()))) {
-		extras += (extras.is_empty() ? "+" : " +") + companion.get_extension();
+		extras += vformat(extras.is_empty() ? "+ .%s" : " + .%s", companion.get_extension());
 	}
-	const float extras_width = extras.is_empty() ? 0.0f : font->get_string_size(extras, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x + 6 * scale;
-	x = draw_text(trim_middle(path.get_file(), font, font_size, right - x - extras_width), x, name_color);
+	String changed_companion;
+	if (!owner.is_empty()) {
+		extras = "+";
+		changed_companion = vformat(".%s", path.get_extension());
+	}
+	const String full_extras = changed_companion.is_empty() ? extras : vformat("%s %s", extras, changed_companion);
+	const float extras_width = extras.is_empty() ? 0.0f : font->get_string_size(full_extras, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x + 6 * scale;
+	x = draw_text(trim_middle((owner.is_empty() ? path : owner).get_file(), font, font_size, right - x - extras_width), x, name_color);
 	if (!extras.is_empty()) {
 		x = draw_text(extras, x + 6 * scale, _dim_color());
 	}
+	if (!changed_companion.is_empty()) {
+		x = draw_text(changed_companion, x + font->get_string_size(" ", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x, color);
+	}
 
+	// "art/", not "art": next to "+ .import" and the like, a bare word read as one more tag.
 	const String folder = path.get_base_dir();
 	if (!folder.is_empty()) {
-		draw_text(folder, x + 6 * scale, _dim_color());
+		draw_text(vformat("%s/", folder), x + 6 * scale, _dim_color());
 	}
 }
 

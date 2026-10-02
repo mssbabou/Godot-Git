@@ -143,8 +143,32 @@ bool GitDock::_ask_about_large_files() {
 	if (large.size() > 8) {
 		lines.push_back(vformat("...and %d more", large.size() - 8));
 	}
-	large_confirm->set_text(vformat("%s:\n%s\n\nOnce committed, a file stays in the history for good, and everyone who clones the repository downloads it. GitHub refuses files over 100 MB. Git LFS keeps big files like these out of the history.",
-			large.size() == 1 ? String("This staged file is over 50 MB") : String("These staged files are over 50 MB"), String("\n").join(lines)));
+	// The other ways out: store their types with Git LFS, or (new files only: ignoring a file git
+	// already tracks changes nothing) take them out and keep them out.
+	large_paths.clear();
+	PackedStringArray patterns;
+	bool all_new = true;
+	const Array status = repo->get_status();
+	for (int i = 0; i < large.size(); i++) {
+		const String path = Dictionary(large[i])["path"];
+		large_paths.push_back(path);
+		const String pattern = path.get_extension().is_empty() ? String() : vformat("*.%s", path.get_extension());
+		if (!pattern.is_empty() && !patterns.has(pattern)) {
+			patterns.push_back(pattern);
+		}
+		for (const Variant &entry : status) {
+			if (String(Dictionary(entry)["path"]) == path) {
+				all_new = all_new && String(Dictionary(entry)["index"]) == "new";
+			}
+		}
+	}
+	const bool lfs = GitRepository::is_lfs_installed();
+	large_lfs_button->set_visible(lfs && !patterns.is_empty());
+	large_lfs_button->set_tooltip_text(vformat("Store %s files with Git LFS from now on: added to .gitattributes (staged), and these files staged again as LFS files. Your remote must support LFS; GitHub, GitLab and Bitbucket do.", join_list(patterns)));
+	large_ignore_button->set_visible(all_new);
+	large_ignore_button->set_tooltip_text(large.size() == 1 ? String("Unstage it and add it to .gitignore: it stays on your disk, out of git.") : String("Unstage them and add them to .gitignore: they stay on your disk, out of git."));
+	large_confirm->set_text(vformat("%s:\n%s\n\nOnce committed, a file stays in the history for good, and everyone who clones the repository downloads it. GitHub refuses files over 100 MB. Git LFS keeps big files like these out of the history%s.",
+			large.size() == 1 ? String("This staged file is over 50 MB") : String("These staged files are over 50 MB"), String("\n").join(lines), lfs ? String() : String(" (install it from git-lfs.com, then restart the editor)")));
 	large_confirm->popup_centered();
 	push_after_commit = false; // Pushing big files is exactly what to think twice about.
 	return true;
@@ -153,6 +177,51 @@ bool GitDock::_ask_about_large_files() {
 void GitDock::_on_large_confirmed() {
 	large_checked = true;
 	_commit();
+}
+
+// Track with Git LFS, or Unstage and Ignore. Neither commits: the files get another look first,
+// and Commit goes on from there.
+void GitDock::_on_large_custom_action(const StringName &p_action) {
+	large_confirm->hide();
+	if (p_action == StringName("lfs")) {
+		PackedStringArray patterns;
+		for (const String &path : large_paths) {
+			const String pattern = vformat("*.%s", path.get_extension());
+			if (!path.get_extension().is_empty() && !patterns.has(pattern)) {
+				patterns.push_back(pattern);
+			}
+		}
+		const Error err = repo->track_with_lfs(patterns, large_paths);
+		_report(err, "Track with Git LFS");
+		refresh();
+		if (err == OK) {
+			_set_status(STATUS_SUCCESS, vformat("%s files are stored with Git LFS from now on (.gitattributes is staged). Commit when ready", join_list(patterns)));
+		}
+	} else if (p_action == StringName("ignore")) {
+		PackedStringArray untracked;
+		for (const Variant &entry : repo->get_status()) {
+			if (String(Dictionary(entry)["worktree"]) == "untracked") {
+				untracked.push_back(Dictionary(entry)["path"]);
+			}
+		}
+		Error err = OK;
+		for (int i = 0; err == OK && i < large_paths.size(); i++) {
+			const String file = _ignore_file_for(large_paths[i]);
+			err = repo->unstage(large_paths[i]);
+			if (err == OK) {
+				err = repo->add_ignore_lines(file, _file_ignore_lines(large_paths[i], file, untracked));
+			}
+		}
+		_report(err, "Unstage and Ignore");
+		refresh();
+		if (err == OK) {
+			PackedStringArray names;
+			for (const String &path : large_paths) {
+				names.push_back(path.get_file());
+			}
+			_set_status(STATUS_SUCCESS, vformat("Unstaged and ignored %s: on your disk, out of git", join_list(names, 3)));
+		}
+	}
 }
 
 // After a successful commit: Ctrl+Shift+Enter pushes it right away.

@@ -178,11 +178,27 @@ void GitDock::_update_filesystem_colors(const Array &p_status) {
 	Dictionary badges; // The status letter at the row's right edge; a dot for folders.
 	if (_is_filesystem_colors_enabled()) {
 		Dictionary folder_rank; // Folder -> 1 new, 2 modified, 3 deleted or conflicted.
+		HashSet<String> changed;
+		for (int i = 0; i < p_status.size(); i++) {
+			changed.insert(Dictionary(p_status[i])["path"]);
+		}
 		for (int i = 0; i < p_status.size(); i++) {
 			const Dictionary entry = p_status[i];
 			const String worktree = entry["worktree"];
-			const String state = worktree.is_empty() ? String(entry["index"]) : worktree;
-			const String path = _to_res_path(entry["path"]);
+			String state = worktree.is_empty() ? String(entry["index"]) : worktree;
+			String path = entry["path"];
+			// The dock doesn't list .import and .uid files, so a change to only those showed
+			// nothing on the asset. It's marked as modified: its import settings or uid changed,
+			// whatever happened to the companion file itself.
+			const String owner = companion_owner(path);
+			if (!owner.is_empty()) {
+				if (changed.has(owner) || state.is_empty()) {
+					continue;
+				}
+				path = owner;
+				state = "modified";
+			}
+			path = _to_res_path(path);
 			if (state.is_empty() || !path.begins_with("res://")) {
 				continue;
 			}
