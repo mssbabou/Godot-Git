@@ -191,6 +191,10 @@ void side_labels(git_repository *p_repo, const String &p_kind, String &r_mine, S
 		r_theirs = state_file_commit(p_repo, "rebase-merge/onto");
 	} else if (p_kind == "cherry-pick") {
 		r_theirs = state_file_commit(p_repo, "CHERRY_PICK_HEAD");
+	} else if (p_kind == "pull") {
+		// Your uncommitted edits against what the pull brought (see GitRepository::pull).
+		r_mine = "your changes";
+		r_theirs = read_pull_state(p_repo).get("upstream", String());
 	} else if (p_kind == "revert") {
 		r_theirs = vformat("revert of %s", state_file_commit(p_repo, "REVERT_HEAD"));
 	}
@@ -312,5 +316,17 @@ Error GitRepository::_write_resolution(const String &p_path, const char *p_data,
 	}
 	file->store_buffer(bytes);
 	file.unref();
-	return stage(p_path);
+	Error err = stage(p_path);
+	// Resolving one of your edits after a pull leaves it as it was: an uncommitted, unstaged
+	// change (now with the pulled changes in it), not something staged for you.
+	if (err == OK && operation_in_progress(repo) == "pull" && PackedStringArray(read_pull_state(repo).get("edits", PackedStringArray())).has(p_path)) {
+		ObjectPtr head_commit;
+		const CharString path = p_path.utf8();
+		char *paths[] = { (char *)path.get_data() };
+		git_strarray pathspec = { paths, 1 };
+		if (git_revparse_single(head_commit.out(), repo, "HEAD") == 0) {
+			err = to_error(git_reset_default(repo, head_commit, &pathspec));
+		}
+	}
+	return err;
 }

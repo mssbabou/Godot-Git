@@ -460,9 +460,13 @@ void GitConflictView::_show_current(bool p_scroll) {
 		edit->set_text(String("\n").join(rows[side]));
 		for (int line = 0; line < edit->get_line_count() && line < side_kinds[side].size(); line++) {
 			const uint8_t kind = side_kinds[side][line];
-			edit->set_line_background_color(line, kind == ROW_ADDED ? GitDiffDock::row_tint(true) : kind == ROW_REMOVED ? GitDiffDock::row_tint(false)
-							: kind == ROW_FILLER																		? get_theme_color("font_color", "Label") * Color(1, 1, 1, 0.04)
-																														: Color(0, 0, 0, 0));
+			Color tint;
+			if (kind == ROW_ADDED || kind == ROW_REMOVED) {
+				tint = GitDiffDock::row_tint(kind == ROW_ADDED);
+			} else if (kind == ROW_FILLER) {
+				tint = _filler_tint();
+			}
+			edit->set_line_background_color(line, tint);
 		}
 	}
 }
@@ -544,11 +548,12 @@ void GitConflictView::_on_resolve() {
 // The +/− before a side pane's row, on the row's tint.
 void GitConflictView::_draw_sign(int p_line, int p_gutter, const Rect2 &p_region, int p_side) {
 	const PackedByteArray &kinds = side_kinds[p_side == FRAME_MINE ? 0 : 1];
-	if (p_line < 0 || p_line >= kinds.size() || (kinds[p_line] != ROW_ADDED && kinds[p_line] != ROW_REMOVED)) {
+	if (p_line < 0 || p_line >= kinds.size() || kinds[p_line] == ROW_KEPT) {
 		return;
 	}
 	CodeEdit *edit = p_side == FRAME_MINE ? mine_edit : theirs_edit;
 	const bool added = kinds[p_line] == ROW_ADDED;
+	const bool filler = kinds[p_line] == ROW_FILLER;
 	// TextEdit leaves a gap (gutter_padding) between the last gutter and the text that nothing
 	// paints, a dark seam through the row (gotcha 46): the tint reaches across it.
 	Rect2 tint = p_region;
@@ -557,10 +562,18 @@ void GitConflictView::_draw_sign(int p_line, int p_gutter, const Rect2 &p_region
 		drawn += edit->is_gutter_drawn(g) ? edit->get_gutter_width(g) : 0;
 	}
 	tint.size.x += edit->get_total_gutter_width() - drawn;
-	edit->draw_rect(tint, GitDiffDock::row_tint(added));
+	// Filler rows are grey from edge to edge, like the text part (see _show_current).
+	edit->draw_rect(tint, filler ? _filler_tint() : GitDiffDock::row_tint(added));
+	if (filler) {
+		return;
+	}
 	const Ref<Font> font = edit->get_theme_font("font");
 	const int size = edit->get_theme_font_size("font_size");
 	const String sign = added ? String("+") : String::utf8("\u2212");
 	const Vector2 at(p_region.position.x + (p_region.size.x - font->get_string_size(sign, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x) / 2, p_region.position.y + (p_region.size.y - font->get_height(size)) / 2 + font->get_ascent(size));
 	edit->draw_string(font, at, sign, HORIZONTAL_ALIGNMENT_LEFT, -1, size, get_theme_color(added ? "success_color" : "error_color", "Editor"));
+}
+
+Color GitConflictView::_filler_tint() const {
+	return get_theme_color("font_color", "Label") * Color(1, 1, 1, 0.04);
 }

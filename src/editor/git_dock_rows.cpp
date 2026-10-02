@@ -50,7 +50,7 @@ PackedStringArray GitDock::_row_paths(TreeItem *p_item) const {
 PackedStringArray GitDock::_blocking_paths(TreeItem *p_item) const {
 	PackedStringArray blocking;
 	for (const String &path : _row_paths(p_item)) {
-		if (pull_blockers.has(path)) {
+		if (pull_blockers.has(path) || pull_conflict_paths.has(path)) {
 			blocking.push_back(path);
 		}
 	}

@@ -25,6 +25,9 @@ enum FileColumn {
 inline constexpr const char *CHANGE_MARKS_SETTING = "godot_git/settings/mark_changed_lines_in_scripts";
 inline constexpr const char *FILESYSTEM_COLORS_SETTING = "godot_git/settings/color_changed_files_in_filesystem";
 inline constexpr const char *AUTO_FETCH_SETTING = "godot_git/settings/fetch_automatically";
+inline constexpr const char *ASK_PULL_MERGE_SETTING = "godot_git/settings/ask_before_a_pull_stops_at_conflicts";
+// How many settings there are (SETTINGS in git_dock_editor.cpp, settings_checks).
+inline constexpr int SETTING_COUNT = 4;
 
 // What a History row is: "commit", "placeholder" (until the commit is expanded), "note", "file"
 // or "more" (Load More Commits).

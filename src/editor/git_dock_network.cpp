@@ -2,10 +2,12 @@
 
 #include "editor/git_dock.h"
 
+#include <godot_cpp/classes/check_box.hpp>
 #include <godot_cpp/classes/editor_file_system.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/time.hpp>
+#include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include "editor/git_dock_util.h"
@@ -22,7 +24,7 @@ void GitDock::_start_network(int p_op) {
 	if (p_op == NETWORK_PULL && (int)sync_status.get("ahead", 0) > 0 && _ask_identity(NETWORK_PULL)) {
 		return;
 	}
-	if (p_op == NETWORK_PULL && _ask_to_save("Pull", callable_mp(this, &GitDock::_start_network).bind(p_op))) {
+	if ((p_op == NETWORK_PULL || p_op == NETWORK_PULL_MERGE) && _ask_to_save("Pull", callable_mp(this, &GitDock::_start_network).bind(p_op))) {
 		return;
 	}
 	// Both rewrite files: an unsaved scene saved afterwards would undo them.
@@ -58,10 +60,11 @@ void GitDock::_run_network(NetworkOp p_op, bool p_quiet) {
 	network_op = p_op;
 	network_quiet = p_quiet;
 	network_operation = _operation_name(); // The banner's operation is gone by the time it's done.
+	network_operation_kind = operation.get("kind", String());
 	network_ahead = sync_status.get("ahead", 0);
 	network_publish = p_op == NETWORK_PUSH && String(sync_status.get("upstream", String())).is_empty();
 	_update_actions();
-	if (p_op == NETWORK_PULL || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT) {
+	if (p_op == NETWORK_PULL || p_op == NETWORK_PULL_MERGE || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT) {
 		_remember_open_scenes(); // To reload the ones it rewrites; see _reload_changed_scenes.
 	}
 
@@ -113,6 +116,7 @@ String GitDock::_network_description(int p_op) const {
 		case NETWORK_FETCH:
 			return upstream.is_empty() ? String("Fetching") : vformat("Fetching %s", upstream);
 		case NETWORK_PULL:
+		case NETWORK_PULL_MERGE:
 			return vformat("Pulling from %s", upstream);
 		case NETWORK_PUSH:
 			return network_publish ? vformat("Publishing %s", branch) : vformat("Pushing to %s", upstream);
@@ -123,6 +127,9 @@ String GitDock::_network_description(int p_op) const {
 		case NETWORK_ABORT:
 			return String(operation.get("kind", String())) == "bisect" ? String("Ending the bisect") : vformat("Aborting the %s", _operation_name());
 		case NETWORK_CONTINUE:
+			if (String(operation.get("kind", String())) == "pull") {
+				return "Finishing the merge";
+			}
 			return String(operation.get("kind", String())) == "merge" ? String("Committing the merge") : vformat("Continuing the %s", _operation_name());
 		case NETWORK_REVERT:
 			return vformat("Reverting \"%s\"", pending_revert_summary);
@@ -164,6 +171,9 @@ void GitDock::_network_worker(int p_op, const String &p_workdir, bool p_quiet, c
 			case NETWORK_REVERT:
 				err = worker_repo->revert_commit(p_text);
 				break;
+			case NETWORK_PULL_MERGE:
+				err = worker_repo->pull(true);
+				break;
 		}
 	}
 	const String message = err == OK ? String() : GitRepository::get_last_error();
@@ -190,7 +200,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	network_quiet = false;
 
 	// A pull or switch can change files on disk. Refresh first: the result below uses the new counts.
-	if ((p_op == NETWORK_PULL || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT) && p_err == OK) {
+	if ((p_op == NETWORK_PULL || p_op == NETWORK_PULL_MERGE || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT) && p_err == OK) {
 		EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 	}
 	refresh();
@@ -219,7 +229,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	if (p_op == NETWORK_COMMIT && p_err != OK) {
 		push_after_commit = false;
 	}
-	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit", "Abort", "Continue", "Revert" };
+	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit", "Abort", "Continue", "Revert", "Pull" };
 	if (p_err == ERR_SKIP && p_op == NETWORK_COMMIT) {
 		// A post-commit hook may have been running: don't claim nothing happened. History shows it.
 		_set_status(STATUS_NEUTRAL, "Commit canceled.");
@@ -234,6 +244,12 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		pending_switch = network_branch;
 		stash_switch_confirm->set_text(vformat("%s\n\nStash them and switch to %s? They'll wait under Stashes, where you can restore them when you come back.", p_message, network_branch));
 		stash_switch_confirm->popup_centered();
+		return;
+	}
+	// The pull would conflict: ask whether to start a merge rather than just refuse.
+	const PackedStringArray pull_conflicts = p_pull_result.get("conflicts", PackedStringArray());
+	if (p_op == NETWORK_PULL && p_err != OK && !pull_conflicts.is_empty()) {
+		_ask_to_start_merge(pull_conflicts, p_upstream);
 		return;
 	}
 	if (p_err != OK) {
@@ -257,6 +273,15 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 				_set_status(STATUS_SUCCESS, vformat("Fetched: up to date with %s", p_upstream));
 			}
 		} break;
+		case NETWORK_PULL_MERGE:
+			if (!pull_conflicts.is_empty()) {
+				// Stopped at the conflicts, as asked: on to the first one.
+				_set_status(STATUS_SUCCESS, vformat("Pulled from %s: resolve %s under Conflicts, then finish the merge", p_upstream, plural(pull_conflicts.size(), "file", "files")));
+				_reload_changed_scenes();
+				_show_conflict(pull_conflicts[0]);
+				break;
+			}
+			[[fallthrough]];
 		case NETWORK_PULL: {
 			const int commits = p_pull_result.get("commits", 0);
 			// Files whose uncommitted edits were merged into the new versions: say so, since
@@ -292,7 +317,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			if (_in_operation()) {
 				_set_status(STATUS_WARNING, vformat("The %s went on and stopped again: see above.", _operation_name()));
 			} else {
-				_set_status(STATUS_SUCCESS, network_operation == "merge" ? String("Committed the merge") : vformat("Finished the %s", network_operation));
+				_set_status(STATUS_SUCCESS, network_operation_kind == "pull" ? String("Finished the merge: your resolved changes are uncommitted, as before the pull") : (network_operation == "merge" ? String("Committed the merge") : vformat("Finished the %s", network_operation)));
 			}
 			_reload_changed_scenes();
 		} break;
@@ -317,4 +342,57 @@ void GitDock::_finish_network_thread() {
 		network_thread->wait_to_finish();
 	}
 	network_thread.unref();
+}
+
+// After a pull refused because it would conflict: "2 files conflict with origin/main", Start Merge
+// or Cancel. Short on purpose; the files are listed small under it, and the resolver shows the
+// rest right after.
+void GitDock::_ask_to_start_merge(const PackedStringArray &p_conflicts, const String &p_upstream) {
+	if (!pull_merge_confirm) {
+		const float scale = EditorInterface::get_singleton()->get_editor_scale();
+		pull_merge_confirm = _make_confirm("Pull", "Pull and Merge", callable_mp(this, &GitDock::_on_pull_merge_confirmed));
+		pull_merge_confirm->get_cancel_button()->connect("pressed", callable_mp(this, &GitDock::_on_pull_merge_canceled));
+		pull_merge_confirm->connect("canceled", callable_mp(this, &GitDock::_on_pull_merge_canceled));
+		// One box for both lines: the dialog's own text label would sit on top of a child.
+		VBoxContainer *box = memnew(VBoxContainer);
+		pull_merge_confirm->add_child(box);
+		pull_merge_question = memnew(Label);
+		box->add_child(pull_merge_question);
+		pull_merge_files = memnew(Label);
+		pull_merge_files->set_autowrap_mode(TextServer::AUTOWRAP_WORD_SMART);
+		pull_merge_files->set_custom_minimum_size(Vector2(300 * scale, 0)); // Gotcha 28.
+		pull_merge_files->set_modulate(Color(1, 1, 1, 0.6));
+		box->add_child(pull_merge_files);
+		// Undone in Git Settings ("Ask before a pull stops at conflicts").
+		pull_merge_dont_ask = memnew(CheckBox);
+		// Tied to Pull and Merge: Cancel with it ticked changes nothing (remembering "cancel" would
+		// make every conflicting pull silently do nothing).
+		pull_merge_dont_ask->set_text("Always pull and merge");
+		pull_merge_dont_ask->set_tooltip_text("From now on, pull and stop at the conflicts without asking. Turn asking back on in Git Settings.");
+		box->add_child(pull_merge_dont_ask);
+	}
+	// A refused pull doesn't name its upstream; the branch's is the one.
+	const String upstream = p_upstream.is_empty() ? String(sync_status.get("upstream", String())) : p_upstream;
+	const String question = vformat("%s with %s", p_conflicts.size() == 1 ? String("1 file conflicts") : vformat("%d files conflict", p_conflicts.size()), upstream);
+	pull_merge_confirm->set_text(String());
+	pull_merge_question->set_text(question);
+	pull_merge_files->set_text(join_list(p_conflicts, 5));
+	pull_merge_dont_ask->set_pressed(false);
+	pull_merge_confirm->get_ok_button()->set_tooltip_text("Pull anyway and stop at the conflicts, to resolve them under Conflicts. Abort Merge puts everything back as it was.");
+	_set_status(STATUS_NEUTRAL, vformat("Pull is waiting: %s", question));
+	pull_merge_confirm->reset_size();
+	pull_merge_confirm->popup_centered();
+}
+
+void GitDock::_on_pull_merge_confirmed() {
+	if (pull_merge_dont_ask->is_pressed()) {
+		EditorInterface::get_singleton()->get_editor_settings()->set_setting(ASK_PULL_MERGE_SETTING, false);
+	}
+	_start_network(NETWORK_PULL_MERGE);
+}
+
+void GitDock::_on_pull_merge_canceled() {
+	if (status_kind == STATUS_NEUTRAL && status_text.begins_with("Pull is waiting")) {
+		_set_status(STATUS_NEUTRAL, "Pull canceled. Nothing was changed.");
+	}
 }

@@ -33,10 +33,11 @@ struct SettingEntry {
 	const char *label;
 	const char *description;
 };
-const SettingEntry SETTINGS[3] = {
+const SettingEntry SETTINGS[SETTING_COUNT] = {
 	{ CHANGE_MARKS_SETTING, "Mark changed lines in scripts", "Lines added, changed or deleted since the last commit, marked next to the line numbers (unsaved edits too). Click a mark to see what was there." },
 	{ FILESYSTEM_COLORS_SETTING, "Color changed files in the FileSystem dock", "Changed files in the colors of their status letters, with a dot on the folders that hold them." },
 	{ AUTO_FETCH_SETTING, "Fetch automatically", "Checks for new commits every few minutes in the background. It never changes your files or asks you to sign in." },
+	{ ASK_PULL_MERGE_SETTING, "Ask before a pull stops at conflicts", "When the new commits change the same lines as yours, Pull asks first. Off: it pulls and stops at the conflicts right away, to resolve under Conflicts (Abort Merge still puts everything back)." },
 };
 
 } // namespace
@@ -280,7 +281,7 @@ void GitDock::_register_settings() {
 		}
 	}
 	// All on by default: the panel's pick for anything someone might not want.
-	for (const char *name : { CHANGE_MARKS_SETTING, FILESYSTEM_COLORS_SETTING, AUTO_FETCH_SETTING }) {
+	for (const char *name : { CHANGE_MARKS_SETTING, FILESYSTEM_COLORS_SETTING, AUTO_FETCH_SETTING, ASK_PULL_MERGE_SETTING }) {
 		if (!settings->has_setting(name)) {
 			settings->set_setting(name, true);
 		}
@@ -309,14 +310,14 @@ void GitDock::_on_editor_settings_changed() {
 			_set_status(STATUS_IDLE, String()); // Its failure message is moot now.
 		}
 	}
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < SETTING_COUNT; i++) {
 		if (settings_checks[i]) {
 			settings_checks[i]->set_pressed_no_signal(EditorInterface::get_singleton()->get_editor_settings()->get_setting(SETTINGS[i].name));
 		}
 	}
 }
 
-// Git Settings, from the menu: the three settings with what each does. They're stored in Editor
+// Git Settings, from the menu: the settings with what each does. They're stored in Editor
 // Settings (_register_settings), which only shows a plugin's settings with Advanced Settings
 // ticked (gotcha 49), so this dialog is where people find them. A change applies at once.
 void GitDock::_build_settings_dialog() {
@@ -328,7 +329,7 @@ void GitDock::_build_settings_dialog() {
 	VBoxContainer *list = memnew(VBoxContainer);
 	list->add_theme_constant_override("separation", Math::round(10 * scale));
 	settings_dialog->add_child(list);
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < SETTING_COUNT; i++) {
 		VBoxContainer *entry = memnew(VBoxContainer);
 		entry->add_theme_constant_override("separation", 0);
 		list->add_child(entry);
@@ -356,7 +357,7 @@ void GitDock::_build_settings_dialog() {
 }
 
 void GitDock::_show_settings_dialog() {
-	for (int i = 0; i < 3; i++) {
+	for (int i = 0; i < SETTING_COUNT; i++) {
 		settings_checks[i]->set_pressed_no_signal(EditorInterface::get_singleton()->get_editor_settings()->get_setting(SETTINGS[i].name));
 	}
 	settings_dialog->popup_centered();

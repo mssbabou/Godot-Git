@@ -73,6 +73,7 @@ class GitConflictView : public VBoxContainer {
 	void _on_resolve();
 	String _lines(int p_from, int p_to) const;
 	void _draw_sign(int p_line, int p_gutter, const Rect2 &p_region, int p_side);
+	Color _filler_tint() const;
 
 protected:
 	static void _bind_methods();

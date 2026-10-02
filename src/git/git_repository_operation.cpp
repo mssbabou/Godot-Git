@@ -8,7 +8,9 @@
 #include <git2.h>
 #include <git2/sys/errors.h>
 
+#include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/templates/local_vector.hpp>
 
 #include "git/git_cli.h"
 #include "git/git_remote_callbacks.h"
@@ -47,6 +49,9 @@ String operation_subject(git_repository *p_repo, const String &p_kind) {
 	}
 	if (p_kind == "revert") {
 		return describe_ref(p_repo, "REVERT_HEAD");
+	}
+	if (p_kind == "pull") {
+		return vformat("Merge your changes with %s", String(read_pull_state(p_repo).get("upstream", String())));
 	}
 	if (p_kind == "rebase") {
 		String head = read_git_file(p_repo, "rebase-merge/head-name").strip_edges();
@@ -101,6 +106,9 @@ Error GitRepository::abort_operation() {
 	if (kind.is_empty()) {
 		return fail("There's nothing in progress to abort.");
 	}
+	if (kind == "pull") {
+		return _abort_pull();
+	}
 	PackedStringArray args;
 	if (kind == "bisect") {
 		args = PackedStringArray({ "bisect", "reset" });
@@ -123,6 +131,10 @@ Error GitRepository::continue_operation() {
 	const PackedStringArray conflicts = get_operation()["conflicts"];
 	if (!conflicts.is_empty()) {
 		return fail(vformat("%s still %s conflicts. Fix the conflict markers, then stage the file to mark it resolved.", name_list(conflicts), conflicts.size() == 1 ? "has" : "have"));
+	}
+	if (kind == "pull") {
+		_end_pull_merge(read_pull_state(repo)); // The pull is done; your resolved edits stay uncommitted.
+		return OK;
 	}
 	if (require_identity(repo, "Nothing was continued.") != OK) {
 		return FAILED;
@@ -150,5 +162,89 @@ Error GitRepository::_run_operation_step(const PackedStringArray &p_args, const 
 		const String tail = output_tail(output, 8);
 		return fail(tail.is_empty() ? String("Git refused, without saying why.") : vformat("Git refused:\n%s", tail));
 	}
+	return OK;
+}
+
+// The panel's own merge of a pull with your uncommitted edits (see GitRepository::pull) is over:
+// its note and the copies of your edits go.
+void GitRepository::_end_pull_merge(const Dictionary &p_state) {
+	const String backup = p_state.get("backup", String());
+	const PackedStringArray edits = p_state.get("edits", PackedStringArray());
+	if (!backup.is_empty()) {
+		for (int i = 0; i < edits.size(); i++) {
+			DirAccess::remove_absolute(backup.path_join(itos(i)));
+		}
+		DirAccess::remove_absolute(backup.path_join("README.txt"));
+		DirAccess::remove_absolute(backup);
+	}
+	DirAccess::remove_absolute(pull_state_path(repo));
+}
+
+// Undoes the panel's merge of a pull with your edits: the branch back where it was before the
+// pull, the files the pull changed back to that version, and your edits back byte for byte from
+// the copies taken before it. Your other uncommitted changes are left alone.
+Error GitRepository::_abort_pull() {
+	const Dictionary state = read_pull_state(repo);
+	git_oid old_head;
+	if (git_oid_fromstr(&old_head, String(state.get("old_head", String())).utf8().get_data()) < 0) {
+		return fail("The note about the pull in progress is unreadable, so it can't be undone here. Your edits are in the .git/godot-git-pull folder.");
+	}
+	ReferencePtr head;
+	CommitPtr old_commit;
+	TreePtr old_tree;
+	int err = git_repository_head(head.out(), repo);
+	if (err >= 0) {
+		err = git_commit_lookup(old_commit.out(), repo, &old_head);
+	}
+	if (err >= 0) {
+		err = git_commit_tree(old_tree.out(), old_commit);
+	}
+	if (err < 0) {
+		return to_error(err);
+	}
+	// The files the pull changed, back to their version before it (index and disk), then the branch.
+	const HashSet<String> pulled = changed_paths(repo, &old_head, git_reference_target(head));
+	LocalVector<CharString> paths_utf8;
+	for (const String &path : pulled) {
+		paths_utf8.push_back(path.utf8());
+	}
+	const PackedStringArray edits = state.get("edits", PackedStringArray());
+	for (const String &path : edits) {
+		paths_utf8.push_back(path.utf8());
+	}
+	LocalVector<char *> paths;
+	for (CharString &path : paths_utf8) {
+		paths.push_back(path.ptrw());
+	}
+	git_strarray pathspec = { paths.ptr(), paths.size() };
+	if (!paths.is_empty()) {
+		err = git_reset_default(repo, (git_object *)old_commit.get(), &pathspec);
+		git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
+		opts.checkout_strategy = GIT_CHECKOUT_FORCE | GIT_CHECKOUT_DISABLE_PATHSPEC_MATCH | GIT_CHECKOUT_REMOVE_UNTRACKED;
+		opts.paths = pathspec;
+		if (err >= 0) {
+			err = git_checkout_tree(repo, (git_object *)old_tree.get(), &opts);
+		}
+	}
+	if (err >= 0 && !git_oid_equal(git_reference_target(head), &old_head)) {
+		ReferencePtr moved;
+		err = git_reference_set_target(moved.out(), head, &old_head, "pull: aborted");
+	}
+	if (err < 0) {
+		return to_error(err);
+	}
+	// Your edits, exactly as they were.
+	const String backup = state.get("backup", String());
+	PackedStringArray left;
+	for (int i = 0; i < edits.size(); i++) {
+		const PackedByteArray bytes = FileAccess::get_file_as_bytes(backup.path_join(itos(i)));
+		if (!FileAccess::file_exists(backup.path_join(itos(i))) || !write_file(get_workdir().path_join(edits[i]), (const char *)bytes.ptr(), bytes.size())) {
+			left.push_back(edits[i]);
+		}
+	}
+	if (!left.is_empty()) {
+		return fail(vformat("The pull was undone, but your edits to %s couldn't be put back; they're saved, untouched, in %s.", name_list(left), backup));
+	}
+	_end_pull_merge(state);
 	return OK;
 }

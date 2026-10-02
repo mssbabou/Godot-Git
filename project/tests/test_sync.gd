@@ -71,7 +71,7 @@ func _conflict_refused() -> void:
 	commit_all(s.mine, "My x")
 	var head := git(s.mine, ["rev-parse", "HEAD"])
 
-	check("conflicting pull refused", r.pull() != OK and GitRepository.get_last_error().contains("conflict"), GitRepository.get_last_error())
+	check("conflicting pull refused", r.pull() != OK and GitRepository.get_last_error().contains("same lines"), GitRepository.get_last_error())
 	check("HEAD unchanged", git(s.mine, ["rev-parse", "HEAD"]) == head)
 	check("working tree clean", r.get_status().is_empty(), r.get_status())
 	check("not stuck mid-merge", not exists(s.mine.path_join(".git/MERGE_HEAD")))
@@ -119,8 +119,9 @@ func _prune_and_pull_blockers() -> void:
 	write(s.mine.path_join("new.txt"), "mine\n") # Untracked, and the new commits add it.
 	write(s.mine.path_join("y.txt"), "y-mine\n") # Not touched by the new commits.
 	check("fetch with local changes", r.fetch() == OK, GitRepository.get_last_error())
-	check("blockers are the overlapping files", Array(r.get_pull_blockers()) == ["new.txt", "x.txt"], r.get_pull_blockers())
-	check("and pull refuses for exactly those", r.pull() != OK and GitRepository.get_last_error().contains("new.txt, x.txt"), GitRepository.get_last_error())
+	check("blockers are what a pull can't merge at all", Array(r.get_pull_blockers()) == ["new.txt"], r.get_pull_blockers())
+	check("an edit on the same lines is a conflict, not a blocker", Array(r.get_pull_conflicts()) == ["x.txt"], r.get_pull_conflicts())
+	check("and pull refuses for the blocker", r.pull() != OK and GitRepository.get_last_error().contains("new.txt"), GitRepository.get_last_error())
 	git(s.mine, ["checkout", "--", "x.txt"])
 	DirAccess.remove_absolute(s.mine.path_join("new.txt"))
 	check("no blockers once they're gone", r.get_pull_blockers().is_empty(), r.get_pull_blockers())

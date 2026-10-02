@@ -6,7 +6,8 @@ A Git panel for the Godot editor that knows it's in Godot, and won't leave your 
 
 ## What it brings
 
-- **Pulls that can't wreck your work.** Your uncommitted edits survive a pull: merged into your teammate's version when the lines don't overlap, otherwise the pull refuses before touching anything and tells you which files. No conflict markers dropped into your scenes, no stash you didn't ask for, no half-switched branches.
+- **Pulls that can't wreck your work.** Your uncommitted edits survive a pull: merged into your teammate's version when the lines don't overlap; when they clash, the pull asks first and changes nothing until you say so. No stash you didn't ask for, no half-switched branches.
+- **Conflicts resolved in the editor.** Each clash shows what you and your teammate each did to the original, with one click for yours, theirs or both, and the result editable below. Conflicting images show both versions. Abort Merge always puts everything back.
 - **Made for Godot projects.** `.uid` and `.import` files ride along with the file they belong to instead of doubling your change list. Open scenes and scripts reload after a pull or branch switch, so saving can't undo it. Import settings show as settings ("Compress › Mode  Lossless → VRAM Compressed"), images as before and after.
 - **Changes where you work.** Changed lines are marked in the script editor as you type, with a click to see or undo them. Changed files are colored in the FileSystem dock.
 - **Always says what it's doing.** Every pull, push and fetch shows progress, can be canceled, and leaves a result or error that stays until you've read it.

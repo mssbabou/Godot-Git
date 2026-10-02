@@ -129,7 +129,8 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_identity", "name", "email", "global"), &GitRepository::set_identity);
 
 	ClassDB::bind_method(D_METHOD("fetch"), &GitRepository::fetch);
-	ClassDB::bind_method(D_METHOD("pull"), &GitRepository::pull);
+	ClassDB::bind_method(D_METHOD("pull", "start_merge"), &GitRepository::pull, DEFVAL(false));
+	ClassDB::bind_method(D_METHOD("get_pull_conflicts"), &GitRepository::get_pull_conflicts);
 	ClassDB::bind_method(D_METHOD("push"), &GitRepository::push);
 	ClassDB::bind_method(D_METHOD("abort_operation"), &GitRepository::abort_operation);
 	ClassDB::bind_method(D_METHOD("continue_operation"), &GitRepository::continue_operation);

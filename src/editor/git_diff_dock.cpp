@@ -398,7 +398,8 @@ void GitDiffDock::_update_header() {
 		const String operation = diff.get("kind", String());
 		const String mine = diff.get("mine_label", String());
 		const String theirs = diff.get("theirs_label", String());
-		String what = operation.is_empty() ? String("Conflict") : operation.capitalize();
+		// The panel's own merge of your edits with a pull reads as a merge, like its banner.
+		String what = operation.is_empty() ? String("Conflict") : (operation == "pull" ? String("Merge") : operation.capitalize());
 		if (!mine.is_empty() && !theirs.is_empty()) {
 			what += vformat(String::utf8(" \u00b7 %s \u2190 %s"), mine, theirs);
 		}

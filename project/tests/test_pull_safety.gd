@@ -70,7 +70,7 @@ func _carried_edit_restored_when_the_merge_conflicts() -> void:
 	write(s.mine.path_join("doc.txt"), mine)
 	var head := git(s.mine, ["rev-parse", "HEAD"])
 	var r := open(s.mine)
-	check("carry conflict: refused", r.pull() != OK and GitRepository.get_last_error().contains("conflict"), GitRepository.get_last_error())
+	check("carry conflict: refused, naming the conflicting file", r.pull() != OK and Array(r.get_pull_result().conflicts) == ["y.txt"], [GitRepository.get_last_error(), r.get_pull_result().conflicts])
 	check("carry conflict: HEAD unchanged", git(s.mine, ["rev-parse", "HEAD"]) == head)
 	check("carry conflict: my file exactly as it was", FileAccess.get_file_as_string(s.mine.path_join("doc.txt")) == mine, FileAccess.get_file_as_string(s.mine.path_join("doc.txt")))
 	check("carry conflict: no stash, no backups left", git(s.mine, ["stash", "list"]) == "" and not DirAccess.dir_exists_absolute(s.mine.path_join(".git/godot-git-pull")))
@@ -103,7 +103,7 @@ func _refused_when_incoming_touches_uncommitted_edit() -> void:
 	var err := r.pull()
 	var message := GitRepository.get_last_error()
 	check("refused", err != OK, message)
-	check("message names the file and what to do", message.contains("x.txt") and message.contains("Commit, stash or discard"), message)
+	check("message names the file, and the conflict is reported for the panel to ask", message.contains("x.txt") and Array(r.get_pull_result().conflicts) == ["x.txt"], [message, r.get_pull_result().conflicts])
 	check("HEAD unchanged", git(s.mine, ["rev-parse", "HEAD"]) == head)
 	check("my edit untouched", read(s.mine.path_join("x.txt")) == "x-my-uncommitted\n", read(s.mine.path_join("x.txt")))
 	check("no stash left behind", git(s.mine, ["stash", "list"]) == "", git(s.mine, ["stash", "list"]))
@@ -139,7 +139,7 @@ func _refused_on_fast_forward_too() -> void:
 	teammate_pushes(s, "x.txt", "x-theirs\n")
 	write(s.mine.path_join("x.txt"), "x-my-uncommitted\n")
 	var r := open(s.mine)
-	check("refused with the same clear message", r.pull() != OK and GitRepository.get_last_error().contains("Commit, stash or discard"), GitRepository.get_last_error())
+	check("refused the same way", r.pull() != OK and Array(r.get_pull_result().conflicts) == ["x.txt"], GitRepository.get_last_error())
 	check("my edit untouched", read(s.mine.path_join("x.txt")) == "x-my-uncommitted\n")
 
 
@@ -176,7 +176,7 @@ func _unrelated_edits_survive_a_refused_conflict() -> void:
 	var head := git(s.mine, ["rev-parse", "HEAD"])
 	var r := open(s.mine)
 
-	check("conflicting pull refused", r.pull() != OK and GitRepository.get_last_error().contains("conflict"), GitRepository.get_last_error())
+	check("conflicting pull refused", r.pull() != OK and GitRepository.get_last_error().contains("same lines"), GitRepository.get_last_error())
 	check("HEAD unchanged", git(s.mine, ["rev-parse", "HEAD"]) == head)
 	check("uncommitted edit restored", read(s.mine.path_join("z.txt")) == "z-uncommitted\n")
 	check("staged edit restored and still staged", git(s.mine, ["diff", "--cached", "--name-only"]) == "y.txt", git(s.mine, ["status", "--short"]))

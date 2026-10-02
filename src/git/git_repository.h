@@ -25,6 +25,7 @@ class GitRepository : public RefCounted {
 	int pulled_commits = 0;
 	bool pull_merged = false;
 	PackedStringArray pull_carried;
+	PackedStringArray pull_conflicts;
 	Callable progress_callback;
 	// get_commits' last result, and what it depended on (HEAD and every branch's commit): reading
 	// history is slow in big repositories (150 ms in Godot's own), and most refreshes change neither.
@@ -37,6 +38,8 @@ class GitRepository : public RefCounted {
 	Error _fetch_lfs_files(const char *p_refname, const git_oid *p_commit);
 	Error _commit_with_git(const String &p_message, bool p_amend);
 	Error _write_resolution(const String &p_path, const char *p_data, size_t p_size);
+	Error _abort_pull();
+	void _end_pull_merge(const Dictionary &p_state);
 	Error _push_with_git(const String &p_remote, const String &p_refspec, bool p_ssh);
 	Error _fetch_with_git(const String &p_remote);
 	Error _run_operation_step(const PackedStringArray &p_args, const String &p_step);
@@ -109,7 +112,8 @@ public:
 	Error set_identity(const String &p_name, const String &p_email, bool p_global);
 
 	Error fetch();
-	Error pull();
+	Error pull(bool p_start_merge = false);
+	PackedStringArray get_pull_conflicts() const;
 	Error push();
 	Error abort_operation();
 	Error continue_operation();

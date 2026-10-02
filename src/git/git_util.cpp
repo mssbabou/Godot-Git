@@ -4,6 +4,7 @@
 
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/json.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/templates/local_vector.hpp>
 
@@ -341,8 +342,24 @@ String operation_in_progress(git_repository *p_repo) {
 		case GIT_REPOSITORY_STATE_APPLY_MAILBOX_OR_REBASE:
 			return "apply";
 		default:
-			return String();
+			return FileAccess::file_exists(pull_state_path(p_repo)) ? String("pull") : String();
 	}
+}
+
+String pull_state_path(git_repository *p_repo) {
+	return String::utf8(git_repository_path(p_repo)).path_join("godot-git-pull-state.json");
+}
+
+// { "old_head": the commit before the pull, "upstream": "origin/main", "backup": the folder with
+// your edits as they were, "edits": their paths (file i in the folder is edits[i]), "conflicts":
+// the paths that conflicted }, or empty.
+Dictionary read_pull_state(git_repository *p_repo) {
+	const String path = pull_state_path(p_repo);
+	if (!FileAccess::file_exists(path)) {
+		return Dictionary();
+	}
+	const Variant parsed = JSON::parse_string(FileAccess::get_file_as_string(path));
+	return parsed.get_type() == Variant::DICTIONARY ? Dictionary(parsed) : Dictionary();
 }
 
 Error require_no_operation(git_repository *p_repo, const String &p_action) {

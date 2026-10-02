@@ -267,6 +267,9 @@ bool GitDock::_in_operation() const {
 // "merge", "rebase", "cherry-pick", "revert", "git am", "bisect".
 String GitDock::_operation_name() const {
 	const String kind = operation.get("kind", String());
+	if (kind == "pull") {
+		return "merge"; // Your edits merged with a pull (see GitRepository::pull): a merge to you.
+	}
 	return kind == "apply" ? String("git am") : kind;
 }
 
@@ -276,7 +279,9 @@ void GitDock::_update_operation_banner() {
 		return;
 	}
 	const float scale = EditorInterface::get_singleton()->get_editor_scale();
-	const String kind = operation["kind"];
+	const String raw_kind = operation["kind"];
+	const bool own = raw_kind == "pull"; // The panel's own merge: no git needed to finish or abort it.
+	const String kind = own ? String("merge") : raw_kind;
 	const String name = _operation_name();
 	const String subject = operation.get("subject", String());
 	const PackedStringArray conflicts = operation.get("conflicts", PackedStringArray());
@@ -304,7 +309,7 @@ void GitDock::_update_operation_banner() {
 	operation_label->set_tooltip_text(conflicts.is_empty() ? String() : vformat("Conflicted (marked ! in Changes):\n%s", String("\n").join(conflicts)));
 
 	const bool busy = _shown_network_op() != NETWORK_NONE;
-	const String needs_git = git_missing ? vformat("Finishing or aborting the %s needs git, which isn't installed (or isn't on the PATH). Install it from git-scm.com.", name) : String();
+	const String needs_git = git_missing && !own ? vformat("Finishing or aborting the %s needs git, which isn't installed (or isn't on the PATH). Install it from git-scm.com.", name) : String();
 	operation_abort->set_text(kind == "bisect" ? String("End Bisect") : (kind == "apply" ? String("Abort") : vformat("Abort %s", name.capitalize().replace(" ", "-"))));
 	operation_abort->set_disabled(busy || !needs_git.is_empty());
 	operation_abort->set_tooltip_text(!needs_git.is_empty() ? needs_git : (kind == "bisect" ? String("End the bisect: go back to the branch you started it on.") : vformat("Undo the %s: the branch and files go back to how they were before it started.", name)));

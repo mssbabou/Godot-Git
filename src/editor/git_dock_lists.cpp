@@ -325,7 +325,15 @@ void GitDock::_show_line_stats(FilePane &p_pane) {
 		}
 		const PackedStringArray blocking = _blocking_paths(item);
 		if (!blocking.is_empty()) {
-			tooltip += vformat("\n\nThe new commits on %s change %s too, in a way your uncommitted changes can't be merged with, so Pull waits until they're committed, stashed or discarded.", String(sync_status.get("upstream", String())), blocking.size() == 1 && blocking[0] == path ? String("this file") : String(", ").join(blocking));
+			const String upstream = sync_status.get("upstream", String());
+			const String which = blocking.size() == 1 && blocking[0] == path ? String("this file") : String(", ").join(blocking);
+			bool all_conflicts = true;
+			for (const String &blocked : blocking) {
+				all_conflicts = all_conflicts && pull_conflict_paths.has(blocked);
+			}
+			tooltip += all_conflicts
+					? vformat("\n\nThe new commits on %s change the same lines of %s: pulling stops at the conflicts there, for you to resolve.", upstream, which)
+					: vformat("\n\nThe new commits on %s change %s too, in a way your uncommitted changes can't be merged with, so Pull waits until they're committed, stashed or discarded.", upstream, which);
 		}
 		item->set_tooltip_text(COLUMN_NAME, tooltip);
 		item->set_meta("git_tooltip", tooltip); // Put back after the tooltip of a row button.

@@ -178,6 +178,10 @@ String name_list(const PackedStringArray &p_paths);
 // stopped at conflicts): "merge", "rebase", "cherry-pick", "revert", "apply" (git am), "bisect",
 // or "" for none.
 String operation_in_progress(git_repository *p_repo);
+// The file that says the panel's own pull stopped at conflicts in your uncommitted edits (see
+// GitRepository::pull): git knows nothing of it, so operation_in_progress reports "pull" for it.
+String pull_state_path(git_repository *p_repo);
+Dictionary read_pull_state(git_repository *p_repo);
 
 // FAILED while an operation is in progress, saying so ("Can't commit while a merge is in progress
 // ..."): committing, pulling or switching then would silently lose the operation (a plain commit

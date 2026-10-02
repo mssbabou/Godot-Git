@@ -26,6 +26,7 @@
 #include <godot_cpp/classes/tree.hpp>
 #include <godot_cpp/classes/tree_item.hpp>
 
+#include "editor/git_dock_util.h"
 #include "git/git_repository.h"
 
 class GitDiffDock;
@@ -95,6 +96,7 @@ class GitDock : public EditorDock {
 		NETWORK_ABORT, // Aborting an operation left in progress (a merge, rebase, ...), through git.
 		NETWORK_CONTINUE, // Continuing one once its conflicts are resolved (hooks may run).
 		NETWORK_REVERT, // Reverting a commit: a new commit, so hooks may run.
+		NETWORK_PULL_MERGE, // Pulling into conflicts on purpose (Start Merge; GitRepository::pull(true)).
 	};
 
 	// What the status strip is showing.
@@ -164,6 +166,7 @@ class GitDock : public EditorDock {
 	ConfirmationDialog *abort_confirm = nullptr;
 	Dictionary operation; // GitRepository::get_operation(), as of the last refresh.
 	String network_operation; // _operation_name() when a NETWORK_ABORT / NETWORK_CONTINUE started.
+	String network_operation_kind; // Its kind ("pull" shows as a merge, but finishes differently).
 	StatusKind status_kind = STATUS_IDLE;
 	String status_text;
 	String status_step;
@@ -192,6 +195,11 @@ class GitDock : public EditorDock {
 	Button *large_ignore_button = nullptr;
 	PackedStringArray large_paths; // The files the question was about.
 	PackedStringArray pull_blockers; // Uncommitted files the new commits change too (Pull refuses).
+	PackedStringArray pull_conflict_paths; // Uncommitted edits on the same lines (Pull asks to merge).
+	ConfirmationDialog *pull_merge_confirm = nullptr; // "2 files conflict with origin/main".
+	Label *pull_merge_question = nullptr;
+	Label *pull_merge_files = nullptr;
+	CheckBox *pull_merge_dont_ask = nullptr;
 
 	FilePane staged_pane;
 	FilePane changes_pane;
@@ -321,7 +329,7 @@ class GitDock : public EditorDock {
 	GitFileSystemColors *filesystem_colors = nullptr;
 	GitScriptMarks *script_marks = nullptr; // Changed lines marked in the script editor.
 	AcceptDialog *settings_dialog = nullptr; // Git Settings (the menu's Settings...).
-	CheckBox *settings_checks[3] = {}; // In the order of SETTINGS in git_dock_editor.cpp.
+	CheckBox *settings_checks[godot_git::SETTING_COUNT] = {}; // In the order of SETTINGS in git_dock_editor.cpp.
 
 	// The Diff panel at the bottom, and the file it shows: clicking a file here shows its diff there.
 	GitDiffDock *diff_dock = nullptr;
@@ -567,6 +575,10 @@ class GitDock : public EditorDock {
 	void _network_progress(const String &p_step, double p_fraction, bool p_cancellable);
 	void _network_done(int p_op, int p_err, const String &p_message, const String &p_upstream, const String &p_notice, const Dictionary &p_pull_result);
 	void _finish_network_thread();
+	void _ask_to_start_merge(const PackedStringArray &p_conflicts, const String &p_upstream);
+	void _on_pull_merge_canceled();
+	void _on_pull_merge_confirmed();
+	void _on_pull_pressed();
 
 protected:
 	static void _bind_methods();

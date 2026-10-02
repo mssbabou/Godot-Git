@@ -479,7 +479,7 @@ func _marks_check() -> void:
 		marks.show_in_diff(code_edit, hunks.size() - 1)
 		get_tree().create_timer(1.0).timeout.connect(_marks_diff_check.bind(marks, code_edit, hunks))
 		return
-	_smoke_finish()
+	_conflict_start()
 
 
 func _marks_diff_check(marks: Node, code_edit: CodeEdit, hunks: Array) -> void:
@@ -496,6 +496,92 @@ func _marks_diff_check(marks: Node, code_edit: CodeEdit, hunks: Array) -> void:
 	var committed := "".join(out)
 	_smoke_check(marks.get_hunks(code_edit).is_empty() and code_edit.text.strip_edges() == committed.strip_edges(), "reverting every change gives back the committed text")
 	code_edit.undo() # Leaves the file as it was, for anything after this.
+	_conflict_start()
+
+
+# Resolving a conflict: a merge stopped at one (made with the git CLI, after committing everything,
+# since git won't merge while anything is staged), then the panel: Conflicts lists the file, the
+# resolver opens on it, Keep Mine and Resolve File stage it, Finish Merge makes the merge commit.
+func _git(args: Array) -> String:
+	var out := []
+	OS.execute("git", ["-C", ProjectSettings.globalize_path("res://")] + args, out, true)
+	return "".join(out).strip_edges()
+
+
+func _write(path: String, text: String) -> void:
+	var f := FileAccess.open(ProjectSettings.globalize_path("res://").path_join(path), FileAccess.WRITE)
+	f.store_string(text)
+	f.close()
+
+
+func _conflict_start() -> void:
+	_write("clash.txt", "speed = 1
+")
+	_git(["add", "-A"])
+	_git(["commit", "-q", "-m", "Smoke: everything so far"])
+	_git(["checkout", "-q", "-b", "clash"])
+	_write("clash.txt", "speed = 2
+")
+	_git(["commit", "-q", "-am", "Clash: speed 2"])
+	_git(["checkout", "-q", "main"])
+	_write("clash.txt", "speed = 3
+")
+	_git(["commit", "-q", "-am", "Main: speed 3"])
+	_git(["merge", "clash"])
+	_smoke_dock().refresh()
+	get_tree().create_timer(1.0).timeout.connect(_conflict_open)
+
+
+func _conflict_open() -> void:
+	var section := _smoke_section("Conflicts")
+	var tree: Tree = section.find_children("*", "Tree", true, false)[0] if section else null
+	var row: TreeItem = tree.get_root().get_first_child() if tree and tree.get_root() else null
+	_smoke_check(section and section.visible and row and row.get_meta("git_path", "") == "clash.txt", "a merge stopped at a conflict lists the file under Conflicts")
+	if not row:
+		_smoke_finish()
+		return
+	row.select(0)
+	get_tree().create_timer(1.0).timeout.connect(_conflict_resolve)
+
+
+func _conflict_resolve() -> void:
+	var views := EditorInterface.get_base_control().find_children("*", "GitConflictView", true, false)
+	var view: Control = views[0] if views else null
+	var texts := " ".join(_texts(view)) if view else ""
+	_smoke_check(view and view.is_visible_in_tree() and texts.contains("Conflict 1 of 1") and texts.contains("Mine · main"), "the resolver opens on it (%s)" % texts.left(100))
+	if not view:
+		_smoke_finish()
+		return
+	for b: Button in view.find_children("*", "Button", true, false):
+		if b.text == "Keep Mine":
+			b.pressed.emit()
+	for b: Button in view.find_children("*", "Button", true, false):
+		if b.text == "Resolve File":
+			_smoke_check(not b.disabled, "choosing a side leaves nothing undecided")
+			b.pressed.emit()
+	get_tree().create_timer(1.0).timeout.connect(_conflict_finish)
+
+
+func _conflict_finish() -> void:
+	var section := _smoke_section("Conflicts")
+	_smoke_check(not section.visible and _git(["diff", "--name-only", "--diff-filter=U"]) == "", "Resolve File resolves it (Conflicts goes away)")
+	for b: Button in _smoke_dock().find_children("*", "Button", true, false):
+		if b.text == "Finish Merge" and b.is_visible_in_tree():
+			b.pressed.emit()
+	get_tree().create_timer(1.0).timeout.connect(_conflict_unsaved)
+
+
+# Finishing offers to save open scenes and scripts first (the marks step left the script edited).
+func _conflict_unsaved() -> void:
+	for d: ConfirmationDialog in _smoke_dock().find_children("*", "ConfirmationDialog", true, false):
+		if d.visible and d.title == "Unsaved Changes":
+			d.custom_action.emit("skip")
+	get_tree().create_timer(4.0).timeout.connect(_conflict_done)
+
+
+func _conflict_done() -> void:
+	var parents := _git(["rev-list", "--parents", "-n", "1", "HEAD"]).split(" ")
+	_smoke_check(parents.size() == 3 and _git(["show", "HEAD:clash.txt"]) == "speed = 3", "Finish Merge makes the merge commit with mine kept (%s)" % _git(["log", "-1", "--format=%s"]))
 	_smoke_finish()
 
 

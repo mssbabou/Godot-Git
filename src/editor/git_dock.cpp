@@ -86,7 +86,7 @@ GitDock::GitDock() {
 
 	pull_button = memnew(Button);
 	pull_button->set_h_size_flags(SIZE_EXPAND_FILL);
-	pull_button->connect("pressed", callable_mp(this, &GitDock::_start_network).bind(NETWORK_PULL));
+	pull_button->connect("pressed", callable_mp(this, &GitDock::_on_pull_pressed));
 	sync_row->add_child(pull_button);
 
 	push_button = memnew(Button);
@@ -494,6 +494,7 @@ void GitDock::refresh() {
 	operation = repo->get_operation();
 	// Mid-merge, Pull waits for the operation anyway: a pull warning on the rows would be noise.
 	pull_blockers = (int)sync_status.get("behind", 0) > 0 && !_in_operation() ? repo->get_pull_blockers() : PackedStringArray();
+	pull_conflict_paths = (int)sync_status.get("behind", 0) > 0 && !_in_operation() ? repo->get_pull_conflicts() : PackedStringArray();
 	_fill_conflicts(status);
 	_fill_file_pane(staged_pane, status);
 	_fill_file_pane(changes_pane, status);
@@ -591,7 +592,7 @@ void GitDock::_update_actions() {
 	// A background fetch doesn't count as busy: it only updates remote-tracking refs.
 	const NetworkOp shown = _shown_network_op();
 	// A pull, push or switch rewrites the repository from the worker thread; don't commit meanwhile.
-	const bool syncing = shown == NETWORK_PULL || shown == NETWORK_PUSH || shown == NETWORK_SWITCH || shown == NETWORK_COMMIT || shown == NETWORK_ABORT || shown == NETWORK_CONTINUE || shown == NETWORK_REVERT;
+	const bool syncing = shown == NETWORK_PULL || shown == NETWORK_PULL_MERGE || shown == NETWORK_PUSH || shown == NETWORK_SWITCH || shown == NETWORK_COMMIT || shown == NETWORK_ABORT || shown == NETWORK_CONTINUE || shown == NETWORK_REVERT;
 	// A merge, rebase, ... in progress: committing, pulling or switching would lose it (the
 	// backend refuses too). The banner says what to do instead.
 	const String in_operation = _in_operation() ? vformat("A %s is in progress: finish it or abort it first (see the banner above).", _operation_name()) : String();
@@ -706,7 +707,7 @@ void GitDock::_update_sync_row(bool p_busy) {
 	pull_button->set_visible(has_remotes && !upstream.is_empty());
 	const String pull_needs_git = _needs_git(NETWORK_PULL);
 	pull_button->set_disabled(p_busy || !pull_needs_git.is_empty());
-	pull_button->set_text(shown == NETWORK_PULL ? String("Pulling...") : (behind > 0 ? vformat("Pull %d", behind) : String("Pull")));
+	pull_button->set_text(shown == NETWORK_PULL || shown == NETWORK_PULL_MERGE ? String("Pulling...") : (behind > 0 ? vformat("Pull %d", behind) : String("Pull")));
 	if (!pull_needs_git.is_empty()) {
 		pull_button->set_tooltip_text(pull_needs_git);
 	} else if (!pull_blockers.is_empty() && shown != NETWORK_PULL) {
@@ -714,6 +715,10 @@ void GitDock::_update_sync_row(bool p_busy) {
 		pull_button->set_disabled(true);
 		pull_button->set_tooltip_text(vformat("Pull is waiting: the new commits on %s change %s, and your uncommitted changes there can't be merged in (same lines, or staged, new, deleted or binary). Commit, stash or discard your changes to %s first (marked in Changes).",
 				upstream, join_list(pull_blockers, 3), pull_blockers.size() == 1 ? "it" : "them"));
+	} else if (!pull_conflict_paths.is_empty()) {
+		const bool ask = EditorInterface::get_singleton()->get_editor_settings()->get_setting(ASK_PULL_MERGE_SETTING);
+		pull_button->set_tooltip_text(vformat("Pull: get %s from %s. They change the same lines as your uncommitted changes to %s, so %s.", plural(behind, "new commit", "new commits"), upstream, join_list(pull_conflict_paths, 3),
+				ask ? String("Pull will ask whether to pull and merge") : String("the pull will stop at those conflicts for you to resolve")));
 	} else {
 		pull_button->set_tooltip_text(behind > 0
 						? vformat("Pull: get %s from %s.", plural(behind, "new commit", "new commits"), upstream)
@@ -848,4 +853,11 @@ void GitDock::_on_discard_confirmed() {
 	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 	refresh();
 	_reload_changed_scenes();
+}
+
+// Pull: asks before stopping at conflicts (see _ask_to_start_merge), unless that's turned off;
+// then it pulls with pull(true), which is a plain pull when nothing conflicts.
+void GitDock::_on_pull_pressed() {
+	const bool ask = EditorInterface::get_singleton()->get_editor_settings()->get_setting(ASK_PULL_MERGE_SETTING);
+	_start_network(ask ? NETWORK_PULL : NETWORK_PULL_MERGE);
 }
