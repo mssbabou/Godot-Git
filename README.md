@@ -1,20 +1,21 @@
 # Godot Git
 
-A Git panel for the Godot editor that knows it's in Godot, and won't leave your project in a mess.
+A native Git panel for Godot. Stage, commit, pull and push, with your changes marked right in the editor, and a project that never ends up in a mess.
 
 ![The Git dock and the Git Diff panel](https://raw.githubusercontent.com/mssbabou/Godot-Git/master/store/screenshot_diff.png)
 
 ## What it brings
 
-- **Pulls that can't wreck your work.** Your uncommitted edits survive a pull: merged into your teammate's version when the lines don't overlap; when they clash, the pull asks first and changes nothing until you say so. No stash you didn't ask for, no half-switched branches.
-- **Conflicts resolved in the editor.** Each clash shows what you and your teammate each did to the original, with one click for yours, theirs or both, and the result editable below. Conflicting images show both versions. Abort Merge always puts everything back.
-- **Made for Godot projects.** `.uid` and `.import` files ride along with the file they belong to instead of doubling your change list. Open scenes and scripts reload after a pull or branch switch, so saving can't undo it. Import settings show as settings ("Compress › Mode  Lossless → VRAM Compressed"), images as before and after.
+- **Pulls that can't wreck your work.** Your uncommitted edits survive a pull: merged into your teammate's version when the lines don't overlap; when they clash, the pull asks first, then lets you resolve them, and Abort puts everything back byte for byte. No stash you didn't ask for, no half-switched branches.
+- **Conflicts resolved in the editor.** Each clash shows what you and your teammate each did to the original, with one click for yours, theirs or both, and the result editable below. Import settings merge setting by setting, images and sounds show both versions, and a stash that clashes with newer commits can be restored and resolved the same way.
+- **Made for Godot projects.** `.uid` and `.import` files ride along with the file they belong to instead of doubling your change list. Open scenes and scripts reload after a pull or branch switch, so saving can't undo it. Import settings and `project.godot` show as settings ("Input › Jump  Space, Joypad Button 0"), images and sounds as before and after.
 - **Changes where you work.** Changed lines are marked in the script editor as you type, with a click to see or undo them. Changed files are colored in the FileSystem dock.
 - **Always says what it's doing.** Every pull, push and fetch shows progress, can be canceled, and leaves a result or error that stays until you've read it.
-- **Sign in without a terminal.** Private repositories open a browser sign-in once (through Git Credential Manager). SSH, hooks, commit signing and Git LFS work as they do in a terminal.
-- **Native and fast.** C++ on [libgit2](https://libgit2.org/): no git process per click, no polling, quick with thousands of changed files.
+- **Sign in without a terminal.** Private repositories open a browser sign-in once (through Git Credential Manager). SSH, hooks, commit signing and Git LFS, file locks included, work as they do in a terminal.
+- **Native and fast.** C++ on [libgit2](https://libgit2.org/): no git process per click, no polling, and a refresh with 2,000 changed files takes 53 ms.
+- **Compiled, and provably from this repository.** Every release is built by GitHub's CI from a tagged commit and signed, so you can check the zip you have came from the code you can read here (see [Verifying a release](#verifying-a-release)).
 
-Plus the everyday things: stage, commit, amend, fetch, pull, push; branches with search and ahead/behind; stash; history with search, one file's history, undo last commit, revert and restore.
+Plus the everyday things: stage, commit, amend, fetch, pull, push; branches with search and ahead/behind; stash; diffs with changed words highlighted; history with search, one file's history, undo last commit, revert and restore.
 
 ## Install
 
@@ -23,8 +24,6 @@ Plus the everyday things: stage, commit, amend, fetch, pull, push; branches with
 3. Restart the editor. The **Git** tab appears next to the Inspector, **Git Diff** at the bottom.
 
 Needs Godot 4.7+ on Windows, Linux (glibc 2.34+) or macOS (10.13+). Installing [git](https://git-scm.com) is recommended: sign-ins, SSH, LFS, hooks and signing use it.
-
-Want to check a download came from this repository? See [Verifying a release](#verifying-a-release).
 
 ## Build it yourself
 
@@ -45,8 +44,8 @@ You need a C++ compiler, Python 3 with SCons, CMake and git:
 
 ## Good to know
 
-- **Settings:** script editor marks, FileSystem colors and automatic fetching are on by default; turn them off under *⋮ → Settings...*. The whole plugin can be switched off per project under *Project Settings → Plugins*.
-- **Exports on Godot 4.7:** add `addons/godot_git/*` to your export preset's *Filters to exclude files*, or the game logs one harmless error. Automatic from Godot 4.8.
+- **Settings:** script editor marks, FileSystem colors, automatic fetching and asking before a pull stops at conflicts are on by default; change them under *⋮ → Settings...*. The whole plugin can be switched off per project under *Project Settings → Plugins*.
+- **Exports on Godot 4.7:** the plugin is editor-only. The Git panel offers to add `addons/godot_git/*` to your export presets' *Filters to exclude files* in one click; without it, the game logs one harmless error. Automatic from Godot 4.8.
 - **macOS, zip from a browser:** if macOS blocks the library, run `xattr -dr com.apple.quarantine addons/godot_git` in your project folder.
 
 ## License

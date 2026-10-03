@@ -16,6 +16,7 @@
 #include <godot_cpp/classes/popup_menu.hpp>
 #include <godot_cpp/classes/popup_panel.hpp>
 #include <godot_cpp/classes/progress_bar.hpp>
+#include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/rich_text_label.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
 #include <godot_cpp/classes/text_edit.hpp>
@@ -155,6 +156,7 @@ class GitDock : public EditorDock {
 	Button *status_button = nullptr; // Cancel (busy) or dismiss (warning, error).
 	// Earlier results, newest last ([{ "kind", "text", "time" }], this session, up to 50): what
 	// the panel did this afternoon, behind the clock button on the strip.
+	ScrollContainer *lists_scroll = nullptr; // The sections' shared scroll area.
 	Array status_log;
 	// Git LFS locks, from the last fetch in a repository that uses LFS ({ path: { "owner", "mine" } }).
 	Dictionary lfs_locks;
@@ -463,6 +465,7 @@ class GitDock : public EditorDock {
 	PackedStringArray _selected_paths(Tree *p_tree, bool p_companions = false) const;
 	PackedStringArray _row_paths(TreeItem *p_item) const;
 	PackedStringArray _blocking_paths(TreeItem *p_item) const;
+	void _forward_wheel(const Ref<InputEvent> &p_event, Tree *p_tree);
 	String _lock_note(const String &p_path) const;
 	Array _row_button_list(const FilePane &p_pane) const;
 	void _set_hovered(FilePane &p_pane, TreeItem *p_item);

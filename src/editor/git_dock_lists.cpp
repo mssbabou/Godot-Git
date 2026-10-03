@@ -7,6 +7,8 @@
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/font.hpp>
+#include <godot_cpp/classes/input_event_mouse_button.hpp>
+#include <godot_cpp/classes/input_event_pan_gesture.hpp>
 #include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
 #include <godot_cpp/classes/text_line.hpp>
@@ -33,6 +35,7 @@ void GitDock::_build_lists(Control *p_parent) {
 	panes->set_h_size_flags(SIZE_EXPAND_FILL);
 	scroll->add_child(panes);
 
+	lists_scroll = scroll;
 	_build_conflicts(panes);
 	_make_file_pane(staged_pane, panes, "Staged Changes", true);
 	_make_file_pane(changes_pane, panes, "Changes", false);
@@ -57,6 +60,14 @@ void GitDock::_build_lists(Control *p_parent) {
 	history_tree->connect("item_collapsed", callable_mp(this, &GitDock::_on_history_item_collapsed));
 	history_empty = _make_body(history_pane, history_tree);
 	_build_history_filters();
+
+	// The sections' trees never scroll themselves (they're as tall as their rows), so the mouse
+	// wheel always goes to the shared scroll area. Left to the Tree, it took wheel-down whenever
+	// it thought it was a few pixels short of its content (a horizontal scroll bar it reserved
+	// room for, even with horizontal scrolling off), and the list stopped scrolling down over it.
+	for (Tree *tree : { conflicts_tree, staged_pane.tree, changes_pane.tree, stashes_tree, history_tree }) {
+		tree->connect("gui_input", callable_mp(this, &GitDock::_forward_wheel).bind(tree));
+	}
 
 	stats_slow_timer = memnew(Timer);
 	stats_slow_timer->set_one_shot(true);
@@ -606,4 +617,21 @@ String GitDock::_lock_note(const String &p_path) const {
 		return "Locked by you (Git LFS): nobody else can push changes to it. Unlock it from its right-click menu when you're done.";
 	}
 	return vformat("Locked by %s (Git LFS): your changes to it can't be pushed until they unlock it. Ask them, or set your changes aside.", String(lock.get("owner", String())));
+}
+
+// A wheel or touchpad scroll over a section's tree: scrolls the shared list instead (see
+// _build_lists). Connected before the Tree handles it, so accepting it here keeps the Tree out.
+void GitDock::_forward_wheel(const Ref<InputEvent> &p_event, Tree *p_tree) {
+	const Ref<InputEventMouseButton> button = p_event;
+	const Ref<InputEventPanGesture> pan = p_event;
+	ScrollBar *bar = lists_scroll->get_v_scroll_bar();
+	if (button.is_valid() && button->is_pressed() && (button->get_button_index() == MOUSE_BUTTON_WHEEL_UP || button->get_button_index() == MOUSE_BUTTON_WHEEL_DOWN) && !button->is_shift_pressed()) {
+		// As much as ScrollContainer scrolls for one notch itself.
+		const double step = bar->get_page() / 8 * button->get_factor();
+		bar->set_value(bar->get_value() + (button->get_button_index() == MOUSE_BUTTON_WHEEL_DOWN ? step : -step));
+		p_tree->accept_event();
+	} else if (pan.is_valid()) {
+		bar->set_value(bar->get_value() + bar->get_page() * pan->get_delta().y / 8);
+		p_tree->accept_event();
+	}
 }
