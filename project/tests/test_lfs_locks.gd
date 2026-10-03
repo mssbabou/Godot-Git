@@ -11,9 +11,12 @@ func run() -> void:
 	if OS.execute("git", ["lfs", "version"], out) != 0:
 		print("  (skipped; git-lfs isn't installed)")
 		return
+	# A Python that really runs a script: on Windows runners "python3" can be the Microsoft Store
+	# stub, which answers --version but runs nothing.
 	var python := ""
-	for program in ["python3", "python"]:
-		if OS.execute(program, ["--version"], out) == 0:
+	for program in ["python3", "python", "py"]:
+		out.clear()
+		if OS.execute(program, ["-c", "print('ok')"], out) == 0 and "".join(out).strip_edges() == "ok":
 			python = program
 			break
 	if python.is_empty():
@@ -21,8 +24,24 @@ func run() -> void:
 		return
 	var port := 40000 + randi() % 20000
 	server_pid = OS.create_process(python, [ProjectSettings.globalize_path("res://tests/fake_lfs_lock_server.py"), str(port)])
-	OS.delay_msec(1500)
-	_locks(port)
+	# Up when it accepts a connection (a fixed wait was too short on CI's macOS runner).
+	var up := false
+	for attempt in 100:
+		var peer := StreamPeerTCP.new()
+		if peer.connect_to_host("127.0.0.1", port) == OK:
+			for i in 10:
+				peer.poll()
+				if peer.get_status() == StreamPeerTCP.STATUS_CONNECTED:
+					up = true
+					break
+				OS.delay_msec(10)
+			peer.disconnect_from_host()
+		if up:
+			break
+		OS.delay_msec(100)
+	check("locks: the stand-in LFS server started", up, "%s on port %d" % [python, port])
+	if up:
+		_locks(port)
 	OS.kill(server_pid)
 
 
