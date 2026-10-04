@@ -16,8 +16,8 @@
 #include <godot_cpp/classes/popup_menu.hpp>
 #include <godot_cpp/classes/popup_panel.hpp>
 #include <godot_cpp/classes/progress_bar.hpp>
-#include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/rich_text_label.hpp>
+#include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
 #include <godot_cpp/classes/text_edit.hpp>
 #include <godot_cpp/classes/texture2d.hpp>
@@ -81,6 +81,7 @@ class GitDock : public EditorDock {
 		MORE_BUILD_INFO,
 		MORE_STASH_ALL,
 		MORE_SETTINGS,
+		MORE_ABORT_MERGE,
 	};
 
 	// The buttons on a hovered stash row.
@@ -102,6 +103,8 @@ class GitDock : public EditorDock {
 		NETWORK_PULL_MERGE, // Pulling into conflicts on purpose (Start Merge; GitRepository::pull(true)).
 		NETWORK_LOCK, // Locking a file on the LFS server (git lfs lock).
 		NETWORK_UNLOCK,
+		NETWORK_MERGE, // Merging a branch into the current one (GitRepository::merge_branch).
+		NETWORK_MERGE_START, // The same, stopping at its conflicts for the resolver.
 	};
 
 	// What the status strip is showing.
@@ -148,6 +151,7 @@ class GitDock : public EditorDock {
 	Array branch_list; // GitRepository::get_branch_list(), as of the last refresh.
 	uint64_t branch_hovered = 0; // The row showing Rename and Delete.
 	MenuButton *more_menu = nullptr;
+	Button *merge_button = nullptr; // Opens the Merge dialog; between the branch picker and the menu.
 
 	// Status strip under the toolbar: what the panel is doing, or what it last did.
 	PanelContainer *status_strip = nullptr;
@@ -206,6 +210,10 @@ class GitDock : public EditorDock {
 	String amend_saved_draft; // What was in the message box before ticking Amend filled it in.
 	String last_commit_id;
 	String last_commit_message;
+	// The merge's message put in the commit box while a merge waits for its commit ("Merge branch
+	// 'art-pass'"), once per merge: taken out again if the merge ends some other way, untouched.
+	String merge_prefill;
+	bool commit_was_merge = false; // The commit being made finishes a merge (for its report).
 	bool last_commit_pushed = false;
 	bool push_after_commit = false; // Ctrl+Shift+Enter: commit, then push.
 	// Up/Down in an empty message box goes through your recent commit messages.
@@ -222,6 +230,15 @@ class GitDock : public EditorDock {
 	Label *pull_merge_question = nullptr;
 	Label *pull_merge_files = nullptr;
 	CheckBox *pull_merge_dont_ask = nullptr;
+	// "Merge into main": pick a branch, see what merging it would do, merge.
+	ConfirmationDialog *merge_dialog = nullptr;
+	LineEdit *merge_search = nullptr;
+	Tree *merge_tree = nullptr;
+	Label *merge_summary = nullptr;
+	Label *merge_detail = nullptr;
+	Array merge_branches; // GitRepository::get_merge_branches, read when the dialog opens.
+	String merge_selected; // The branch the preview is for.
+	Dictionary merge_preview;
 
 	FilePane staged_pane;
 	FilePane changes_pane;
@@ -253,6 +270,7 @@ class GitDock : public EditorDock {
 	// Stashes: a section that only shows while there are stashes (git_dock_stashes.cpp).
 	FoldableContainer *conflicts_pane = nullptr; // Only while files are conflicted.
 	Control *conflicts_header_strut = nullptr;
+	Button *conflicts_abort = nullptr; // Abort Merge, on the Conflicts header.
 	Tree *conflicts_tree = nullptr;
 	PackedStringArray conflicted_paths;
 	FoldableContainer *stashes_pane = nullptr;
@@ -317,7 +335,7 @@ class GitDock : public EditorDock {
 	LineEdit *identity_name_edit = nullptr;
 	LineEdit *identity_email_edit = nullptr;
 	CheckBox *identity_local_check = nullptr;
-	NetworkOp identity_then = NETWORK_NONE; // What to do once saved: NETWORK_COMMIT or NETWORK_PULL.
+	NetworkOp identity_then = NETWORK_NONE; // What to do once saved: NETWORK_COMMIT, NETWORK_PULL or a merge.
 
 	Dictionary sync_status;
 	int staged_count = 0;
@@ -571,6 +589,9 @@ class GitDock : public EditorDock {
 	void _build_operation_banner(Control *p_parent);
 	void _update_operation_banner();
 	bool _in_operation() const;
+	bool _in_merge() const;
+	void _confirm_abort_merge();
+	void _finish_resolved_merge();
 	String _operation_name() const;
 	void _on_operation_abort();
 
@@ -600,6 +621,18 @@ class GitDock : public EditorDock {
 	bool _ask_identity(NetworkOp p_then);
 	void _on_identity_changed(const String &p_text);
 	void _on_identity_confirmed();
+
+	// git_dock_merge.cpp: merging a branch into the current one.
+	void _build_merge_button(Control *p_parent);
+	void _update_merge_button(bool p_busy, const String &p_in_operation);
+	void _show_merge_dialog();
+	void _fill_merge_tree();
+	void _on_merge_row_selected();
+	void _update_merge_preview();
+	void _on_merge_confirmed();
+	void _on_merge_search_submitted(const String &p_text);
+	void _on_merge_search_input(const Ref<InputEvent> &p_event);
+	String _merge_branch_label() const;
 
 	// git_dock_network.cpp: fetch / pull / push on a worker thread, and auto-fetch.
 	void _start_network(int p_op);

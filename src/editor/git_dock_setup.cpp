@@ -272,7 +272,7 @@ bool GitDock::_ask_identity(NetworkOp p_then) {
 	identity_name_edit->set_text(name);
 	identity_email_edit->set_text(email);
 	identity_local_check->set_pressed(false);
-	identity_dialog->set_ok_button_text(p_then == NETWORK_PULL ? "Save and Pull" : "Save and Commit");
+	identity_dialog->set_ok_button_text(p_then == NETWORK_PULL ? "Save and Pull" : (p_then == NETWORK_MERGE || p_then == NETWORK_MERGE_START ? "Save and Merge" : "Save and Commit"));
 	_on_identity_changed(String());
 	identity_dialog->popup_centered(Vector2i(480, 0) * EditorInterface::get_singleton()->get_editor_scale());
 	(name.is_empty() ? identity_name_edit : identity_email_edit)->grab_focus();
@@ -294,8 +294,8 @@ void GitDock::_on_identity_confirmed() {
 	}
 	const NetworkOp then = identity_then;
 	identity_then = NETWORK_NONE;
-	if (then == NETWORK_PULL) {
-		_start_network(NETWORK_PULL);
+	if (then == NETWORK_PULL || then == NETWORK_MERGE || then == NETWORK_MERGE_START) {
+		_start_network(then);
 	} else if (then == NETWORK_COMMIT) {
 		_commit();
 	}

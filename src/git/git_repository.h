@@ -41,6 +41,7 @@ class GitRepository : public RefCounted {
 	Error _fetch_remote(const String &p_remote);
 	Error _fetch_lfs_files(const char *p_refname, const git_oid *p_commit);
 	Error _commit_with_git(const String &p_message, bool p_amend);
+	Error _commit_merge(const String &p_message);
 	Error _write_resolution(const String &p_path, const char *p_data, size_t p_size);
 	Dictionary _line_stats_through_libgit2(bool p_staged) const;
 	Error _run_lfs_lock_command(const PackedStringArray &p_args, const String &p_step, String &r_output);
@@ -85,6 +86,8 @@ public:
 	String get_remote_url(const String &p_remote) const;
 	Array get_large_staged_files(int64_t p_min_size) const;
 	PackedStringArray get_pull_blockers() const;
+	Array get_merge_branches() const;
+	Dictionary get_merge_preview(const String &p_branch) const;
 	Dictionary get_operation() const;
 	Dictionary get_branch_details(const String &p_branch) const;
 
@@ -133,6 +136,7 @@ public:
 	Error fetch();
 	Error pull(bool p_start_merge = false);
 	PackedStringArray get_pull_conflicts() const;
+	Error merge_branch(const String &p_branch, bool p_start_merge = false);
 	Error push();
 	Error abort_operation();
 	Error continue_operation();

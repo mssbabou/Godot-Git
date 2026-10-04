@@ -329,6 +329,41 @@ bool GitDock::_in_operation() const {
 	return !String(operation.get("kind", String())).is_empty();
 }
 
+// A merge (git's, or the panel's own of your uncommitted edits with a pull or a stash): no banner.
+// You resolve the files under Conflicts, then commit as usual (git's merge; the message is filled
+// in), or, for your own edits, which have nothing to commit, it ends by itself (maintainer,
+// 2026-10-03: Finish and Abort buttons for that were ceremony). Abort Merge stays, quietly: on the
+// Conflicts header and in the ⋮ menu.
+bool GitDock::_in_merge() const {
+	const String kind = operation.get("kind", String());
+	return kind == "merge" || kind == "pull" || kind == "stash";
+}
+
+void GitDock::_confirm_abort_merge() {
+	const bool stash = String(operation.get("kind", String())) == "stash";
+	abort_confirm->set_title(stash ? "Abort Stash Restore" : "Abort Merge");
+	abort_confirm->set_ok_button_text(stash ? "Abort Restore" : "Abort Merge");
+	abort_confirm->set_text(stash ? String("Abort restoring the stash? Its files go back to how they were before, conflicts you've resolved included, and the stash is kept.")
+								  : String("Abort the merge? Everything it changed is undone, conflicts you've resolved included: the branch and your files go back to how they were before it started."));
+	abort_confirm->popup_centered();
+}
+
+// The panel's own merge of your uncommitted edits (a pull's or a stash's) once its last conflict is
+// resolved: nothing to commit, so it's done. Called from refresh().
+void GitDock::_finish_resolved_merge() {
+	const String kind = operation.get("kind", String());
+	if ((kind != "pull" && kind != "stash") || !PackedStringArray(operation.get("conflicts", PackedStringArray())).is_empty() || _shown_network_op() != NETWORK_NONE) {
+		return;
+	}
+	const String subject = operation.get("subject", String());
+	const Error err = repo->continue_operation();
+	_report(err, "Finishing the merge");
+	operation = repo->get_operation();
+	if (err == OK) {
+		_set_status(STATUS_SUCCESS, kind == "stash" ? String("Restored the stash and removed it: its changes are uncommitted changes now") : vformat("%s: done. Your resolved changes are uncommitted, as before", subject));
+	}
+}
+
 // "merge", "rebase", "cherry-pick", "revert", "git am", "bisect".
 String GitDock::_operation_name() const {
 	const String kind = operation.get("kind", String());
@@ -342,8 +377,8 @@ String GitDock::_operation_name() const {
 }
 
 void GitDock::_update_operation_banner() {
-	operation_banner->set_visible(_in_operation());
-	if (!_in_operation()) {
+	operation_banner->set_visible(_in_operation() && !_in_merge());
+	if (!operation_banner->is_visible()) {
 		return;
 	}
 	const float scale = EditorInterface::get_singleton()->get_editor_scale();
@@ -402,7 +437,7 @@ void GitDock::_update_operation_banner() {
 		if (kind == "stash") {
 			operation_continue->set_tooltip_text("Finish the restore: the stash is removed, its changes stay as uncommitted changes.");
 		} else if (raw_kind == "pull") {
-			operation_continue->set_tooltip_text("Finish the merge: your resolved changes stay uncommitted, as before the pull.");
+			operation_continue->set_tooltip_text("Finish the merge: your resolved changes stay uncommitted, as they were before.");
 		} else {
 			operation_continue->set_tooltip_text(kind == "merge" ? String("Finish the merge: a merge commit with git's prepared message.") : vformat("Let the %s go on: it may stop at conflicts again.", name));
 		}

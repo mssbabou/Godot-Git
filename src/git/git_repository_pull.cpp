@@ -1,7 +1,8 @@
-// GitRepository: pull. It fetches, then fast-forwards or merges, carrying uncommitted edits across
-// when they merge cleanly (see plan_pull). When something would conflict it refuses up front,
-// changing nothing, and names the files; asked to start a merge (the panel asks you), it goes
-// ahead and stops at the conflicts instead, for the resolver.
+// GitRepository: pull, and merging a branch into the current one. A pull fetches, then both
+// fast-forward or merge (merge_into_head), carrying uncommitted edits across when they merge
+// cleanly (see plan_pull). When something would conflict they refuse up front, changing nothing,
+// and name the files; asked to start a merge (the panel asks you), they go ahead and stop at the
+// conflicts instead, for the resolver.
 
 #include "git/git_repository.h"
 
@@ -23,6 +24,28 @@
 using namespace godot_git;
 
 namespace {
+
+// How a merge into HEAD is worded: pull and merge_branch share it.
+struct MergeWords {
+	String name; // What's merged in: "origin/main", "feature".
+	String message; // The merge commit's message.
+	bool pull = true;
+
+	String nothing() const { return pull ? String("Nothing was pulled") : String("Nothing was merged"); }
+	String verb() const { return pull ? String("pull") : String("merge"); }
+	String done() const { return pull ? String("Pulled") : String("Merged"); }
+	// What brings the new commits: "the new commits", "the commits on feature".
+	String commits() const { return pull ? String("the new commits") : vformat("the commits on %s", name); }
+};
+
+// What a merge into HEAD did (see merge_into_head).
+struct MergeOutcome {
+	int commits = 0;
+	bool merged = false;
+	PackedStringArray carried;
+	PackedStringArray conflicts;
+	String notice;
+};
 
 // An uncommitted edit a pull carries across: set aside before the pull, then merged into the
 // version the pull brought (see plan_pull).
@@ -142,7 +165,7 @@ PackedStringArray plan_pull(git_repository *p_repo, const git_oid *p_head, const
 // Before the pull: the carried files back to HEAD's version, so the pull sees no local changes
 // there. Copies go to .git/godot-git-pull first (with a README naming each file), so the edits
 // exist on disk even if the editor goes down mid-pull.
-Error set_aside_edits(git_repository *p_repo, const LocalVector<CarriedEdit> &p_edits, String &r_backup) {
+Error set_aside_edits(git_repository *p_repo, const LocalVector<CarriedEdit> &p_edits, const MergeWords &p_words, String &r_backup) {
 	if (p_edits.is_empty()) {
 		return OK;
 	}
@@ -151,13 +174,14 @@ Error set_aside_edits(git_repository *p_repo, const LocalVector<CarriedEdit> &p_
 	for (int i = 2; DirAccess::dir_exists_absolute(r_backup); i++) {
 		r_backup = git_dir.path_join(vformat("godot-git-pull-%d", i)); // Never overwrite an earlier one.
 	}
+	const String failed = vformat("%s: couldn't save a copy of your uncommitted edits first.", p_words.nothing());
 	if (DirAccess::make_dir_recursive_absolute(r_backup) != OK) {
-		return fail("Couldn't save a copy of your uncommitted edits before pulling, so nothing was pulled.");
+		return fail(failed);
 	}
-	String readme = "Your uncommitted edits, saved by the Godot Git panel while it pulled. If this folder is still here, the pull didn't finish: each file below is your version of the file named next to it.\n\n";
+	String readme = vformat("Your uncommitted edits, saved by the Godot Git panel while it %s. If this folder is still here, the %s didn't finish: each file below is your version of the file named next to it.\n\n", p_words.pull ? "pulled" : "merged a branch", p_words.verb());
 	for (uint32_t i = 0; i < p_edits.size(); i++) {
 		if (!write_file(r_backup.path_join(itos(i)), (const char *)p_edits[i].original.ptr(), p_edits[i].original.size())) {
-			return fail("Couldn't save a copy of your uncommitted edits before pulling, so nothing was pulled.");
+			return fail(failed);
 		}
 		readme += vformat("%d  %s\n", i, p_edits[i].path);
 	}
@@ -292,7 +316,7 @@ String finish_carried_edits(git_repository *p_repo, const LocalVector<CarriedEdi
 	return String();
 }
 
-Error fast_forward(git_repository *p_repo, git_reference *p_head, const git_annotated_commit *p_theirs, RemoteContext &p_ctx) {
+Error fast_forward(git_repository *p_repo, git_reference *p_head, const git_annotated_commit *p_theirs, const MergeWords &p_words, RemoteContext &p_ctx) {
 	const git_oid *target_oid = git_annotated_commit_id(p_theirs);
 	ObjectPtr target;
 	int err = git_object_lookup(target.out(), p_repo, target_oid, GIT_OBJECT_COMMIT);
@@ -303,12 +327,13 @@ Error fast_forward(git_repository *p_repo, git_reference *p_head, const git_anno
 		opts.progress_payload = &p_ctx;
 		err = checkout_all_or_nothing(p_repo, target, opts);
 		if (err == GIT_ECONFLICT) {
-			return fail("Your local changes would be overwritten by the pull. Commit, stash or discard them first.");
+			return fail(vformat("Your local changes would be overwritten by the %s. Commit, stash or discard them first.", p_words.verb()));
 		}
 	}
 	if (err >= 0) {
 		ReferencePtr moved;
-		err = git_reference_set_target(moved.out(), p_head, target_oid, "pull: fast-forward");
+		const String reflog = p_words.pull ? String("pull: Fast-forward") : vformat("merge %s: Fast-forward", p_words.name);
+		err = git_reference_set_target(moved.out(), p_head, target_oid, reflog.utf8().get_data());
 	}
 	return to_error(err);
 }
@@ -316,7 +341,7 @@ Error fast_forward(git_repository *p_repo, git_reference *p_head, const git_anno
 // Merges p_theirs into HEAD and commits the result. On conflicts (listed in r_conflicts) the merge
 // is fully undone (hard reset, merge state cleared) and an error returned; or, with
 // p_leave_conflicts, left as git leaves a conflicted merge, for the resolver, and OK returned.
-Error merge_and_commit(git_repository *p_repo, git_reference *p_head, git_reference *p_upstream, const git_annotated_commit *p_theirs, RemoteContext &p_ctx, bool p_leave_conflicts, PackedStringArray &r_conflicts) {
+Error merge_and_commit(git_repository *p_repo, git_reference *p_head, const git_annotated_commit *p_theirs, const MergeWords &p_words, RemoteContext &p_ctx, bool p_leave_conflicts, PackedStringArray &r_conflicts) {
 	report_progress(&p_ctx, "Merging...", String(), -1, false);
 	git_merge_options merge_opts = GIT_MERGE_OPTIONS_INIT;
 	git_checkout_options checkout_opts = GIT_CHECKOUT_OPTIONS_INIT;
@@ -339,7 +364,7 @@ Error merge_and_commit(git_repository *p_repo, git_reference *p_head, git_refere
 
 	IndexPtr index;
 	err = git_repository_index(index.out(), p_repo);
-	const String message = vformat("Merge remote-tracking branch '%s'", String::utf8(git_reference_shorthand(p_upstream)));
+	const String &message = p_words.message;
 	if (err >= 0 && git_index_has_conflicts(index)) {
 		IndexConflictIteratorPtr it;
 		if (git_index_conflict_iterator_new(it.out(), index) == 0) {
@@ -359,7 +384,7 @@ Error merge_and_commit(git_repository *p_repo, git_reference *p_head, git_refere
 		git_revparse_single(head_commit.out(), p_repo, "HEAD");
 		git_reset(p_repo, head_commit, GIT_RESET_HARD, nullptr);
 		git_repository_state_cleanup(p_repo);
-		return fail(vformat("Nothing was pulled: your commits and %s changed the same lines in %s.", String::utf8(git_reference_shorthand(p_upstream)), name_list(r_conflicts)));
+		return fail(vformat("%s: your commits and %s changed the same lines in %s.", p_words.nothing(), p_words.name, name_list(r_conflicts)));
 	}
 
 	if (err >= 0 && commit_needs_git(p_repo, COMMIT_MERGE)) {
@@ -372,7 +397,7 @@ Error merge_and_commit(git_repository *p_repo, git_reference *p_head, git_refere
 			git_revparse_single(head_commit.out(), p_repo, "HEAD");
 			git_reset(p_repo, head_commit, GIT_RESET_HARD, nullptr);
 			git_repository_state_cleanup(p_repo);
-			return fail(vformat("Nothing was pulled: the merge commit didn't go through, so the merge was undone. %s", reason));
+			return fail(vformat("%s: the merge commit didn't go through, so the merge was undone. %s", p_words.nothing(), reason));
 		}
 		git_repository_state_cleanup(p_repo);
 		return OK;
@@ -410,25 +435,25 @@ Error merge_and_commit(git_repository *p_repo, git_reference *p_head, git_refere
 // project.godot and scenes) set aside first and put back afterwards, like `git pull --autostash`.
 // That's what lets a conflicting merge be undone completely. r_notice explains if the changes
 // couldn't be put back (a safety net: paths_blocking_pull already rules that out).
-Error merge_with_autostash(git_repository *p_repo, git_reference *p_head, git_reference *p_upstream, const git_annotated_commit *p_theirs, RemoteContext &p_ctx, String &r_notice, PackedStringArray &r_conflicts) {
+Error merge_with_autostash(git_repository *p_repo, git_reference *p_head, const git_annotated_commit *p_theirs, const MergeWords &p_words, RemoteContext &p_ctx, String &r_notice, PackedStringArray &r_conflicts) {
 	git_status_options status_opts = GIT_STATUS_OPTIONS_INIT;
 	status_opts.flags = 0; // Tracked files only; untracked files are left where they are.
 	StatusListPtr status;
 	if (git_status_list_new(status.out(), p_repo, &status_opts) != 0 || git_status_list_entrycount(status) == 0) {
-		return merge_and_commit(p_repo, p_head, p_upstream, p_theirs, p_ctx, false, r_conflicts);
+		return merge_and_commit(p_repo, p_head, p_theirs, p_words, p_ctx, false, r_conflicts);
 	}
 
 	git_oid stash_id;
 	SignaturePtr stasher;
 	int err = git_signature_default(stasher.out(), p_repo);
 	if (err >= 0) {
-		err = git_stash_save(&stash_id, p_repo, stasher, "godot-git: your changes, set aside while pulling", GIT_STASH_DEFAULT);
+		err = git_stash_save(&stash_id, p_repo, stasher, vformat("godot-git: your changes, set aside during a %s", p_words.verb()).utf8().get_data(), GIT_STASH_DEFAULT);
 	}
 	if (err < 0) {
 		return to_error(err);
 	}
 
-	const Error result = merge_and_commit(p_repo, p_head, p_upstream, p_theirs, p_ctx, false, r_conflicts);
+	const Error result = merge_and_commit(p_repo, p_head, p_theirs, p_words, p_ctx, false, r_conflicts);
 	// Keep the merge's own error message: libgit2 may overwrite it while restoring.
 	const String merge_error = result == OK ? String() : GitRepository::get_last_error();
 
@@ -452,8 +477,8 @@ Error merge_with_autostash(git_repository *p_repo, git_reference *p_head, git_re
 	}
 
 	if (result == OK && !restored) {
-		r_notice = vformat("Pulled, but it also changed %s, which you had uncommitted edits to. Your edits are kept in a git stash, untouched; run `git stash pop` in a terminal to merge them back.",
-				overlap.is_empty() ? String("files") : name_list(overlap));
+		r_notice = vformat("%s, but it also changed %s, which you had uncommitted edits to. Your edits are kept in a git stash, untouched; run `git stash pop` in a terminal to merge them back.",
+				p_words.done(), overlap.is_empty() ? String("files") : name_list(overlap));
 	} else if (result != OK) {
 		fail(restored ? merge_error : vformat("%s Your uncommitted changes are saved in a git stash; run `git stash pop` in a terminal to get them back.", merge_error));
 	}
@@ -468,6 +493,143 @@ bool has_staged_changes(git_repository *p_repo) {
 	opts.flags = 0;
 	StatusListPtr status;
 	return git_status_list_new(status.out(), p_repo, &opts) == 0 && git_status_list_entrycount(status) > 0;
+}
+
+// Brings p_theirs into HEAD's branch: fast-forwards, or makes a merge commit, carrying your
+// uncommitted edits across (plan_pull). Refuses, changing nothing, when something would conflict;
+// with p_start_merge it stops at the conflicts instead (see GitRepository::pull). p_lfs_remote is
+// where the new commits' LFS files come from ("" for none).
+Error merge_into_head(git_repository *p_repo, git_reference *p_head, const git_annotated_commit *p_theirs, const MergeWords &p_words, const String &p_lfs_remote, const Callable &p_progress, bool p_login_prompts, bool p_start_merge, MergeOutcome &r_outcome) {
+	git_merge_analysis_t analysis = GIT_MERGE_ANALYSIS_NONE;
+	git_merge_preference_t preference = GIT_MERGE_PREFERENCE_NONE;
+	const git_annotated_commit *heads[] = { p_theirs };
+	const int err = git_merge_analysis(&analysis, &preference, p_repo, heads, 1);
+	if (err < 0) {
+		return to_error(err);
+	}
+	if (analysis & GIT_MERGE_ANALYSIS_UP_TO_DATE) {
+		return OK;
+	}
+	const git_oid *head_oid = git_reference_target(p_head);
+	const git_oid *their_oid = git_annotated_commit_id(p_theirs);
+
+	PackedStringArray conflicting;
+	LocalVector<CarriedEdit> carried;
+	const PackedStringArray blocking = plan_pull(p_repo, head_oid, their_oid, &carried, &conflicting);
+	if (!blocking.is_empty()) {
+		// Checked before anything is touched, so your edits never end up in a stash only a
+		// terminal can get back.
+		return fail(vformat("%s: %s change %s, and your uncommitted changes there can't be merged in (they're staged, new, deleted or binary). Commit, stash or discard your changes to %s first, then %s again.",
+				p_words.nothing(), p_words.commits(), name_list(blocking), blocking.size() == 1 ? String("it") : String("them"), p_words.verb()));
+	}
+	if (!conflicting.is_empty() && !p_start_merge) {
+		// The panel asks whether to start a merge, and calls again with p_start_merge if so.
+		r_outcome.conflicts = conflicting;
+		return fail(vformat("%s: your uncommitted changes to %s and %s changed the same lines.", p_words.nothing(), name_list(conflicting), p_words.name));
+	}
+	if (repo_uses_lfs(p_repo)) {
+		if (require_lfs(p_repo, p_words.pull ? "pulling" : "merging") != OK) {
+			return FAILED;
+		}
+		if (!p_lfs_remote.is_empty()) {
+			// The new commits' LFS files, downloaded before any file changes.
+			RemoteContext lfs_ctx;
+			lfs_ctx.workdir = String::utf8(git_repository_workdir(p_repo));
+			lfs_ctx.login_prompts_allowed = p_login_prompts;
+			lfs_ctx.progress = p_progress;
+			const Error lfs_err = lfs_fetch(p_repo, lfs_ctx, p_lfs_remote, String(git_oid_tostr_s(their_oid)));
+			if (lfs_err != OK) {
+				return lfs_err;
+			}
+		}
+	}
+
+	// From here on everything is local: progress only, no more canceling.
+	RemoteContext ctx;
+	ctx.progress = p_progress;
+	size_t ahead = 0, behind = 0;
+	if (git_graph_ahead_behind(&ahead, &behind, p_repo, head_oid, their_oid) == 0) {
+		r_outcome.commits = (int)behind;
+	}
+	const bool fast_forward_only = (analysis & GIT_MERGE_ANALYSIS_FASTFORWARD) && !(preference & GIT_MERGE_PREFERENCE_NO_FASTFORWARD);
+	Error result = OK;
+	if (!fast_forward_only) {
+		r_outcome.merged = true;
+		result = require_identity(p_repo, p_words.pull ? String("Nothing was pulled: your branch and the remote's have both moved on, so pulling makes a merge commit.") : vformat("Nothing was merged: merging %s makes a merge commit.", p_words.name));
+	}
+	// A merge left at its conflicts is finished by committing the index, so nothing else may be
+	// staged; and your uncommitted edits can't be carried across a merge that isn't done.
+	const bool leave_merge = p_start_merge && !fast_forward_only && carried.is_empty() && !has_staged_changes(p_repo);
+	PackedStringArray carried_paths;
+	for (const CarriedEdit &edit : carried) {
+		carried_paths.push_back(edit.path);
+	}
+	String backup;
+	if (result == OK) {
+		result = set_aside_edits(p_repo, carried, p_words, backup);
+	}
+	PackedStringArray merge_conflicts;
+	if (result == OK) {
+		if (fast_forward_only) {
+			result = fast_forward(p_repo, p_head, p_theirs, p_words, ctx);
+		} else if (leave_merge) {
+			// Unrelated uncommitted edits stay where they are: git_merge leaves files it doesn't
+			// touch alone.
+			result = merge_and_commit(p_repo, p_head, p_theirs, p_words, ctx, true, merge_conflicts);
+		} else {
+			result = merge_with_autostash(p_repo, p_head, p_theirs, p_words, ctx, r_outcome.notice, merge_conflicts);
+			if (result != OK && !merge_conflicts.is_empty()) {
+				if (!p_start_merge) {
+					r_outcome.conflicts = merge_conflicts; // The panel asks whether to start a merge.
+				} else {
+					fail(vformat("%s: your commits and %s changed the same lines in %s, and %s. Commit or discard your changes first, then %s again.", p_words.nothing(), p_words.name, name_list(merge_conflicts),
+							carried.is_empty() ? String("you have staged changes") : vformat("you have uncommitted changes to %s", name_list(carried_paths)), p_words.verb()));
+				}
+			}
+		}
+	}
+	if (leave_merge && result == OK && !merge_conflicts.is_empty()) {
+		r_outcome.conflicts = merge_conflicts;
+	}
+	if (!backup.is_empty()) {
+		// Keep the merge's own error message: putting the files back may set another.
+		const String merge_error = result == OK ? String() : GitRepository::get_last_error();
+		PackedStringArray carried_conflicts;
+		const String problem = finish_carried_edits(p_repo, carried, backup, result == OK, r_outcome.carried, head_oid, p_words.name, carried_conflicts);
+		r_outcome.conflicts.append_array(carried_conflicts);
+		if (result != OK) {
+			fail(problem.is_empty() ? merge_error : vformat("%s %s", merge_error, problem));
+		} else if (!problem.is_empty()) {
+			r_outcome.notice = vformat("%s. %s", p_words.done(), problem);
+		}
+	}
+	if (result != OK) {
+		r_outcome.commits = 0;
+		r_outcome.merged = false;
+	}
+	return result;
+}
+
+// p_branch as a branch to merge: a local branch first, else a remote-tracking one ("origin/x").
+bool lookup_merge_branch(git_repository *p_repo, const String &p_branch, ReferencePtr &r_ref, bool &r_remote) {
+	const CharString name = p_branch.utf8();
+	r_remote = false;
+	if (git_branch_lookup(r_ref.out(), p_repo, name.get_data(), GIT_BRANCH_LOCAL) == 0) {
+		return true;
+	}
+	r_remote = true;
+	if (git_branch_lookup(r_ref.out(), p_repo, name.get_data(), GIT_BRANCH_REMOTE) == 0) {
+		return true;
+	}
+	git_error_clear();
+	return false;
+}
+
+// git's own message for merging p_branch into p_into: "Merge branch 'feature'", or "Merge
+// remote-tracking branch 'origin/x' into dev" (git leaves out "into" for the main branch).
+String merge_message(const String &p_branch, bool p_remote, const String &p_into) {
+	const String message = vformat("Merge %s '%s'", p_remote ? "remote-tracking branch" : "branch", p_branch);
+	return p_into == "main" || p_into == "master" ? message : vformat("%s into %s", message, p_into);
 }
 
 } // namespace
@@ -547,116 +709,226 @@ Error GitRepository::pull(bool p_start_merge) {
 		return fail("The upstream branch doesn't exist on the remote anymore.");
 	}
 	AnnotatedCommitPtr theirs;
-	git_merge_analysis_t analysis = GIT_MERGE_ANALYSIS_NONE;
-	git_merge_preference_t preference = GIT_MERGE_PREFERENCE_NONE;
-	int err = git_annotated_commit_from_ref(theirs.out(), repo, upstream);
-	if (err >= 0) {
-		const git_annotated_commit *heads[] = { theirs };
-		err = git_merge_analysis(&analysis, &preference, repo, heads, 1);
+	const int err = git_annotated_commit_from_ref(theirs.out(), repo, upstream);
+	if (err < 0) {
+		return to_error(err);
+	}
+	MergeWords words;
+	words.name = String::utf8(git_reference_shorthand(upstream));
+	words.message = vformat("Merge remote-tracking branch '%s'", words.name);
+	MergeOutcome outcome;
+	const Error result = merge_into_head(repo, head, theirs, words, remote_name, progress_callback, login_prompts_allowed, p_start_merge, outcome);
+	pulled_commits = outcome.commits;
+	pull_merged = outcome.merged;
+	pull_carried = outcome.carried;
+	pull_conflicts = outcome.conflicts;
+	notice = outcome.notice;
+	return result;
+}
+
+// Merges p_branch (a local branch, or a remote-tracking one like "origin/feature") into the
+// current branch, like `git merge`, but the way pull merges: fast-forwards when it can, carries
+// your uncommitted edits across, and refuses up front when something would conflict, listing the
+// files in get_pull_result()["conflicts"]; with p_start_merge it stops at those conflicts for the
+// resolver instead. get_pull_result() says how it went. Doesn't fetch; may download LFS files.
+Error GitRepository::merge_branch(const String &p_branch, bool p_start_merge) {
+	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
+	git_error_clear();
+	begin_network_operation();
+	notice = String();
+	pulled_commits = 0;
+	pull_merged = false;
+	pull_carried.clear();
+	pull_conflicts.clear();
+	if (require_no_operation(repo, "merge") != OK) {
+		return FAILED;
+	}
+	ReferencePtr head;
+	if (head_branch(head.out(), repo) < 0) {
+		return FAILED;
+	}
+	ReferencePtr branch;
+	bool remote = false;
+	if (!lookup_merge_branch(repo, p_branch, branch, remote)) {
+		return fail(vformat("There's no branch called %s anymore.", p_branch));
+	}
+	if (git_reference_cmp(branch, head) == 0) {
+		return fail("That's the branch you're on.");
+	}
+	String lfs_remote;
+	git_buf remote_buf = GIT_BUF_INIT;
+	const int found = remote ? git_branch_remote_name(&remote_buf, repo, git_reference_name(branch)) : git_branch_upstream_remote(&remote_buf, repo, git_reference_name(branch));
+	if (found == 0) {
+		lfs_remote = buf_to_string(remote_buf);
+	} else {
+		git_buf_dispose(&remote_buf);
+		git_error_clear(); // No remote is fine: its LFS files are here already, or nowhere.
 	}
 
-	// From here on everything is local: progress only, no more canceling.
-	RemoteContext ctx;
-	ctx.progress = progress_callback;
-	const git_oid *head_oid = git_reference_target(head);
-
-	Error result = to_error(err);
-	PackedStringArray blocking;
-	PackedStringArray conflicting;
-	LocalVector<CarriedEdit> carried;
-	if (err >= 0 && !(analysis & GIT_MERGE_ANALYSIS_UP_TO_DATE)) {
-		blocking = plan_pull(repo, head_oid, git_annotated_commit_id(theirs), &carried, &conflicting);
+	AnnotatedCommitPtr theirs;
+	const int err = git_annotated_commit_from_ref(theirs.out(), repo, branch);
+	if (err < 0) {
+		return to_error(err);
 	}
-	const String upstream_name = upstream ? String::utf8(git_reference_shorthand(upstream)) : String();
+	MergeWords words;
+	words.name = p_branch;
+	words.message = merge_message(p_branch, remote, String::utf8(git_reference_shorthand(head)));
+	words.pull = false;
+	MergeOutcome outcome;
+	const Error result = merge_into_head(repo, head, theirs, words, lfs_remote, progress_callback, login_prompts_allowed, p_start_merge, outcome);
+	pulled_commits = outcome.commits;
+	pull_merged = outcome.merged;
+	pull_carried = outcome.carried;
+	pull_conflicts = outcome.conflicts;
+	notice = outcome.notice;
+	return result;
+}
 
-	if (err < 0 || (analysis & GIT_MERGE_ANALYSIS_UP_TO_DATE)) {
-		// Error, or nothing to do.
-	} else if (!blocking.is_empty()) {
-		// Checked before anything is touched, so your edits never end up in a stash only a
-		// terminal can get back.
-		result = fail(vformat("Nothing was pulled: the new commits change %s, and your uncommitted changes there can't be merged in (they're staged, new, deleted or binary). Commit, stash or discard your changes to %s first, then pull again.",
-				name_list(blocking),
-				blocking.size() == 1 ? String("it") : String("them")));
-	} else if (!conflicting.is_empty() && !p_start_merge) {
-		// The panel asks whether to start a merge, and calls pull(true) if so.
-		pull_conflicts = conflicting;
-		result = fail(vformat("Nothing was pulled: your uncommitted changes to %s and %s changed the same lines.", name_list(conflicting), upstream_name));
-	} else if (repo_uses_lfs(repo)) {
-		// The new commits' LFS files, downloaded before any file changes (see _fetch_lfs_files).
-		RemoteContext lfs_ctx;
-		lfs_ctx.workdir = get_workdir();
-		lfs_ctx.login_prompts_allowed = login_prompts_allowed;
-		lfs_ctx.progress = progress_callback;
-		result = lfs_fetch(repo, lfs_ctx, remote_name, String(git_oid_tostr_s(git_annotated_commit_id(theirs))));
+// The branches that could be merged into the current one, as get_branch_list lists them (local
+// first, then remote branches without a local one, newest first), without the current branch:
+// [{ "name", "local", "time", "commits": how many of its commits the current branch doesn't have
+// (0: nothing to merge), "behind": how many of the current branch's commits it doesn't have }].
+Array GitRepository::get_merge_branches() const {
+	Array result;
+	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+	ReferencePtr head;
+	if (git_repository_head(head.out(), repo) < 0 || !git_reference_target(head)) {
+		git_error_clear();
+		return result;
 	}
-	if (err >= 0 && !(analysis & GIT_MERGE_ANALYSIS_UP_TO_DATE) && blocking.is_empty() && (conflicting.is_empty() || p_start_merge) && result == OK) {
+	for (const Variant &item : get_branch_list()) {
+		const Dictionary branch = item;
+		if (bool(branch["current"])) {
+			continue;
+		}
+		ReferencePtr ref;
+		bool remote = false;
+		if (!lookup_merge_branch(repo, branch["name"], ref, remote) || !git_reference_target(ref)) {
+			continue;
+		}
 		size_t ahead = 0, behind = 0;
-		if (git_graph_ahead_behind(&ahead, &behind, repo, head_oid, git_annotated_commit_id(theirs)) == 0) {
-			pulled_commits = (int)behind;
-		}
-		const bool fast_forward_only = (analysis & GIT_MERGE_ANALYSIS_FASTFORWARD) && !(preference & GIT_MERGE_PREFERENCE_NO_FASTFORWARD);
-		if (!fast_forward_only) {
-			pull_merged = true;
-			result = require_identity(repo, "Nothing was pulled: your branch and the remote's have both moved on, so pulling makes a merge commit.");
-		}
-		// A merge left at its conflicts is finished by committing the index, so nothing else may be
-		// staged; and your uncommitted edits can't be carried across a merge that isn't done.
-		const bool leave_merge = p_start_merge && !fast_forward_only && carried.is_empty() && !has_staged_changes(repo);
-		PackedStringArray carried_paths;
-		for (const CarriedEdit &edit : carried) {
-			carried_paths.push_back(edit.path);
-		}
-		String backup;
-		if (result == OK) {
-			result = set_aside_edits(repo, carried, backup);
-		}
-		PackedStringArray merge_conflicts;
-		if (result == OK) {
-			if (fast_forward_only) {
-				result = fast_forward(repo, head, theirs, ctx);
-			} else if (leave_merge) {
-				// Unrelated uncommitted edits stay where they are: git_merge leaves files it doesn't
-				// touch alone.
-				result = merge_and_commit(repo, head, upstream, theirs, ctx, true, merge_conflicts);
-			} else {
-				result = merge_with_autostash(repo, head, upstream, theirs, ctx, notice, merge_conflicts);
-				if (result != OK && !merge_conflicts.is_empty()) {
-					if (!p_start_merge) {
-						pull_conflicts = merge_conflicts; // The panel asks whether to start a merge.
-					} else {
-						fail(vformat("Nothing was pulled: your commits and %s changed the same lines in %s, and %s. Commit or discard your changes first, then pull again.", upstream_name, name_list(merge_conflicts),
-								carried.is_empty() ? String("you have staged changes") : vformat("you have uncommitted changes to %s", name_list(carried_paths))));
-					}
-				}
-			}
-		}
-		if (leave_merge && result == OK && !merge_conflicts.is_empty()) {
-			pull_conflicts = merge_conflicts;
-		}
-		if (!backup.is_empty()) {
-			// Keep the pull's own error message: putting the files back may set another.
-			const String pull_error = result == OK ? String() : GitRepository::get_last_error();
-			PackedStringArray carried_conflicts;
-			const String problem = finish_carried_edits(repo, carried, backup, result == OK, pull_carried, head_oid, upstream_name, carried_conflicts);
-			pull_conflicts.append_array(carried_conflicts);
-			if (result != OK) {
-				fail(problem.is_empty() ? pull_error : vformat("%s %s", pull_error, problem));
-			} else if (!problem.is_empty()) {
-				notice = vformat("Pulled. %s", problem);
-			}
-		}
-		if (result != OK) {
-			pulled_commits = 0;
-			pull_merged = false;
-		}
+		git_graph_ahead_behind(&ahead, &behind, repo, git_reference_target(head), git_reference_target(ref));
+		Dictionary entry;
+		entry["name"] = branch["name"];
+		entry["local"] = branch["local"];
+		entry["time"] = branch["time"];
+		entry["commits"] = (int64_t)behind;
+		entry["behind"] = (int64_t)ahead;
+		result.push_back(entry);
 	}
 	return result;
 }
 
-// How the last pull() went: { "commits": int (commits it brought in), "merged": bool (made a
+// What merging p_branch into the current branch would do, worked out without changing anything:
+// { "commits": its commits the current branch doesn't have, "files": files they change,
+//   "fast_forward": the branch just moves forward (no merge commit), "conflicts": the files that
+//   would stop at conflicts (your commits or your uncommitted edits against its commits),
+//   "carried": your uncommitted edits it would merge into the new versions, "problem": why it
+//   can't be done ("" when it can), "behind_remote": for a local branch, how many commits its
+//   remote branch has that it doesn't (they wouldn't be merged), "remote_branch": that branch }.
+Dictionary GitRepository::get_merge_preview(const String &p_branch) const {
+	Dictionary result;
+	result["commits"] = 0;
+	result["files"] = 0;
+	result["fast_forward"] = false;
+	result["conflicts"] = PackedStringArray();
+	result["carried"] = PackedStringArray();
+	result["problem"] = String();
+	result["behind_remote"] = 0;
+	result["remote_branch"] = String();
+	ERR_FAIL_NULL_V_MSG(repo, result, "Repository is not open.");
+
+	ReferencePtr head;
+	ReferencePtr branch;
+	bool remote = false;
+	if (require_no_operation(repo, "merge") != OK || head_branch(head.out(), repo) < 0) {
+		result["problem"] = get_last_error();
+		git_error_clear();
+		return result;
+	}
+	if (!lookup_merge_branch(repo, p_branch, branch, remote) || !git_reference_target(branch)) {
+		result["problem"] = vformat("There's no branch called %s anymore.", p_branch);
+		return result;
+	}
+	const git_oid *ours = git_reference_target(head);
+	const git_oid *theirs = git_reference_target(branch);
+	if (!remote) {
+		ReferencePtr upstream;
+		size_t ahead = 0, behind = 0;
+		if (git_branch_upstream(upstream.out(), branch) == 0 && git_reference_target(upstream) &&
+				git_graph_ahead_behind(&ahead, &behind, repo, theirs, git_reference_target(upstream)) == 0 && behind > 0) {
+			result["behind_remote"] = (int64_t)behind;
+			result["remote_branch"] = String::utf8(git_reference_shorthand(upstream));
+		}
+		git_error_clear();
+	}
+	size_t ahead = 0, behind = 0;
+	git_oid base;
+	if (git_graph_ahead_behind(&ahead, &behind, repo, ours, theirs) < 0 || git_merge_base(&base, repo, ours, theirs) < 0) {
+		result["problem"] = vformat("%s and %s have no history in common, so they can't be merged here.", String::utf8(git_reference_shorthand(head)), p_branch);
+		git_error_clear();
+		return result;
+	}
+	result["commits"] = (int64_t)behind;
+	if (behind == 0) {
+		return result; // Nothing to merge.
+	}
+	result["files"] = changed_paths(repo, &base, theirs).size();
+	const bool fast_forward_only = ahead == 0;
+	result["fast_forward"] = fast_forward_only;
+
+	PackedStringArray conflicting;
+	LocalVector<CarriedEdit> carried;
+	const PackedStringArray blocking = plan_pull(repo, ours, theirs, &carried, &conflicting);
+	if (!blocking.is_empty()) {
+		result["problem"] = vformat("Your uncommitted changes to %s can't be merged with the commits on %s (they're staged, new, deleted or binary). Commit, stash or discard them first.", name_list(blocking), p_branch);
+		return result;
+	}
+	PackedStringArray carried_paths;
+	for (const CarriedEdit &edit : carried) {
+		if (!edit.conflicts) {
+			carried_paths.push_back(edit.path);
+		}
+	}
+	result["carried"] = carried_paths;
+
+	// Your commits against theirs, merged in memory: the files it would stop at.
+	PackedStringArray commit_conflicts;
+	if (!fast_forward_only) {
+		CommitPtr our_commit, their_commit;
+		IndexPtr merged;
+		if (git_commit_lookup(our_commit.out(), repo, ours) == 0 && git_commit_lookup(their_commit.out(), repo, theirs) == 0 &&
+				git_merge_commits(merged.out(), repo, our_commit, their_commit, nullptr) == 0 && git_index_has_conflicts(merged)) {
+			IndexConflictIteratorPtr it;
+			if (git_index_conflict_iterator_new(it.out(), merged) == 0) {
+				const git_index_entry *ancestor = nullptr, *mine = nullptr, *other = nullptr;
+				while (git_index_conflict_next(&ancestor, &mine, &other, it) == 0) {
+					const git_index_entry *entry = mine ? mine : (other ? other : ancestor);
+					commit_conflicts.push_back(String::utf8(entry->path));
+				}
+			}
+		}
+		git_error_clear();
+		if (!commit_conflicts.is_empty() && (!carried.is_empty() || has_staged_changes(repo))) {
+			// merge_into_head refuses this too: a merge stopped at conflicts is finished by
+			// committing the index, so your own changes can't be in the way.
+			PackedStringArray mine;
+			for (const CarriedEdit &edit : carried) {
+				mine.push_back(edit.path);
+			}
+			result["problem"] = vformat("Your commits and %s changed the same lines in %s, and %s. Commit or discard your changes first.", p_branch, name_list(commit_conflicts),
+					carried.is_empty() ? String("you have staged changes") : vformat("you have uncommitted changes to %s", name_list(mine)));
+		}
+	}
+	commit_conflicts.append_array(conflicting);
+	result["conflicts"] = commit_conflicts;
+	return result;
+}
+
+// How the last pull() or merge_branch() went: { "commits": int (commits it brought in), "merged": bool (made a
 // merge commit rather than fast-forwarding), "carried": the files whose uncommitted edits it
 // merged into the new versions, "conflicts": the files that conflict: after a refusal, what a
-// merge would stop at; after pull(true), what it stopped at }.
+// merge would stop at; after pull(true) or merge_branch(.., true), what it stopped at }.
 Dictionary GitRepository::get_pull_result() const {
 	Dictionary result;
 	result["commits"] = pulled_commits;

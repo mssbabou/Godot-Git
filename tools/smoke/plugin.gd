@@ -501,7 +501,7 @@ func _marks_diff_check(marks: Node, code_edit: CodeEdit, hunks: Array) -> void:
 
 # Resolving a conflict: a merge stopped at one (made with the git CLI, after committing everything,
 # since git won't merge while anything is staged), then the panel: Conflicts lists the file, the
-# resolver opens on it, Keep Mine and Resolve File stage it, Finish Merge makes the merge commit.
+# resolver opens on it, Keep Mine and Resolve File stage it, Commit makes the merge commit.
 func _git(args: Array) -> String:
 	var out := []
 	OS.execute("git", ["-C", ProjectSettings.globalize_path("res://")] + args, out, true)
@@ -565,13 +565,17 @@ func _conflict_resolve() -> void:
 func _conflict_finish() -> void:
 	var section := _smoke_section("Conflicts")
 	_smoke_check(not section.visible and _git(["diff", "--name-only", "--diff-filter=U"]) == "", "Resolve File resolves it (Conflicts goes away)")
+	# No banner: the merge's message is in the commit box, and Commit finishes it.
+	var box: TextEdit = _smoke_dock().find_children("*", "TextEdit", true, false)[0]
+	_smoke_check(box.text == "Merge branch 'clash'", "the merge's message is in the commit box (%s)" % box.text)
 	for b: Button in _smoke_dock().find_children("*", "Button", true, false):
-		if b.text == "Finish Merge" and b.is_visible_in_tree():
+		if b.text == "Commit" and b.is_visible_in_tree():
+			_smoke_check(not b.disabled, "Commit is enabled once nothing is conflicted (%s)" % b.tooltip_text)
 			b.pressed.emit()
 	get_tree().create_timer(1.0).timeout.connect(_conflict_unsaved)
 
 
-# Finishing offers to save open scenes and scripts first (the marks step left the script edited).
+# Committing doesn't ask to save first; an offer from an earlier step would be closed here.
 func _conflict_unsaved() -> void:
 	for d: ConfirmationDialog in _smoke_dock().find_children("*", "ConfirmationDialog", true, false):
 		if d.visible and d.title == "Unsaved Changes":
@@ -581,7 +585,7 @@ func _conflict_unsaved() -> void:
 
 func _conflict_done() -> void:
 	var parents := _git(["rev-list", "--parents", "-n", "1", "HEAD"]).split(" ")
-	_smoke_check(parents.size() == 3 and _git(["show", "HEAD:clash.txt"]) == "speed = 3", "Finish Merge makes the merge commit with mine kept (%s)" % _git(["log", "-1", "--format=%s"]))
+	_smoke_check(parents.size() == 3 and _git(["show", "HEAD:clash.txt"]) == "speed = 3", "Commit makes the merge commit with mine kept (%s)" % _git(["log", "-1", "--format=%s"]))
 	_smoke_finish()
 
 

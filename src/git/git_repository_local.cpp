@@ -130,18 +130,87 @@ Error GitRepository::discard(const String &p_path) {
 }
 
 // Commits what's staged. Author/committer come from git config (user.name / user.email).
+// During a merge stopped at conflicts, once none is left, it commits the merge (see _commit_merge).
 Error GitRepository::commit(const String &p_message) {
 	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
 
 	git_error_clear();
-	if (require_no_operation(repo, "commit") != OK || require_lfs(repo, "committing") != OK || require_identity(repo, "Nothing was committed.") != OK) {
+	const bool merging = operation_in_progress(repo) == "merge";
+	if ((!merging && require_no_operation(repo, "commit") != OK) || require_lfs(repo, "committing") != OK || require_identity(repo, "Nothing was committed.") != OK) {
 		return FAILED;
+	}
+	if (merging) {
+		return _commit_merge(p_message);
 	}
 	if (commit_needs_git(repo, COMMIT_NEW)) {
 		return _commit_with_git(p_message, false);
 	}
 	git_oid oid;
 	return to_error(git_commit_create_from_stage(&oid, repo, p_message.utf8().get_data(), nullptr));
+}
+
+// The merge's commit, like `git commit` during a merge: what's staged, with HEAD and the merged
+// commit (MERGE_HEAD) as parents, even when it changes no files (you kept your side everywhere:
+// the commit still records the branch as merged, so its conflicts don't come back). Refused while
+// a file is still conflicted.
+Error GitRepository::_commit_merge(const String &p_message) {
+	IndexPtr index;
+	if (git_repository_index(index.out(), repo) < 0) {
+		return FAILED;
+	}
+	if (git_index_has_conflicts(index)) {
+		const PackedStringArray conflicts = get_operation()["conflicts"];
+		return fail(vformat("%s still %s conflicts: resolve %s first, then commit the merge.", name_list(conflicts), conflicts.size() == 1 ? "has" : "have", conflicts.size() == 1 ? "it" : "them"));
+	}
+	if (commit_needs_git(repo, COMMIT_MERGE)) {
+		// git sees MERGE_HEAD and makes it a merge commit, running the hooks and signing it.
+		begin_network_operation();
+		RemoteContext ctx;
+		ctx.progress = progress_callback;
+		const Error err = commit_with_git(repo, ctx, p_message, COMMIT_MERGE);
+		if (err == OK) {
+			git_repository_state_cleanup(repo);
+		}
+		return err;
+	}
+
+	LocalVector<git_oid> parent_ids;
+	git_oid head_id;
+	if (git_reference_name_to_id(&head_id, repo, "HEAD") < 0) {
+		return FAILED;
+	}
+	parent_ids.push_back(head_id);
+	const auto add_merge_head = [](const git_oid *p_oid, void *p_payload) -> int {
+		((LocalVector<git_oid> *)p_payload)->push_back(*p_oid);
+		return 0;
+	};
+	int err = git_repository_mergehead_foreach(repo, add_merge_head, &parent_ids);
+	LocalVector<CommitPtr> parents;
+	parents.resize(parent_ids.size());
+	LocalVector<const git_commit *> parent_ptrs;
+	for (uint32_t i = 0; err >= 0 && i < parent_ids.size(); i++) {
+		err = git_commit_lookup(parents[i].out(), repo, &parent_ids[i]);
+		parent_ptrs.push_back(parents[i]);
+	}
+	git_oid tree_id, commit_id;
+	TreePtr tree;
+	SignaturePtr signature;
+	if (err >= 0) {
+		err = git_index_write_tree(&tree_id, index);
+	}
+	if (err >= 0) {
+		err = git_tree_lookup(tree.out(), repo, &tree_id);
+	}
+	if (err >= 0) {
+		err = git_signature_default(signature.out(), repo);
+	}
+	if (err >= 0) {
+		err = git_commit_create(&commit_id, repo, "HEAD", signature, signature, nullptr, p_message.utf8().get_data(), tree, parent_ptrs.size(), parent_ptrs.ptr());
+	}
+	if (err >= 0) {
+		git_repository_state_cleanup(repo);
+	}
+	return to_error(err);
 }
 
 // Whether HEAD's commit is on any remote-tracking branch, i.e. already pushed (or fetched).
@@ -216,6 +285,9 @@ Error GitRepository::amend(const String &p_message) {
 // the background.
 bool GitRepository::commit_runs_git(bool p_amend) const {
 	ERR_FAIL_NULL_V_MSG(repo, false, "Repository is not open.");
+	if (!p_amend && operation_in_progress(repo) == "merge") {
+		return commit_needs_git(repo, COMMIT_MERGE);
+	}
 	return commit_needs_git(repo, p_amend ? COMMIT_AMEND : COMMIT_NEW);
 }
 

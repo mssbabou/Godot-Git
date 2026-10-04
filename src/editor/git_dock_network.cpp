@@ -27,6 +27,9 @@ void GitDock::_start_network(int p_op) {
 	if ((p_op == NETWORK_PULL || p_op == NETWORK_PULL_MERGE) && _ask_to_save("Pull", callable_mp(this, &GitDock::_start_network).bind(p_op))) {
 		return;
 	}
+	if ((p_op == NETWORK_MERGE || p_op == NETWORK_MERGE_START) && _ask_to_save("Merge", callable_mp(this, &GitDock::_start_network).bind(p_op))) {
+		return;
+	}
 	// Both rewrite files: an unsaved scene saved afterwards would undo them.
 	if ((p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE) && _ask_to_save(p_op == NETWORK_ABORT ? "Abort" : "Continue", callable_mp(this, &GitDock::_start_network).bind(p_op))) {
 		return;
@@ -64,7 +67,7 @@ void GitDock::_run_network(NetworkOp p_op, bool p_quiet) {
 	network_ahead = sync_status.get("ahead", 0);
 	network_publish = p_op == NETWORK_PUSH && String(sync_status.get("upstream", String())).is_empty();
 	_update_actions();
-	if (p_op == NETWORK_PULL || p_op == NETWORK_PULL_MERGE || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT) {
+	if (p_op == NETWORK_PULL || p_op == NETWORK_PULL_MERGE || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT || p_op == NETWORK_MERGE || p_op == NETWORK_MERGE_START) {
 		_remember_open_scenes(); // To reload the ones it rewrites; see _reload_changed_scenes.
 	}
 
@@ -138,6 +141,9 @@ String GitDock::_network_description(int p_op) const {
 			return vformat("Locking %s", network_branch.get_file());
 		case NETWORK_UNLOCK:
 			return vformat("Unlocking %s", network_branch.get_file());
+		case NETWORK_MERGE:
+		case NETWORK_MERGE_START:
+			return vformat("Merging %s into %s", network_branch, branch);
 	}
 	return String();
 }
@@ -185,6 +191,12 @@ void GitDock::_network_worker(int p_op, const String &p_workdir, bool p_quiet, c
 			case NETWORK_UNLOCK:
 				err = worker_repo->unlock_file(p_text);
 				break;
+			case NETWORK_MERGE:
+				err = worker_repo->merge_branch(p_text);
+				break;
+			case NETWORK_MERGE_START:
+				err = worker_repo->merge_branch(p_text, true);
+				break;
 		}
 	}
 	const String message = err == OK ? String() : GitRepository::get_last_error();
@@ -228,7 +240,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	}
 
 	// A pull or switch can change files on disk. Refresh first: the result below uses the new counts.
-	if ((p_op == NETWORK_PULL || p_op == NETWORK_PULL_MERGE || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT) && p_err == OK) {
+	if ((p_op == NETWORK_PULL || p_op == NETWORK_PULL_MERGE || p_op == NETWORK_SWITCH || p_op == NETWORK_ABORT || p_op == NETWORK_CONTINUE || p_op == NETWORK_REVERT || p_op == NETWORK_MERGE || p_op == NETWORK_MERGE_START) && p_err == OK) {
 		EditorInterface::get_singleton()->get_resource_filesystem()->scan();
 	}
 	refresh();
@@ -257,7 +269,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 	if (p_op == NETWORK_COMMIT && p_err != OK) {
 		push_after_commit = false;
 	}
-	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit", "Abort", "Continue", "Revert", "Pull", "Lock", "Unlock" };
+	static const char *names[] = { "", "Fetch", "Pull", "Push", "Switch branch", "Commit", "Abort", "Continue", "Revert", "Pull", "Lock", "Unlock", "Merge", "Merge" };
 	if (p_err == ERR_SKIP && p_op == NETWORK_COMMIT) {
 		// A post-commit hook may have been running: don't claim nothing happened. History shows it.
 		_set_status(STATUS_NEUTRAL, "Commit canceled.");
@@ -304,7 +316,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		case NETWORK_PULL_MERGE:
 			if (!pull_conflicts.is_empty()) {
 				// Stopped at the conflicts, as asked: on to the first one.
-				_set_status(STATUS_SUCCESS, vformat("Pulled from %s: resolve %s under Conflicts, then finish the merge", p_upstream, plural(pull_conflicts.size(), "file", "files")));
+				_set_status(STATUS_SUCCESS, vformat("Pulled from %s: resolve %s under Conflicts%s", p_upstream, plural(pull_conflicts.size(), "file", "files"), String(operation.get("kind", String())) == "merge" ? String(", then commit the merge") : String()));
 				_reload_changed_scenes();
 				_show_conflict(pull_conflicts[0]);
 				break;
@@ -352,8 +364,31 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 				if (network_operation_kind == "stash") {
 					_set_status(STATUS_SUCCESS, "Restored the stash and removed it: its changes are uncommitted changes now");
 				} else {
-					_set_status(STATUS_SUCCESS, network_operation_kind == "pull" ? String("Finished the merge: your resolved changes are uncommitted, as before the pull") : (network_operation == "merge" ? String("Committed the merge") : vformat("Finished the %s", network_operation)));
+					_set_status(STATUS_SUCCESS, network_operation_kind == "pull" ? String("Finished the merge: your resolved changes are uncommitted, as they were before") : (network_operation == "merge" ? String("Committed the merge") : vformat("Finished the %s", network_operation)));
 				}
+			}
+			_reload_changed_scenes();
+		} break;
+		case NETWORK_MERGE_START:
+			if (!pull_conflicts.is_empty()) {
+				// Stopped at the conflicts, as the dialog said: on to the first one.
+				_set_status(STATUS_SUCCESS, vformat("Merging %s into %s: resolve %s under Conflicts%s", network_branch, repo->get_current_branch(), plural(pull_conflicts.size(), "file", "files"), String(operation.get("kind", String())) == "merge" ? String(", then commit the merge") : String()));
+				_reload_changed_scenes();
+				_show_conflict(pull_conflicts[0]);
+				break;
+			}
+			[[fallthrough]];
+		case NETWORK_MERGE: {
+			const int commits = p_pull_result.get("commits", 0);
+			const PackedStringArray carried = p_pull_result.get("carried", PackedStringArray());
+			const String kept = carried.is_empty() ? String() : vformat(". Your uncommitted edits to %s are kept on top", join_list(carried, 3));
+			const String current = repo->get_current_branch();
+			if (commits == 0) {
+				_set_status(STATUS_SUCCESS, vformat("%s has everything on %s already", current, network_branch));
+			} else if (p_pull_result.get("merged", false)) {
+				_set_status(STATUS_SUCCESS, vformat("Merged %s into %s: %s%s", network_branch, current, plural(commits, "commit", "commits"), kept));
+			} else {
+				_set_status(STATUS_SUCCESS, vformat("Merged %s into %s: %s, no merge commit needed%s", network_branch, current, plural(commits, "commit", "commits"), kept));
 			}
 			_reload_changed_scenes();
 		} break;

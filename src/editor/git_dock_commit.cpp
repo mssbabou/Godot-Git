@@ -87,7 +87,8 @@ void GitDock::_on_amend_toggled(bool p_on) {
 void GitDock::_commit() {
 	const String message = commit_message->get_text().strip_edges();
 	const bool amending = amend_check->is_pressed();
-	if (message.is_empty() || (staged_count == 0 && !amending)) {
+	const bool merging = String(operation.get("kind", String())) == "merge";
+	if (message.is_empty() || (staged_count == 0 && !amending && !merging)) {
 		return;
 	}
 	if (_ask_identity(NETWORK_COMMIT)) {
@@ -98,6 +99,7 @@ void GitDock::_commit() {
 	}
 	const int files = staged_count;
 	const String old_id = last_commit_id;
+	commit_was_merge = merging;
 	if (repo->commit_runs_git(amending)) {
 		// Hooks or signing: git does it, which may take a while (a hook can run a linter).
 		network_commit_message = message;
@@ -256,7 +258,11 @@ String GitDock::_web_commit_url(const String &p_hash) const {
 
 // After refresh(), so last_commit_id is the new commit.
 void GitDock::_report_commit(bool p_amended, int p_files, const String &p_old_id) {
-	if (!p_amended) {
+	if (commit_was_merge) {
+		commit_was_merge = false;
+		merge_prefill = String();
+		_set_status(STATUS_SUCCESS, p_files > 0 ? vformat("Committed the merge, %s (%s)", last_commit_id, plural(p_files, "file", "files")) : vformat("Committed the merge, %s: no file changes, the branch is recorded as merged", last_commit_id));
+	} else if (!p_amended) {
 		_set_status(STATUS_SUCCESS, vformat("Committed %s (%s)", last_commit_id, plural(p_files, "file", "files")));
 	} else if (p_files > 0) {
 		_set_status(STATUS_SUCCESS, vformat("Amended %s, now %s (%s added)", p_old_id, last_commit_id, plural(p_files, "file", "files")));

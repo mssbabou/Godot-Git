@@ -63,6 +63,7 @@ GitDock::GitDock() {
 	repo_vb->add_child(toolbar);
 
 	_build_branch_picker(toolbar);
+	_build_merge_button(toolbar);
 
 	more_menu = memnew(MenuButton);
 	more_menu->set_flat(true);
@@ -241,6 +242,7 @@ void GitDock::_update_icons() {
 	changes_pane.action->set_button_icon(_icon("Add"));
 	changes_pane.discard->set_button_icon(get_theme_icon("UndoRedo", "EditorIcons"));
 	history_search_button->set_button_icon(get_theme_icon("Search", "EditorIcons"));
+	merge_button->set_button_icon(_icon("GitMerge"));
 	// Every section header the same height, whatever sits in it (buttons, the search button,
 	// nothing): they were 36, 40 and 28 px tall, and a little more room reads better (maintainer,
 	// 2026-09-30).
@@ -295,6 +297,14 @@ void GitDock::_update_icons() {
 	history_search_button->add_theme_stylebox_override("hover", tree_hover);
 	history_search_button->add_theme_stylebox_override("pressed", tree_pressed);
 	history_search_button->add_theme_stylebox_override("hover_pressed", tree_pressed);
+	// Abort Merge on the Conflicts header: a text button, but with the header buttons' look, so it
+	// reads as a button when hovered (a flat Button shows no hover background).
+	conflicts_abort->set_flat(false);
+	conflicts_abort->add_theme_stylebox_override("normal", flat);
+	conflicts_abort->add_theme_stylebox_override("focus", empty);
+	conflicts_abort->add_theme_stylebox_override("hover", tree_hover);
+	conflicts_abort->add_theme_stylebox_override("pressed", tree_pressed);
+	conflicts_abort->add_theme_stylebox_override("hover_pressed", tree_pressed);
 	_queue_align_header_buttons();
 
 	const Color dim = _dim_color();
@@ -361,6 +371,13 @@ void GitDock::_build_more_menu() {
 	if (more->get_item_count() > 0 && !more->is_item_separator(more->get_item_count() - 1)) {
 		more->add_separator();
 	}
+	if (_in_merge()) {
+		const bool stash = String(operation["kind"]) == "stash";
+		more->add_icon_item(get_theme_icon("Close", "EditorIcons"), stash ? "Abort Stash Restore..." : "Abort Merge...", MORE_ABORT_MERGE);
+		more->set_item_disabled(more->get_item_count() - 1, _shown_network_op() != NETWORK_NONE);
+		more->set_item_tooltip(more->get_item_count() - 1, stash ? String("Put the stash's files back as they were and keep the stash.") : String("Undo the merge: the branch and your files go back to how they were before it started."));
+		more->add_separator();
+	}
 	more->add_icon_item(get_theme_icon("Reload", "EditorIcons"), "Refresh", MORE_REFRESH);
 	more->add_icon_item(get_theme_icon("Folder", "EditorIcons"), "Open Repository Folder", MORE_OPEN_FOLDER);
 	// Preferences get a dialog of their own, not check items here: this menu is for actions.
@@ -407,6 +424,9 @@ void GitDock::_draw_own_icons() {
 		{ "GitMinus", "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><path fill='#e0e0e0' d='M1 7h14v2H1z'/></svg>" },
 		{ "GitStash", "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><path fill='#e0e0e0' d='M1 8h4l1 2h4l1-2h4v6a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1zm6-0.5h2v-3.5h2L8 0.5 5 4h2z'/></svg>" },
 		{ "GitRestore", "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><path fill='#e0e0e0' d='M1 8h4l1 2h4l1-2h4v6a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1zm6-7h2v4h2l-3 3.5L5 5h2z'/></svg>" },
+		// A branch joining another: two commits on the left joined by a line, one on the right
+		// curving into it.
+		{ "GitMerge", "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'><g fill='none' stroke='#e0e0e0' stroke-width='2'><circle cx='4.5' cy='3.5' r='2'/><circle cx='4.5' cy='12.5' r='2'/><circle cx='11.5' cy='10' r='2'/><path d='M4.5 5.5v5M4.5 5.5c0 3 2 4.5 5 4.5'/></g></svg>" },
 	};
 	const float scale = EditorInterface::get_singleton()->get_editor_scale();
 	Color color(0.878f, 0.878f, 0.878f);
@@ -494,6 +514,18 @@ void GitDock::refresh() {
 	const Array status = repo->get_status();
 	// After a fetch: the files a pull would refuse for, so their rows and Pull can say so up front.
 	operation = repo->get_operation();
+	_finish_resolved_merge();
+	// A merge waiting for its commit: its message in the box, once, unless something's written there.
+	const String merge_subject = String(operation.get("kind", String())) == "merge" ? String(operation.get("subject", String())) : String();
+	if (!merge_subject.is_empty() && merge_prefill != merge_subject && commit_message->get_text().strip_edges().is_empty()) {
+		merge_prefill = merge_subject;
+		commit_message->set_text(merge_subject);
+	} else if (merge_subject.is_empty() && !merge_prefill.is_empty()) {
+		if (commit_message->get_text() == merge_prefill) {
+			commit_message->clear(); // The merge ended some other way (aborted, or in a terminal).
+		}
+		merge_prefill = String();
+	}
 	// Mid-merge, Pull waits for the operation anyway: a pull warning on the rows would be noise.
 	pull_blockers = (int)sync_status.get("behind", 0) > 0 && !_in_operation() ? repo->get_pull_blockers() : PackedStringArray();
 	pull_conflict_paths = (int)sync_status.get("behind", 0) > 0 && !_in_operation() ? repo->get_pull_conflicts() : PackedStringArray();
@@ -595,10 +627,17 @@ void GitDock::_update_actions() {
 	// A background fetch doesn't count as busy: it only updates remote-tracking refs.
 	const NetworkOp shown = _shown_network_op();
 	// A pull, push or switch rewrites the repository from the worker thread; don't commit meanwhile.
-	const bool syncing = shown == NETWORK_PULL || shown == NETWORK_PULL_MERGE || shown == NETWORK_PUSH || shown == NETWORK_SWITCH || shown == NETWORK_COMMIT || shown == NETWORK_ABORT || shown == NETWORK_CONTINUE || shown == NETWORK_REVERT;
+	const bool syncing = shown == NETWORK_PULL || shown == NETWORK_PULL_MERGE || shown == NETWORK_PUSH || shown == NETWORK_SWITCH || shown == NETWORK_COMMIT || shown == NETWORK_ABORT || shown == NETWORK_CONTINUE || shown == NETWORK_REVERT || shown == NETWORK_MERGE || shown == NETWORK_MERGE_START;
 	// A merge, rebase, ... in progress: committing, pulling or switching would lose it (the
 	// backend refuses too). The banner says what to do instead.
-	const String in_operation = _in_operation() ? vformat("A %s is in progress: finish it or abort it first (see the banner above).", _operation_name()) : String();
+	String in_operation;
+	if (String(operation.get("kind", String())) == "merge") {
+		in_operation = "A merge is waiting: resolve its conflicts and commit it first (or Abort Merge in the menu).";
+	} else if (_in_merge()) {
+		in_operation = vformat("Resolve the conflicts under Conflicts first (or %s in the menu).", String(operation["kind"]) == "stash" ? "Abort Stash Restore" : "Abort Merge");
+	} else if (_in_operation()) {
+		in_operation = vformat("A %s is in progress: finish it or abort it first (see the banner above).", _operation_name());
+	}
 
 	// The worker rewrites the repository during a pull or push; switching branches or bulk
 	// changes meanwhile would race it.
@@ -625,11 +664,14 @@ void GitDock::_update_actions() {
 		branch_button->set_disabled(true);
 		amend_check->set_disabled(true);
 		amend_check->set_tooltip_text(in_operation);
-		commit_button->set_disabled(true);
-		commit_button->set_tooltip_text(in_operation);
+		if (String(operation.get("kind", String())) != "merge") { // Commit is how a merge finishes; see _update_commit_row.
+			commit_button->set_disabled(true);
+			commit_button->set_tooltip_text(in_operation);
+		}
 		pull_button->set_disabled(true);
 		pull_button->set_tooltip_text(in_operation);
 	}
+	_update_merge_button(syncing, in_operation);
 	_update_operation_banner(); // Its buttons follow the same busy state.
 }
 
@@ -661,7 +703,19 @@ void GitDock::_update_commit_row(bool p_syncing) {
 	} else {
 		commit_button->set_text(amending ? "Amend" : "Commit");
 	}
-	if (amending) {
+	const PackedStringArray merge_conflicts = operation.get("conflicts", PackedStringArray());
+	if (String(operation.get("kind", String())) == "merge") {
+		// Committing finishes the merge, also with nothing staged (you kept your side everywhere).
+		commit_button->set_disabled(p_syncing || !merge_conflicts.is_empty() || !has_message);
+		if (!merge_conflicts.is_empty()) {
+			commit_button->set_tooltip_text(vformat("Resolve %s under Conflicts first, then commit the merge.", join_list(merge_conflicts, 3)));
+		} else if (!has_message) {
+			commit_button->set_tooltip_text("Write a commit message first.");
+		} else {
+			commit_button->set_tooltip_text(vformat("Commit the merge into %s%s. Even with no file changes, it records the branch as merged, so its conflicts don't come back.", branch,
+					staged_count > 0 ? vformat(", with %s", plural(staged_count, "changed file", "changed files")) : String()));
+		}
+	} else if (amending) {
 		commit_button->set_disabled(p_syncing || !has_message);
 		if (!has_message) {
 			commit_button->set_tooltip_text("Write a commit message first.");
@@ -775,6 +829,9 @@ void GitDock::_on_more_menu_id(int p_id) {
 		} break;
 		case MORE_SETTINGS: {
 			_show_settings_dialog();
+		} break;
+		case MORE_ABORT_MERGE: {
+			_confirm_abort_merge();
 		} break;
 		case MORE_BUILD_INFO: {
 			const String url = String::utf8(build_url());

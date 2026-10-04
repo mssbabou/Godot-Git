@@ -14,6 +14,24 @@
 
 using namespace godot;
 
+// Highlights the resolver's result: its own header rows ("Theirs · art-pass") in plain text, every
+// other line by the file's highlighter, which reads a copy of the result with those rows blank
+// (GitConflictView::result_mirror). Run on the rows, the code's highlighter colored keywords in
+// branch names ("pass"), and a quote in one ("bob's-fix") would open a string down the file.
+class GitConflictHighlighter : public SyntaxHighlighter {
+	GDCLASS(GitConflictHighlighter, SyntaxHighlighter)
+
+	Ref<SyntaxHighlighter> code;
+	Color marker_color;
+
+protected:
+	static void _bind_methods() {}
+
+public:
+	void setup(const Ref<SyntaxHighlighter> &p_code, const Color &p_marker_color);
+	Dictionary _get_line_syntax_highlighting(int32_t p_line) const override;
+};
+
 // The Git Diff panel's resolver, for a file with conflicts (GitRepository::get_conflict): the
 // current conflict's two sides next to each other at the top, and the result (the whole file,
 // editable) below. The result marks what's still undecided with header rows of its own;
@@ -57,6 +75,8 @@ class GitConflictView : public VBoxContainer {
 	CodeEdit *theirs_edit = nullptr;
 	Label *result_caption = nullptr;
 	CodeEdit *result_edit = nullptr;
+	CodeEdit *result_mirror = nullptr; // Hidden: the result with its header rows blank, for the highlighter.
+	Ref<GitConflictHighlighter> result_highlighter;
 	PanelContainer *frames[3] = {};
 
 	// A `.import` file: the settings both sides changed differently, a side ticked for each
@@ -79,6 +99,7 @@ class GitConflictView : public VBoxContainer {
 	void _parse();
 	void _show_current(bool p_scroll);
 	void _on_result_changed();
+	void _sync_mirror();
 	void _choose(int p_choice);
 	void _go(int p_step);
 	void _take_whole(const String &p_side);

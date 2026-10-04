@@ -192,6 +192,9 @@ GitConflictView::GitConflictView() {
 	split->add_child(result_box);
 	result_edit = _make_code(result_box, FRAME_RESULT, true, &result_caption);
 	result_edit->connect("text_changed", callable_mp(this, &GitConflictView::_on_result_changed));
+	result_mirror = memnew(CodeEdit);
+	result_mirror->hide();
+	result_box->add_child(result_mirror);
 
 	VBoxContainer *settings_box = memnew(VBoxContainer);
 	settings_box->set_v_size_flags(SIZE_EXPAND_FILL);
@@ -394,13 +397,17 @@ void GitConflictView::set_conflict(const Dictionary &p_conflict, const Ref<Synta
 		bases[i] = String(block["base"]);
 		text += vformat("%s%s%s\n%s%s%s\n%s%s\n", mark, encode_id(i), mine_caption->get_text(), mine, mark, theirs_caption->get_text(), theirs, mark);
 	}
-	result_edit->set_syntax_highlighter(p_result_highlighter);
+	result_mirror->set_syntax_highlighter(p_result_highlighter);
+	result_highlighter.instantiate();
+	result_highlighter->setup(p_result_highlighter, result_edit->get_theme_color("font_color"));
+	result_edit->set_syntax_highlighter(result_highlighter);
 	mine_edit->set_syntax_highlighter(p_mine_highlighter);
 	theirs_edit->set_syntax_highlighter(p_theirs_highlighter);
 	updating = true;
 	result_edit->set_text(text.trim_suffix("\n"));
 	result_edit->clear_undo_history();
 	updating = false;
+	_sync_mirror();
 	_parse();
 	_show_current(true);
 }
@@ -534,6 +541,7 @@ void GitConflictView::_show_current(bool p_scroll) {
 }
 
 void GitConflictView::_on_result_changed() {
+	_sync_mirror(); // Choices (made while updating) change the text too.
 	if (updating) {
 		return;
 	}
@@ -749,4 +757,35 @@ void GitConflictView::_resolve_as_text() {
 
 Color GitConflictView::_filler_tint() const {
 	return get_theme_color("font_color", "Label") * Color(1, 1, 1, 0.04);
+}
+
+// The result as the file's highlighter should see it: the same lines, with the header rows blank.
+void GitConflictView::_sync_mirror() {
+	PackedStringArray lines;
+	for (int line = 0; line < result_edit->get_line_count(); line++) {
+		const String text = result_edit->get_line(line);
+		lines.push_back(is_marker(text) ? String() : text);
+	}
+	result_mirror->set_text(String("\n").join(lines));
+	if (result_highlighter.is_valid()) {
+		result_highlighter->clear_highlighting_cache(); // An edit can change how later lines read.
+	}
+}
+
+void GitConflictHighlighter::setup(const Ref<SyntaxHighlighter> &p_code, const Color &p_marker_color) {
+	code = p_code;
+	marker_color = p_marker_color;
+	clear_highlighting_cache();
+}
+
+Dictionary GitConflictHighlighter::_get_line_syntax_highlighting(int32_t p_line) const {
+	TextEdit *text_edit = get_text_edit();
+	if (text_edit && p_line >= 0 && p_line < text_edit->get_line_count() && is_marker(text_edit->get_line(p_line))) {
+		Dictionary color;
+		color["color"] = marker_color;
+		Dictionary result;
+		result[0] = color;
+		return result;
+	}
+	return code.is_valid() ? code->get_line_syntax_highlighting(p_line) : Dictionary();
 }

@@ -19,6 +19,10 @@ void GitDock::_build_conflicts(Control *p_parent) {
 	conflicts_header_strut = memnew(Control); // Keeps its header as tall as the others.
 	conflicts_header_strut->set_mouse_filter(MOUSE_FILTER_IGNORE);
 	conflicts_pane->add_title_bar_control(conflicts_header_strut);
+	conflicts_abort = memnew(Button);
+	conflicts_abort->set_flat(true);
+	conflicts_abort->connect("pressed", callable_mp(this, &GitDock::_confirm_abort_merge));
+	conflicts_pane->add_title_bar_control(conflicts_abort);
 	conflicts_pane->set_title("Conflicts");
 	conflicts_pane->hide();
 	p_parent->add_child(conflicts_pane);
@@ -48,6 +52,11 @@ void GitDock::_fill_conflicts(const Array &p_status) {
 	conflicted_paths = paths;
 	conflicts_pane->set_visible(!paths.is_empty());
 	conflicts_pane->set_title(paths.is_empty() ? String("Conflicts") : vformat("Conflicts (%d)", paths.size()));
+	// Rebases and the like have the banner's Abort.
+	conflicts_abort->set_visible(_in_merge());
+	const bool stash = String(operation.get("kind", String())) == "stash";
+	conflicts_abort->set_text(stash ? "Abort Restore" : "Abort Merge");
+	conflicts_abort->set_tooltip_text(stash ? String("Put the stash's files back as they were and keep the stash.") : String("Undo the merge: the branch and your files go back to how they were before it started."));
 	conflicts_tree->clear();
 	TreeItem *root = conflicts_tree->create_item();
 	for (const String &path : paths) {

@@ -353,7 +353,7 @@ void GitDock::_restore_stash_merging(const String &p_hash) {
 	if (err == OK) {
 		_reload_changed_scenes();
 		if (!conflicted_paths.is_empty()) {
-			_set_status(STATUS_SUCCESS, vformat("Restored the stash: resolve %s under Conflicts, then finish the restore", plural(conflicted_paths.size(), "file", "files")));
+			_set_status(STATUS_SUCCESS, vformat("Restored the stash: resolve %s under Conflicts", plural(conflicted_paths.size(), "file", "files")));
 			_show_conflict(conflicted_paths[0]);
 		}
 	}

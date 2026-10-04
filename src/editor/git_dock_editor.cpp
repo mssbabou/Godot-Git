@@ -80,6 +80,9 @@ String doing(const String &p_verb) {
 	if (p_verb == "Abort") {
 		return "Aborting";
 	}
+	if (p_verb == "Merge") {
+		return "Merging";
+	}
 	return "Continuing";
 }
 

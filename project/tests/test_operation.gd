@@ -8,6 +8,7 @@ func run() -> void:
 	_nothing_in_progress()
 	_merge_abort()
 	_merge_continue()
+	_merge_commit()
 	_rebase_continue()
 	_cherry_pick_abort()
 
@@ -45,7 +46,8 @@ func _merge_abort() -> void:
 	check("merge: its message", op.subject == "Merge branch 'feature'", op.subject)
 	check("merge: conflicts listed", op.conflicts == PackedStringArray(["a.txt"]), op.conflicts)
 
-	check("merge: commit refuses", r.commit("plain") != OK and "merge is in progress" in GitRepository.get_last_error(), GitRepository.get_last_error())
+	check("merge: commit refuses while conflicted, naming the file", r.commit("plain") != OK and "a.txt" in GitRepository.get_last_error(), GitRepository.get_last_error())
+	check("merge: amend refuses", r.amend("plain") != OK and "merge is in progress" in GitRepository.get_last_error(), GitRepository.get_last_error())
 	check("merge: switching refuses", r.checkout_branch("feature") != OK, GitRepository.get_last_error())
 	check("merge: continue refuses while conflicted", r.continue_operation() != OK and "a.txt" in GitRepository.get_last_error(), GitRepository.get_last_error())
 
@@ -63,6 +65,23 @@ func _merge_continue() -> void:
 	check("merge: continue", r.continue_operation() == OK, GitRepository.get_last_error())
 	check("merge: a merge commit with git's message", git(repo, ["rev-list", "--parents", "-n", "1", "HEAD"]).split(" ").size() == 3 and git(repo, ["log", "-1", "--format=%s"]) == "Merge branch 'feature'", git(repo, ["log", "-1", "--format=%s %p"]))
 	check("merge: finished", r.get_operation().kind == "" and git(repo, ["status", "--porcelain"]) == "", git(repo, ["status", "--porcelain"]))
+
+
+## Committing once the conflicts are resolved finishes the merge, like `git commit` does: both
+## parents, your message; also when you kept your side everywhere and no file changes.
+func _merge_commit() -> void:
+	for keep_mine in [false, true]:
+		var name := "merge-commit-mine" if keep_mine else "merge-commit"
+		var repo := _conflicting_branches(name)
+		var head := git(repo, ["rev-parse", "HEAD"])
+		var feature := git(repo, ["rev-parse", "feature"])
+		git(repo, ["merge", "feature"])
+		var r := open(repo)
+		check(name + ": resolve", r.resolve_conflict_with("a.txt", "mine" if keep_mine else "theirs") == OK, GitRepository.get_last_error())
+		check(name + ": commit", r.commit("Merged feature, my way") == OK, GitRepository.get_last_error())
+		check(name + ": both parents, my message", git(repo, ["rev-list", "--parents", "-n", "1", "HEAD"]) == "%s %s %s" % [git(repo, ["rev-parse", "HEAD"]), head, feature] and git(repo, ["log", "-1", "--format=%s"]) == "Merged feature, my way", git(repo, ["log", "-1", "--format=%s %p"]))
+		check(name + ": finished, nothing left over", r.get_operation().kind == "" and git(repo, ["status", "--porcelain"]) == "", git(repo, ["status", "--porcelain"]))
+		check(name + ": git agrees feature is merged", git(repo, ["branch", "--merged"]).contains("feature"), git(repo, ["branch", "--merged"]))
 
 
 func _rebase_continue() -> void:
