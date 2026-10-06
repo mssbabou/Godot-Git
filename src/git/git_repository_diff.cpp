@@ -15,6 +15,7 @@
 
 #include "git/git_lfs.h"
 #include "git/git_util.h"
+#include "git/scene_text.h"
 #include "git/settings_text.h"
 
 using namespace godot_git;
@@ -233,7 +234,17 @@ String lfs_pointer_oid(const PackedByteArray &p_bytes) {
 // whole text ("settings", see settings_changes), and the importer ("importer", for naming values).
 void add_settings(const GitRepository *p_repo, Dictionary &r_diff, const String &p_old_version, const String &p_new_version) {
 	const String path = r_diff["path"];
-	if (!is_settings_path(path) || String(r_diff["kind"]) != "text") {
+	if (String(r_diff["kind"]) != "text") {
+		return;
+	}
+	if (is_scene_path(path)) {
+		// A scene or resource: node by node (see scene_changes).
+		const String old_text = PackedByteArray(Dictionary(p_repo->get_file_bytes(p_old_version, r_diff["old_path"]))["bytes"]).get_string_from_utf8();
+		const String new_text = PackedByteArray(Dictionary(p_repo->get_file_bytes(p_new_version, path))["bytes"]).get_string_from_utf8();
+		r_diff["scene"] = scene_changes(old_text, new_text);
+		return;
+	}
+	if (!is_settings_path(path)) {
 		return;
 	}
 	const String old_text = PackedByteArray(Dictionary(p_repo->get_file_bytes(p_old_version, r_diff["old_path"]))["bytes"]).get_string_from_utf8();

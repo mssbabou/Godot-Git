@@ -198,8 +198,7 @@ func _line_endings() -> void:
 func _git_name_status(repo: String, commit: String) -> Dictionary:
 	var result := {}
 	var out := git(repo, ["diff", "--name-status", "-M", "--no-color", commit + "^1", commit]) if git(repo, ["rev-list", "--parents", "-n", "1", commit]).split(" ").size() > 1 else git(repo, ["show", "--name-status", "-M", "--no-color", "--format=", commit])
-	for line: String in out.split("
-"):
+	for line: String in out.split("\n"):
 		if line.is_empty():
 			continue
 		var parts := line.split("	")
@@ -219,26 +218,16 @@ func _commits() -> void:
 	var repo := make_repo("commits")
 	var body := ""
 	for i in 20:
-		body += "same line %d
-" % i
-	write(repo.path_join("a.txt"), "one
-two
-three
-")
+		body += "same line %d\n" % i
+	write(repo.path_join("a.txt"), "one\ntwo\nthree\n")
 	write(repo.path_join("old.txt"), body)
-	write(repo.path_join("gone.txt"), "bye
-")
+	write(repo.path_join("gone.txt"), "bye\n")
 	commit_all(repo, "first")
 	var first := git(repo, ["rev-parse", "HEAD"])
-	write(repo.path_join("a.txt"), "one
-TWO
-three
-four
-")
+	write(repo.path_join("a.txt"), "one\nTWO\nthree\nfour\n")
 	git(repo, ["mv", "old.txt", "renamed.txt"])
 	git(repo, ["rm", "-q", "gone.txt"])
-	write(repo.path_join("sub/new.txt"), "hello
-")
+	write(repo.path_join("sub/new.txt"), "hello\n")
 	commit_all(repo, "second")
 	var second := git(repo, ["rev-parse", "HEAD"])
 	var r := open(repo)
@@ -264,12 +253,10 @@ four
 
 	# A merge shows what it brought into the branch: its changes against the first parent.
 	git(repo, ["checkout", "-q", "-b", "feature"])
-	write(repo.path_join("feature.txt"), "feature
-")
+	write(repo.path_join("feature.txt"), "feature\n")
 	commit_all(repo, "feature work")
 	git(repo, ["checkout", "-q", "main"])
-	write(repo.path_join("main.txt"), "main
-")
+	write(repo.path_join("main.txt"), "main\n")
 	commit_all(repo, "main work")
 	git(repo, ["merge", "-q", "--no-edit", "feature"])
 	var merge := git(repo, ["rev-parse", "HEAD"])
@@ -283,12 +270,10 @@ func _history_order() -> void:
 	OS.set_environment("GIT_AUTHOR_DATE", "2026-01-01T12:00:00")
 	OS.set_environment("GIT_COMMITTER_DATE", "2026-01-01T12:00:00")
 	for i in 4:
-		write(repo.path_join("f%d.txt" % i), "x
-")
+		write(repo.path_join("f%d.txt" % i), "x\n")
 		commit_all(repo, "commit %d" % i)
 	git(repo, ["checkout", "-q", "-b", "side", "HEAD~2"])
-	write(repo.path_join("side.txt"), "x
-")
+	write(repo.path_join("side.txt"), "x\n")
 	commit_all(repo, "side")
 	git(repo, ["checkout", "-q", "main"])
 	git(repo, ["merge", "-q", "--no-edit", "side"])
@@ -311,8 +296,7 @@ func _history_cache() -> void:
 	var shared := make_shared("cache")
 	var r := open(shared.mine)
 	check("history: first commit listed", r.get_commits(50).size() == 1)
-	write(shared.mine.path_join("x.txt"), "changed in a terminal
-")
+	write(shared.mine.path_join("x.txt"), "changed in a terminal\n")
 	commit_all(shared.mine, "From a terminal")
 	var commits := r.get_commits(50)
 	check("history: a commit made elsewhere shows", commits.size() == 2 and commits[0].summary == "From a terminal", commits.map(func(c): return c.summary))
@@ -351,8 +335,7 @@ func _file_bytes() -> void:
 	var v3 := v2.duplicate()
 	v3[5] = 99
 	_bytes(repo.path_join("art/icon.png"), v1)
-	write(repo.path_join("gone.txt"), "bye
-")
+	write(repo.path_join("gone.txt"), "bye\n")
 	commit_all(repo, "first")
 	_bytes(repo.path_join("art/icon.png"), v2)
 	git(repo, ["rm", "-q", "gone.txt"])
@@ -376,51 +359,18 @@ func _file_bytes() -> void:
 
 # The script editor's change marks: diff_lines, checked against the hunk headers of git diff -U0.
 func _line_changes() -> void:
-	var old := "a
-b
-c
-d
-e
-"
-	var h := GitRepository.diff_lines(old, "a
-B
-c
-d
-e
-")
+	var old := "a\nb\nc\nd\ne\n"
+	var h := GitRepository.diff_lines(old, "a\nB\nc\nd\ne\n")
 	check("one changed line", h.size() == 1 and h[0].old_start == 2 and h[0].old_count == 1 and h[0].new_start == 2 and h[0].new_count == 1 and h[0].old_lines == PackedStringArray(["b"]), h)
-	h = GitRepository.diff_lines(old, "a
-b
-x
-y
-c
-d
-e
-")
+	h = GitRepository.diff_lines(old, "a\nb\nx\ny\nc\nd\ne\n")
 	check("added lines: no old lines", h.size() == 1 and h[0].old_count == 0 and h[0].new_start == 3 and h[0].new_count == 2, h)
-	h = GitRepository.diff_lines(old, "a
-d
-e
-")
+	h = GitRepository.diff_lines(old, "a\nd\ne\n")
 	check("deleted lines: after the line they followed", h.size() == 1 and h[0].new_count == 0 and h[0].new_start == 1 and h[0].old_lines == PackedStringArray(["b", "c"]), h)
-	h = GitRepository.diff_lines(old, "c
-d
-e
-")
+	h = GitRepository.diff_lines(old, "c\nd\ne\n")
 	check("deleted at the top", h.size() == 1 and h[0].new_start == 0 and h[0].new_count == 0, h)
-	check("CRLF and a missing final newline don't count", GitRepository.diff_lines(old, "a
-b
-c
-d
-e").is_empty(), GitRepository.diff_lines(old, "a
-b
-c
-d
-e"))
+	check("CRLF and a missing final newline don't count", GitRepository.diff_lines(old, "a\nb\nc\nd\ne").is_empty(), GitRepository.diff_lines(old, "a\nb\nc\nd\ne"))
 	check("nothing changed", GitRepository.diff_lines(old, old).is_empty())
-	check("new file: all added", GitRepository.diff_lines("", "x
-y
-")[0].new_count == 2)
+	check("new file: all added", GitRepository.diff_lines("", "x\ny\n")[0].new_count == 2)
 
 	# A bigger edit, against git itself.
 	var before := PackedStringArray()
@@ -436,25 +386,16 @@ y
 	after.remove_at(35)
 	var dir_path := dir.path_join("line-changes")
 	DirAccess.make_dir_recursive_absolute(dir_path)
-	write(dir_path.path_join("old.txt"), "
-".join(before) + "
-")
-	write(dir_path.path_join("new.txt"), "
-".join(after) + "
-")
+	write(dir_path.path_join("old.txt"), "\n".join(before) + "\n")
+	write(dir_path.path_join("new.txt"), "\n".join(after) + "\n")
 	var out := []
 	OS.execute("git", ["-C", dir_path, "diff", "--no-index", "-U0", "old.txt", "new.txt"], out, true)
 	var git_headers := PackedStringArray()
-	for line in "".join(out).split("
-"):
+	for line in "".join(out).split("\n"):
 		if line.begins_with("@@"):
 			git_headers.append(line.get_slice(" @@", 0))
 	var ours := PackedStringArray()
-	for hunk in GitRepository.diff_lines("
-".join(before) + "
-", "
-".join(after) + "
-"):
+	for hunk in GitRepository.diff_lines("\n".join(before) + "\n", "\n".join(after) + "\n"):
 		ours.append("@@ -%d,%d +%d,%d" % [hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count])
 	# git leaves out ",1"; spell its headers out the same way.
 	var normalized := PackedStringArray()

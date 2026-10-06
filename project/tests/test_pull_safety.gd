@@ -189,21 +189,15 @@ func _unrelated_edits_survive_a_refused_conflict() -> void:
 ## listed, put back byte for byte, or deleted.
 func _leftovers() -> void:
 	var repo := make_repo("leftovers")
-	write(repo.path_join("a.txt"), "committed
-")
+	write(repo.path_join("a.txt"), "committed\n")
 	commit_all(repo, "first")
 	var folder := repo.path_join(".git/godot-git-pull")
 	DirAccess.make_dir_recursive_absolute(folder)
-	write(folder.path_join("0"), "my edit
-")
-	write(folder.path_join("README.txt"), "Your uncommitted edits, saved by the Godot Git panel while it pulled.
-
-0  a.txt
-")
+	write(folder.path_join("0"), "my edit\n")
+	write(folder.path_join("README.txt"), "Your uncommitted edits, saved by the Godot Git panel while it pulled.\n\n0  a.txt\n")
 	var r := open(repo)
 	var leftovers := r.get_pull_leftovers()
 	check("leftovers: listed", leftovers.size() == 1 and leftovers[0].files.size() == 1 and leftovers[0].files[0].path == "a.txt" and not leftovers[0].files[0].back, leftovers)
 	check("leftovers: put back", r.resolve_pull_leftovers(leftovers[0].folder, true) == OK, GitRepository.get_last_error())
-	check("leftovers: the edit is back, byte for byte", FileAccess.get_file_as_string(repo.path_join("a.txt")) == "my edit
-")
+	check("leftovers: the edit is back, byte for byte", FileAccess.get_file_as_string(repo.path_join("a.txt")) == "my edit\n")
 	check("leftovers: the copies are gone", not DirAccess.dir_exists_absolute(folder) and r.get_pull_leftovers().is_empty())

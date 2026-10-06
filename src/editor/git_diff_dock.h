@@ -21,6 +21,7 @@
 #include <godot_cpp/variant/dictionary.hpp>
 
 #include "editor/git_conflict_view.h"
+#include "editor/property_list.h"
 
 using namespace godot;
 
@@ -67,6 +68,7 @@ private:
 		VIEW_IMAGE, // Before | after, for images. Not saved: images always open this way.
 		VIEW_SETTINGS, // Setting by setting, for `.import` and `.uid` files. Not saved either.
 		VIEW_AUDIO, // Before | after, for sounds: length, waveform, play.
+		VIEW_SCENE, // Node by node, for `.tscn` and `.tres` files. Not saved: scenes open this way.
 	};
 
 	enum PaneIndex {
@@ -186,12 +188,16 @@ private:
 	AudioStreamPlayer *audio_player = nullptr;
 	int audio_playing = -1; // The side playing, or -1.
 	Control *settings_view = nullptr;
-	Tree *settings_tree = nullptr;
+	GitPropertyList *settings_tree = nullptr;
+	Control *scene_view = nullptr;
+	Tree *scene_tree = nullptr; // The scene's nodes, like the Scene dock.
+	GitPropertyList *scene_properties = nullptr; // The selected node's changes, like the Inspector.
+	String scene_selected; // The node shown on the right, kept across redraws.
 	// Under any view: the settings of the file's companions (`player.png.import`, `player.gd.uid`),
 	// which the Git dock lists on the file's row.
 	Control *companion_view = nullptr;
 	ScrollContainer *companion_scroll = nullptr;
-	Tree *companion_tree = nullptr;
+	GitPropertyList *companion_tree = nullptr;
 	Label *message_label = nullptr;
 	Control *message_view = nullptr;
 	// A conflicted file (the Git dock marks it "!"): the resolver instead of a diff.
@@ -245,9 +251,14 @@ private:
 	void _process_audio();
 
 	// git_diff_dock_settings.cpp
-	Tree *_make_settings_tree(Control *p_parent);
+	GitPropertyList *_make_settings_tree(Control *p_parent);
+
+	// git_diff_dock_scene.cpp
+	void _make_scene_view(Control *p_parent);
+	void _show_scene();
+	void _on_scene_node_selected();
 	void _show_settings();
-	void _fill_settings(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_diff);
+	void _fill_settings(GitPropertyList *p_list, const Dictionary &p_diff);
 	void _fit_companions();
 	void _on_copy_hash();
 	void _show_hash_label();

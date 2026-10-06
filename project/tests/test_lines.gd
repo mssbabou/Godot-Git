@@ -92,27 +92,18 @@ func _crlf_kept() -> void:
 	var lines := PackedStringArray()
 	for i in 20:
 		lines.append("line %d" % (i + 1))
-	write(repo.path_join("w.txt"), "
-".join(lines) + "
-")
+	write(repo.path_join("w.txt"), "\r\n".join(lines) + "\r\n")
 	commit_all(repo, "First")
 	lines[1] = "LINE 2"
 	lines[18] = "LINE 19"
-	write(repo.path_join("w.txt"), "
-".join(lines) + "
-")
+	write(repo.path_join("w.txt"), "\r\n".join(lines) + "\r\n")
 	var r := open(repo)
 	check("crlf: two hunks", r.get_diff("w.txt", false).hunks.size() == 2)
 	check("crlf: discarded the first change", r.apply_line_changes("w.txt", false, "discard", _hunk_lines(r, "w.txt", false, 0)) == OK, GitRepository.get_last_error())
 	var on_disk := FileAccess.get_file_as_string(repo.path_join("w.txt"))
-	check("crlf: line 2 back, line 19 still changed, CRLF line endings kept", on_disk.begins_with("line 1
-line 2
-") and on_disk.contains("LINE 19
-") and on_disk.count("
-") == 20, on_disk.c_escape())
+	check("crlf: line 2 back, line 19 still changed, CRLF line endings kept", on_disk.begins_with("line 1\r\nline 2\r\n") and on_disk.contains("LINE 19\r\n") and on_disk.count("\r\n") == 20, on_disk.c_escape())
 	check("crlf: staged the other", r.apply_line_changes("w.txt", false, "stage", _hunk_lines(r, "w.txt", false, 0)) == OK, GitRepository.get_last_error())
-	check("crlf: git stores LF, nothing left unstaged", git(repo, ["show", ":w.txt"]).contains("LINE 19
-line 20") and git(repo, ["diff"]) == "", git(repo, ["diff"]))
+	check("crlf: git stores LF, nothing left unstaged", git(repo, ["show", ":w.txt"]).contains("LINE 19\nline 20") and git(repo, ["diff"]) == "", git(repo, ["diff"]))
 
 
 func _new_file() -> void:

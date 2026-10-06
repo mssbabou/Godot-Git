@@ -7,20 +7,13 @@
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/os.hpp>
 
+#include "editor/git_colors.h"
+#include "editor/property_list.h"
 #include "editor/ui_text.h"
 
 using namespace godot_git;
 
 namespace {
-
-enum SettingColumn {
-	COLUMN_SETTING,
-	COLUMN_OLD,
-	COLUMN_ARROW,
-	COLUMN_NEW,
-	COLUMN_REST, // Takes the remaining width, so the others stay as wide as their text.
-	SETTING_COLUMN_COUNT,
-};
 
 // Values Godot fills in itself: where the imported copy goes (named after the file), what the
 // importer reported about it, and the file's dependencies. They change with the file's name or its
@@ -219,13 +212,6 @@ String setting_value(const String &p_importer, const String &p_section, const St
 	return line.left(59) + String::utf8("…");
 }
 
-void set_cell(TreeItem *p_item, int p_column, const String &p_text, const Color &p_color) {
-	p_item->set_text(p_column, p_text);
-	p_item->set_custom_color(p_column, p_color);
-	// Otherwise the column doesn't grow with its text (gotcha 4).
-	p_item->set_text_overrun_behavior(p_column, TextServer::OVERRUN_NO_TRIMMING);
-}
-
 } // namespace
 
 String GitDiffDock::setting_display_name(const String &p_section, const String &p_key) {
@@ -240,71 +226,60 @@ bool GitDiffDock::is_generated_setting(const String &p_section, const String &p_
 	return is_generated(p_section, p_key);
 }
 
-Tree *GitDiffDock::_make_settings_tree(Control *p_parent) {
-	Tree *tree = memnew(Tree);
-	tree->set_columns(SETTING_COLUMN_COUNT);
-	tree->set_hide_root(true);
-	tree->set_hide_folding(true);
-	tree->set_focus_mode(FOCUS_NONE);
-	tree->set_v_size_flags(SIZE_EXPAND_FILL);
-	for (int i = 0; i < SETTING_COLUMN_COUNT; i++) {
-		tree->set_column_expand(i, i == COLUMN_REST);
-	}
-	p_parent->add_child(tree);
-	return tree;
+GitPropertyList *GitDiffDock::_make_settings_tree(Control *p_parent) {
+	GitPropertyList *list = memnew(GitPropertyList);
+	list->set_v_size_flags(SIZE_EXPAND_FILL);
+	p_parent->add_child(list);
+	return list;
 }
 
 void GitDiffDock::_show_settings() {
-	settings_tree->clear();
+	settings_tree->clear_list();
 	if (_current_view() == VIEW_SETTINGS) {
-		_fill_settings(settings_tree, settings_tree->create_item(), diff);
+		_fill_settings(settings_tree, diff);
 	}
 
-	// The companions: each one's name, then its settings under it.
-	companion_tree->clear();
+	// The companions: each one's name, then its settings under it, like a node in the scene view.
+	companion_tree->clear_list();
 	const Array companions = diff.get("companions", Array());
 	companion_view->set_visible(!companions.is_empty());
 	if (companions.is_empty()) {
 		return;
 	}
-	TreeItem *root = companion_tree->create_item();
+	const Ref<Theme> editor_theme = EditorInterface::get_singleton()->get_editor_theme();
 	for (int i = 0; i < companions.size(); i++) {
 		const Dictionary companion = companions[i];
 		const String status = companion.get("status", String());
-		TreeItem *file = companion_tree->create_item(root);
-		file->set_selectable(COLUMN_SETTING, false);
-		set_cell(file, COLUMN_SETTING, String(companion.get("path", String())).get_file(), theme.dim);
+		const String path = companion.get("path", String());
 		// Its settings, also when it's new or deleted: a new script's .uid is always new, and its
-		// uid is the point (it said only "New file", maintainer 2026-09-30). New values alone, or
-		// old ones alone, say it's new or deleted, so there's no label for that (it didn't line up).
-		_fill_settings(companion_tree, file, companion);
-		for (int c = 0; c < SETTING_COLUMN_COUNT; c++) {
-			file->set_selectable(c, false);
-		}
+		// uid is the point (it said only "New file", maintainer 2026-09-30).
+		companion_tree->add_title(editor_theme->get_icon("File", "EditorIcons"), path.get_file(), String(), status == "untracked" ? String("New") : status_name(status), status_color(status));
+		_fill_settings(companion_tree, companion);
 	}
 	callable_mp(this, &GitDiffDock::_fit_companions).call_deferred();
 }
 
-// The changed settings of p_diff as rows under p_parent. Settings that only one side has, in a
-// file both sides have, are folded into one line each: the importer gained or dropped options
-// (a newer Godot, or another importer), and dozens of rows would bury the real change.
-void GitDiffDock::_fill_settings(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_diff) {
+// The changed settings of p_diff, in sections like the Import dock's ("Compress › Mode" is Mode
+// under Compress). Settings that only one side has, in a file both sides have, are folded into
+// one line each: the importer gained or dropped options (a newer Godot, or another importer), and
+// dozens of rows would bury the real change.
+void GitDiffDock::_fill_settings(GitPropertyList *p_list, const Dictionary &p_diff) {
 	const Array changes = p_diff.get("settings", Array());
 	const String importer = p_diff.get("importer", String());
 	const String status = p_diff.get("status", String());
 	const bool whole_file = status == "new" || status == "untracked" || status == "deleted";
-	const Color font_color = get_theme_color("font_color", "Tree");
 
 	PackedStringArray added, removed;
+	String section = "\n"; // None yet.
 	int rows = 0;
 	for (int i = 0; i < changes.size(); i++) {
 		const Dictionary change = changes[i];
-		const String section = change["section"];
+		const String file_section = change["section"];
 		const String key = change["key"];
-		if (is_generated(section, key)) {
+		if (is_generated(file_section, key)) {
 			continue;
 		}
-		const String name = setting_name(section, key);
+		const String name = setting_name(file_section, key);
 		const bool has_old = change.has("old");
 		const bool has_new = change.has("new");
 		// Folded only for import settings, where they're the importer's options coming and going;
@@ -313,45 +288,30 @@ void GitDiffDock::_fill_settings(Tree *p_tree, TreeItem *p_parent, const Diction
 			(has_new ? added : removed).push_back(name);
 			continue;
 		}
-		TreeItem *row = p_tree->create_item(p_parent);
-		set_cell(row, COLUMN_SETTING, name, font_color);
-		for (const bool is_new : { false, true }) {
-			if (!change.has(is_new ? "new" : "old")) {
-				continue;
-			}
-			String full;
-			const String value = setting_value(importer, section, key, change[is_new ? "new" : "old"], full);
-			set_cell(row, is_new ? COLUMN_NEW : COLUMN_OLD, value, is_new ? theme.added : theme.removed);
-			if (!full.is_empty()) {
-				row->set_tooltip_text(is_new ? COLUMN_NEW : COLUMN_OLD, full);
+		const String separator = String::utf8(" › ");
+		const int cut = name.rfind(separator);
+		const String group = cut < 0 ? String() : name.left(cut);
+		if (group != section) {
+			section = group;
+			if (!group.is_empty()) {
+				p_list->add_section(group);
 			}
 		}
-		if (has_old && has_new) {
-			set_cell(row, COLUMN_ARROW, String::utf8("→"), theme.dim);
-		}
-		row->set_tooltip_text(COLUMN_SETTING, vformat("%s (in the file: %s)", name, key));
+		String old_full, new_full;
+		const String old_value = has_old ? setting_value(importer, file_section, key, change["old"], old_full) : String();
+		const String new_value = has_new ? setting_value(importer, file_section, key, change["new"], new_full) : String();
+		const String shown_name = cut < 0 ? name : name.substr(cut + separator.length());
+		p_list->add_property(shown_name, old_value, has_old, new_value, has_new, vformat("%s (in the file: %s)\n%s", name, key, has_new ? (new_full.is_empty() ? new_value : new_full) : (old_full.is_empty() ? old_value : old_full)));
 		rows++;
 	}
-
-	auto note = [&](const String &p_text, const String &p_tooltip) {
-		TreeItem *row = p_tree->create_item(p_parent);
-		set_cell(row, COLUMN_SETTING, p_text, theme.dim);
-		row->set_tooltip_text(COLUMN_SETTING, p_tooltip);
-		rows++;
-	};
 	if (!added.is_empty()) {
-		note(plural(added.size(), "new setting", "new settings"), vformat("Settings the file didn't have before, usually because a newer version of Godot added them:\n%s", String("\n").join(added)));
+		p_list->add_note(plural(added.size(), "new setting", "new settings"), vformat("Settings the file didn't have before, usually because a newer version of Godot added them:\n%s", String("\n").join(added)));
 	}
 	if (!removed.is_empty()) {
-		note(vformat("%s removed", plural(removed.size(), "setting", "settings")), vformat("Settings the file no longer has, usually because a newer version of Godot dropped them:\n%s", String("\n").join(removed)));
+		p_list->add_note(vformat("%s removed", plural(removed.size(), "setting", "settings")), vformat("Settings the file no longer has, usually because a newer version of Godot dropped them:\n%s", String("\n").join(removed)));
 	}
-	if (rows == 0) {
-		note("Only values Godot fills in itself changed.", "Such as where the imported copy is kept in .godot/imported, which follows from the file's name.");
-	}
-	for (TreeItem *row = p_parent->get_first_child(); row; row = row->get_next()) {
-		for (int c = 0; c < SETTING_COLUMN_COUNT; c++) {
-			row->set_selectable(c, false);
-		}
+	if (rows == 0 && added.is_empty() && removed.is_empty()) {
+		p_list->add_note("Only values Godot fills in itself changed.", "Such as where the imported copy is kept in .godot/imported, which follows from the file's name.");
 	}
 }
 

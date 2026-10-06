@@ -166,6 +166,7 @@ GitDiffDock::GitDiffDock() {
 	body->add_child(settings_frame);
 	settings_view = settings_frame;
 	settings_tree = _make_settings_tree(settings_frame);
+	_make_scene_view(body);
 
 	conflict_view = memnew(GitConflictView);
 	conflict_view->hide();
@@ -364,7 +365,7 @@ void GitDiffDock::_render() {
 	const bool resolving = diff.has("conflict");
 	conflict_view->set_visible(resolving);
 	if (resolving) {
-		for (Control *view : { unified_view, split_view, image_view, audio_view, settings_view, message_view, companion_view }) {
+		for (Control *view : { unified_view, split_view, image_view, audio_view, settings_view, scene_view, message_view, companion_view }) {
 			view->hide();
 		}
 		// An image or sound conflict: both versions, the choice under them.
@@ -385,7 +386,7 @@ void GitDiffDock::_render() {
 	conflict_shown = Dictionary();
 
 	const View view = _current_view();
-	const bool own_view = view == VIEW_IMAGE || view == VIEW_SETTINGS || view == VIEW_AUDIO;
+	const bool own_view = view == VIEW_IMAGE || view == VIEW_SETTINGS || view == VIEW_AUDIO || view == VIEW_SCENE;
 	const String text = own_view ? String() : _empty_text();
 	message_label->set_text(text);
 	message_view->set_visible(!text.is_empty());
@@ -394,10 +395,12 @@ void GitDiffDock::_render() {
 	split_view->set_visible(text.is_empty() && split);
 	image_view->set_visible(view == VIEW_IMAGE);
 	settings_view->set_visible(view == VIEW_SETTINGS);
+	scene_view->set_visible(view == VIEW_SCENE);
 	audio_view->set_visible(view == VIEW_AUDIO);
 	_show_images();
 	_show_audio();
 	_show_settings();
+	_show_scene();
 
 	// Only the visible view holds lines; the others are emptied.
 	Rows unified, old_side, new_side;
@@ -418,6 +421,9 @@ GitDiffDock::View GitDiffDock::_current_view() const {
 	}
 	if (diff.has("settings") && (!has_lines || !as_text)) {
 		return VIEW_SETTINGS;
+	}
+	if (diff.has("scene") && has_lines && !as_text) {
+		return VIEW_SCENE;
 	}
 	if (diff.has("audio_new")) {
 		return VIEW_AUDIO; // Never text.
@@ -476,6 +482,9 @@ void GitDiffDock::_update_header() {
 	if (diff.has("settings") && has_lines) {
 		view_select->add_item("Settings", VIEW_SETTINGS);
 	}
+	if (diff.has("scene") && has_lines) {
+		view_select->add_item("Scene", VIEW_SCENE);
+	}
 	if (has_lines) {
 		view_select->add_item("Unified", VIEW_UNIFIED);
 		view_select->add_item("Side by Side", VIEW_SPLIT);
@@ -529,8 +538,8 @@ String GitDiffDock::_empty_text() const {
 
 void GitDiffDock::_on_view_selected(int p_index) {
 	const View view = (View)view_select->get_item_id(p_index);
-	const bool own_view = view == VIEW_IMAGE || view == VIEW_SETTINGS;
-	if (diff.has("image_new") || diff.has("settings")) {
+	const bool own_view = view == VIEW_IMAGE || view == VIEW_SETTINGS || view == VIEW_SCENE;
+	if (diff.has("image_new") || diff.has("settings") || diff.has("scene")) {
 		as_text = !own_view; // Only a choice made on such a file counts for them.
 	}
 	if (!own_view) {

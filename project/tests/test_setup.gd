@@ -66,8 +66,7 @@ func _init_parent_folder() -> void:
 	check("found from the project folder", r.is_open() and r.get_workdir().trim_suffix("/").ends_with("MegaGame"), r.get_workdir())
 	var paths := r.get_status().map(func(s: Dictionary) -> String: return s.path)
 	check("files outside the project show", paths.has("docs/design.md") and paths.has("game/project.godot"), paths)
-	write(game.path_join(".godot/editor/cache.cfg"), "cache
-")
+	write(game.path_join(".godot/editor/cache.cfg"), "cache\n")
 	git(mega, ["add", "-A"])
 	var added := git(mega, ["diff", "--cached", "--name-only"])
 	check(".godot/ ignored from the parent too", added.contains("game/project.godot") and not added.contains("game/.godot/"), added)

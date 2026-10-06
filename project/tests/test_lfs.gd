@@ -145,8 +145,7 @@ func _file_bytes() -> void:
 func _track_with_lfs() -> void:
 	var repo := make_repo("track")
 	git(repo, ["lfs", "install", "--local"])
-	write(repo.path_join("readme.txt"), "hello
-")
+	write(repo.path_join("readme.txt"), "hello\n")
 	commit_all(repo, "First")
 	_write_image(repo.path_join("big.psd"), 4000)
 	var r := open(repo)
@@ -156,8 +155,7 @@ func _track_with_lfs() -> void:
 	check("the rule is in .gitattributes", read(repo.path_join(".gitattributes")).contains("*.psd filter=lfs diff=lfs merge=lfs -text"), read(repo.path_join(".gitattributes")))
 	check("tracking twice adds no second line", r.track_with_lfs(["*.psd"], ["big.psd"]) == OK and read(repo.path_join(".gitattributes")).count("*.psd") == 1)
 	check("commit", r.commit("Add big.psd") == OK, GitRepository.get_last_error())
-	check("committed into LFS", git(repo, ["lfs", "ls-files", "-n"]).split("
-").has("big.psd"), git(repo, ["lfs", "ls-files", "-n"]))
+	check("committed into LFS", git(repo, ["lfs", "ls-files", "-n"]).split("\n").has("big.psd"), git(repo, ["lfs", "ls-files", "-n"]))
 	check("git holds only a pointer", git(repo, ["cat-file", "-s", "HEAD:big.psd"]).to_int() < 200, git(repo, ["cat-file", "-s", "HEAD:big.psd"]))
 	check(".gitattributes committed with it", git(repo, ["ls-files", ".gitattributes"]).strip_edges() == ".gitattributes")
 	check("status clean", r.get_status().is_empty(), r.get_status())

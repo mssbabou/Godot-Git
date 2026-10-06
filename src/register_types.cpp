@@ -14,6 +14,7 @@
 #include "editor/git_diff_dock.h"
 #include "editor/git_dock.h"
 #include "editor/git_editor_plugin.h"
+#include "editor/property_list.h"
 #include "editor/script_marks.h"
 #include "git/git_lfs.h"
 #include "git/git_repository.h"
@@ -75,6 +76,7 @@ void initialize_godot_git_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_INTERNAL_CLASS(GitChangePreview);
 		GDREGISTER_INTERNAL_CLASS(GitScriptMenu);
 		GDREGISTER_INTERNAL_CLASS(GitAvatars);
+		GDREGISTER_INTERNAL_CLASS(GitPropertyList);
 		GDREGISTER_INTERNAL_CLASS(GitEditorPlugin);
 		EditorPlugins::add_by_type<GitEditorPlugin>();
 	}

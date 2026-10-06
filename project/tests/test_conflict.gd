@@ -163,18 +163,7 @@ func _crlf() -> void:
 	check("crlf: staged as LF", git(repo, ["show", ":a.txt"]) == "a\nb", git(repo, ["show", ":a.txt"]))
 
 
-const IMPORT_BASE := "[remap]
-
-importer=\"texture\"
-type=\"CompressedTexture2D\"
-
-[params]
-
-compress/mode=0
-compress/lossy_quality=0.7
-mipmaps/generate=false
-roughness/mode=0
-"
+const IMPORT_BASE := "[remap]\n\nimporter=\"texture\"\ntype=\"CompressedTexture2D\"\n\n[params]\n\ncompress/mode=0\ncompress/lossy_quality=0.7\nmipmaps/generate=false\nroughness/mode=0\n"
 
 
 ## An .import file: main sets compress/mode to 2 and the lossy quality, feature sets compress/mode
@@ -197,13 +186,11 @@ func _import_settings() -> void:
 	var ids := []
 	for setting in conflict.get("settings", []):
 		ids.append(setting.id)
-	check("settings: only compress/mode is asked about", ids == ["params
-compress/mode"], conflict.get("settings"))
+	check("settings: only compress/mode is asked about", ids == ["params\ncompress/mode"], conflict.get("settings"))
 	check("settings: its three values", conflict.settings[0].base == "0" and conflict.settings[0].mine == "2" and conflict.settings[0].theirs == "1", conflict.settings)
 	check("settings: the importer", conflict.importer == "texture", conflict.importer)
 	check("settings: refused without a choice", r.resolve_settings_conflict("icon.png.import", {}) != OK)
-	check("settings: resolved with theirs", r.resolve_settings_conflict("icon.png.import", {"params
-compress/mode": "theirs"}) == OK, GitRepository.get_last_error())
+	check("settings: resolved with theirs", r.resolve_settings_conflict("icon.png.import", {"params\ncompress/mode": "theirs"}) == OK, GitRepository.get_last_error())
 	var expected := IMPORT_BASE.replace("compress/mode=0", "compress/mode=1").replace("quality=0.7", "quality=0.8").replace("generate=false", "generate=true")
 	check("settings: theirs' mode, mine's quality, theirs' mipmaps", read(repo.path_join("icon.png.import")) == expected, read(repo.path_join("icon.png.import")))
 	check("settings: staged, no conflicts left", r.get_operation().conflicts.is_empty(), r.get_operation())

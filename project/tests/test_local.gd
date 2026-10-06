@@ -89,46 +89,29 @@ func _line_stats() -> void:
 func _line_stats_match_git() -> void:
 	var repo := make_repo("stats-numstat")
 	git(repo, ["config", "core.autocrlf", "true"])
-	write(repo.path_join("a.txt"), "one
-two
-three
-four
-")
-	write(repo.path_join("gone.txt"), "x
-y
-")
-	write(repo.path_join("s.txt"), "s1
-s2
-")
+	write(repo.path_join("a.txt"), "one\ntwo\nthree\nfour\n")
+	write(repo.path_join("gone.txt"), "x\ny\n")
+	write(repo.path_join("s.txt"), "s1\ns2\n")
 	var bin := FileAccess.open(repo.path_join("bin.dat"), FileAccess.WRITE)
 	bin.store_buffer(PackedByteArray([0, 1, 2, 3]))
 	bin.close()
 	commit_all(repo, "init")
-	write(repo.path_join("a.txt"), "one
-TWO
-three
-four
-five
-")
+	write(repo.path_join("a.txt"), "one\nTWO\nthree\nfour\nfive\n")
 	DirAccess.remove_absolute(repo.path_join("gone.txt"))
 	bin = FileAccess.open(repo.path_join("bin.dat"), FileAccess.WRITE)
 	bin.store_buffer(PackedByteArray([0, 9, 9, 9]))
 	bin.close()
-	write(repo.path_join("s.txt"), "s1
-S2
-s3
-")
+	write(repo.path_join("s.txt"), "s1\nS2\ns3\n")
 	git(repo, ["add", "s.txt"])
-	write(repo.path_join("untracked.txt"), "u1
-u2
-")
+	write(repo.path_join("untracked.txt"), "u1\nu2\n")
 	var r := open(repo)
 	for staged in [false, true]:
 		var stats := r.get_line_stats(staged)
 		var expected := {}
-		for line in git(repo, ["diff", "--numstat"] + (["--cached"] if staged else [])).split("
-", false):
-			var parts := line.split("	")
+		for line in git(repo, ["diff", "--numstat"] + (["--cached"] if staged else [])).split("\n", false):
+			var parts := line.split("\t")
+			if parts.size() < 3:
+				continue # git's own warnings ("LF will be replaced by CRLF") come along on Windows.
 			expected[parts[2]] = Vector2i(-1, -1) if parts[0] == "-" else Vector2i(parts[0].to_int(), parts[1].to_int())
 		if not staged:
 			expected["untracked.txt"] = Vector2i(2, 0)
@@ -221,16 +204,13 @@ func _branch_list() -> void:
 	var shared := make_shared("branch-list")
 	var mine: String = shared.mine
 	git(shared.theirs, ["checkout", "-q", "-b", "their-feature"])
-	write(shared.theirs.path_join("f.txt"), "f
-")
+	write(shared.theirs.path_join("f.txt"), "f\n")
 	commit_all(shared.theirs, "Feature")
 	git(shared.theirs, ["push", "-q", "-u", "origin", "their-feature"])
-	teammate_pushes(shared, "x.txt", "x2
-")
+	teammate_pushes(shared, "x.txt", "x2\n")
 	git(mine, ["checkout", "-q", "-b", "older"])
 	git(mine, ["checkout", "-q", "main"])
-	write(mine.path_join("y.txt"), "mine
-")
+	write(mine.path_join("y.txt"), "mine\n")
 	commit_all(mine, "Mine")
 	git(mine, ["fetch", "-q"])
 	var list := open(mine).get_branch_list()
