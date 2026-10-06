@@ -247,7 +247,7 @@ void add_watches(WatcherState *p_state, int p_fd, HashMap<int, String> &r_dirs, 
 		return;
 	}
 	const bool in_git = p_relative == ".git" || p_relative.begins_with(".git/");
-	if (!p_relative.is_empty() && !in_git && !p_state->relevant(p_relative + "/")) {
+	if (!p_relative.is_empty() && !in_git && !p_state->relevant(p_relative + String("/"))) {
 		return; // A folder git ignores, and everything in it.
 	}
 	const String absolute = p_state->workdir + p_relative;
@@ -268,7 +268,7 @@ void add_watches(WatcherState *p_state, int p_fd, HashMap<int, String> &r_dirs, 
 		if (p_relative == ".git" && child != "refs") {
 			continue; // Of git's folders only refs/ matters (and rebase-*, which come and go as files change).
 		}
-		add_watches(p_state, p_fd, r_dirs, p_relative.is_empty() ? child : p_relative + "/" + child);
+		add_watches(p_state, p_fd, r_dirs, p_relative.is_empty() ? child : vformat("%s/%s", p_relative, child));
 	}
 	closedir(dir);
 }
@@ -307,7 +307,7 @@ void watch(WatcherState *p_state) {
 						continue;
 					}
 					const String name = event->len > 0 ? String::utf8(event->name) : String();
-					const String relative = parent->is_empty() ? name : (name.is_empty() ? *parent : *parent + "/" + name);
+					const String relative = parent->is_empty() ? name : (name.is_empty() ? *parent : vformat("%s/%s", *parent, name));
 					if ((event->mask & IN_ISDIR) && (event->mask & (IN_CREATE | IN_MOVED_TO))) {
 						add_watches(p_state, fd, dirs, relative); // A new folder: watch it too.
 					}
@@ -339,7 +339,7 @@ void GitWatcher::_bind_methods() {
 Error GitWatcher::start(const String &p_workdir, const Callable &p_callback) {
 	stop();
 	state = new WatcherState();
-	state->workdir = p_workdir.replace("\\", "/").trim_suffix("/") + "/";
+	state->workdir = p_workdir.replace("\\", "/").trim_suffix("/") + String("/");
 	state->callback = p_callback;
 #if defined(_WIN32)
 	state->stop_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -348,7 +348,7 @@ Error GitWatcher::start(const String &p_workdir, const Callable &p_callback) {
 	// FSEvents reports real paths ("/private/var/..." for "/var/..."), so compare against that.
 	char real[PATH_MAX];
 	if (realpath(state->workdir.utf8().get_data(), real)) {
-		state->workdir = String::utf8(real).trim_suffix("/") + "/";
+		state->workdir = String::utf8(real).trim_suffix("/") + String("/");
 	}
 	CFStringRef path = CFStringCreateWithCString(nullptr, state->workdir.utf8().get_data(), kCFStringEncodingUTF8);
 	CFArrayRef paths = CFArrayCreate(nullptr, (const void **)&path, 1, &kCFTypeArrayCallBacks);

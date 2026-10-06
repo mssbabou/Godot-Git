@@ -368,7 +368,7 @@ void GitDock::_build_more_menu() {
 	// Undo first: it's what you look for right after something went the wrong way.
 	const Dictionary undo = repo.is_valid() && repo->is_open() ? repo->get_undo() : Dictionary();
 	if (!undo.is_empty()) {
-		more->add_icon_item(get_theme_icon("UndoRedo", "EditorIcons"), String(undo["label"]) + (String(undo["kind"]) == "commit" || String(undo["kind"]) == "switch" ? "" : "..."), MORE_UNDO);
+		more->add_icon_item(get_theme_icon("UndoRedo", "EditorIcons"), String(undo["label"]) + String(String(undo["kind"]) == "commit" || String(undo["kind"]) == "switch" ? "" : "..."), MORE_UNDO);
 		const String reason = undo["reason"];
 		more->set_item_disabled(more->get_item_count() - 1, !reason.is_empty() || _shown_network_op() != NETWORK_NONE);
 		more->set_item_tooltip(more->get_item_count() - 1, reason.is_empty() ? String(undo["detail"]) : reason);
