@@ -104,6 +104,8 @@ sources.append(env.GodotCPPDocData("build/gen/doc_data.gen.cpp", source=Glob("do
 # Output: project/addons/godot_git/bin/<platform>/libgodot_git.<platform>.<target>.<arch>.<ext>
 # (macOS gets a .framework bundle instead). Must match godot_git.gdextension next to it.
 if env["platform"] == "macos":
+    # FSEvents, for GitWatcher.
+    env.Append(LINKFLAGS=["-framework", "CoreServices"])
     name = "lib{}.{}.{}".format(libname, env["platform"], env["target"])
     target_path = "{}/bin/macos/{}.framework/{}".format(addondir, name, name)
 else:

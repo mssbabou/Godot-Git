@@ -16,6 +16,8 @@
 #include <godot_cpp/classes/texture2d.hpp>
 #include <godot_cpp/classes/texture_rect.hpp>
 #include <godot_cpp/classes/tree.hpp>
+#include <godot_cpp/templates/hash_set.hpp>
+#include <godot_cpp/templates/local_vector.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 
 #include "editor/git_conflict_view.h"
@@ -74,6 +76,13 @@ private:
 		PANE_COUNT,
 	};
 
+	// A hunk's button on its header row ("Stage Hunk"), where it was last drawn.
+	struct HunkButton {
+		Rect2 rect;
+		int hunk = -1;
+		String action;
+	};
+
 	// One CodeEdit showing a diff, with its gutters.
 	struct Pane {
 		PanelContainer *frame = nullptr; // Draws the editor's background and padding (see _update_theme).
@@ -85,6 +94,9 @@ private:
 		PackedInt32Array old_numbers; // All -1 on the split view's new side.
 		PackedInt32Array new_numbers; // All -1 on the split view's old side.
 		Array words; // Per row: the changed words' [start, end) columns, pairs in a PackedInt32Array.
+		PackedInt32Array hunks; // Per row: its hunk in diff["hunks"] (-1: none).
+		PackedInt32Array lines; // Per row: its line in that hunk (-1: a header or filler).
+		LocalVector<HunkButton> buttons;
 		int number_gutters = 0; // 2 in the unified view (old and new), 1 in the split view.
 		int first_gutter = 0; // Ours come after CodeEdit's own (breakpoints, line numbers, ...), which are hidden.
 	};
@@ -119,7 +131,9 @@ private:
 		PackedInt32Array old_numbers;
 		PackedInt32Array new_numbers;
 		Array words; // See Pane::words.
-		void add(const String &p_text, RowKind p_kind, int p_old, int p_new, const PackedInt32Array &p_words = PackedInt32Array());
+		PackedInt32Array hunks;
+		PackedInt32Array lines;
+		void add(const String &p_text, RowKind p_kind, int p_old, int p_new, const PackedInt32Array &p_words, int p_hunk, int p_line);
 	};
 
 	// Theme values, read once per theme change: the gutters are drawn for every visible row.
@@ -184,6 +198,8 @@ private:
 	GitConflictView *conflict_view = nullptr;
 	Dictionary conflict_shown; // What the resolver was last set to; anything else starts it over.
 	bool syncing_scroll = false;
+	int hovered_button_pane = -1; // The hunk button under the mouse.
+	int hovered_button = -1;
 
 	void _update_theme();
 	void _render();
@@ -202,6 +218,17 @@ private:
 	void _draw_words(int p_pane);
 	void _on_option(int p_id);
 	void _update_options_menu();
+
+	// git_diff_dock_lines.cpp
+	PackedStringArray _line_actions() const;
+	Array _lines_for(const HashSet<int64_t> &p_entries) const;
+	Array _hunk_lines(int p_hunk) const;
+	Array _selected_lines(int p_pane) const;
+	void _draw_hunk_buttons(int p_pane);
+	void _on_pane_input(const Ref<InputEvent> &p_event, int p_pane);
+	void _on_pane_mouse_exited(int p_pane);
+	void _update_pane_menu(int p_pane);
+	void _on_pane_menu(int p_id, int p_pane);
 
 	// git_diff_dock_images.cpp
 	void _make_image_side(int p_index, Control *p_parent);

@@ -17,6 +17,7 @@
 #include "editor/script_marks.h"
 #include "git/git_lfs.h"
 #include "git/git_repository.h"
+#include "git/git_watcher.h"
 
 using namespace godot;
 
@@ -59,6 +60,7 @@ void initialize_godot_git_module(ModuleInitializationLevel p_level) {
 		git_libgit2_init();
 		godot_git::register_lfs_filter();
 		GDREGISTER_CLASS(GitRepository);
+		GDREGISTER_CLASS(GitWatcher);
 	}
 
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {

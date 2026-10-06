@@ -28,6 +28,9 @@ const SUITES := [
 	"res://tests/test_conflict.gd",
 	"res://tests/test_pull_merge.gd",
 	"res://tests/test_merge.gd",
+	"res://tests/test_undo.gd",
+	"res://tests/test_lines.gd",
+	"res://tests/test_watcher.gd",
 	"res://tests/test_online.gd",
 ]
 

@@ -98,6 +98,209 @@ Error GitRepository::undo_last_commit() {
 	return to_error(git_reset(repo, (git_object *)parent.get(), GIT_RESET_SOFT, nullptr));
 }
 
+namespace {
+
+// What the newest entry of HEAD's reflog did, as far as Undo is concerned (see get_undo).
+struct LastOperation {
+	String kind; // "commit", "amend", "pull", "merge", "switch"; "" when there's nothing to undo.
+	git_oid before = {}; // HEAD before it.
+	git_oid after = {}; // HEAD after it (the current HEAD).
+	String previous_branch; // "switch": the branch it left.
+	String merged; // "merge": what was merged in, when the reflog or message says.
+};
+
+// "Merge branch 'feature'" / "Merge remote-tracking branch 'origin/x'" -> "feature" / "origin/x".
+String merged_name(const String &p_summary) {
+	const int open = p_summary.find("'");
+	const int close = open < 0 ? -1 : p_summary.find("'", open + 1);
+	return close > open ? p_summary.substr(open + 1, close - open - 1) : String();
+}
+
+LastOperation last_operation(git_repository *p_repo) {
+	LastOperation op;
+	ReflogPtr reflog;
+	git_oid head;
+	if (git_reflog_read(reflog.out(), p_repo, "HEAD") < 0 || git_reflog_entrycount(reflog) == 0 || git_reference_name_to_id(&head, p_repo, "HEAD") < 0) {
+		return op;
+	}
+	const git_reflog_entry *entry = git_reflog_entry_byindex(reflog, 0);
+	const char *raw = git_reflog_entry_message(entry);
+	const String message = raw ? String::utf8(raw) : String();
+	op.before = *git_reflog_entry_id_old(entry);
+	op.after = *git_reflog_entry_id_new(entry);
+	if (git_oid_cmp(&op.after, &head) != 0 || git_oid_is_zero(&op.before)) {
+		return op; // Not what made HEAD what it is, or there was nothing before it.
+	}
+
+	if (message.begins_with("checkout: moving from ")) {
+		// "checkout: moving from main to feature": back to main, if it's still a branch here.
+		const String rest = message.trim_prefix("checkout: moving from ");
+		const int to = rest.rfind(" to ");
+		const String from = to < 0 ? String() : rest.substr(0, to);
+		ReferencePtr branch, current;
+		if (!from.is_empty() && git_branch_lookup(branch.out(), p_repo, from.utf8().get_data(), GIT_BRANCH_LOCAL) == 0 &&
+				(head_branch(current.out(), p_repo) < 0 || String::utf8(git_reference_shorthand(current)) != from)) {
+			op.kind = "switch";
+			op.previous_branch = from;
+		}
+		return op;
+	}
+
+	CommitPtr commit;
+	if (git_commit_lookup(commit.out(), p_repo, &head) < 0) {
+		return op;
+	}
+	const unsigned int parents = git_commit_parentcount(commit);
+	const bool first_parent_is_before = parents > 0 && git_oid_cmp(git_commit_parent_id(commit, 0), &op.before) == 0;
+	if (message.begins_with("commit (amend)")) {
+		op.kind = "amend";
+	} else if (message.begins_with("commit (initial)")) {
+		return op;
+	} else if (message.begins_with("commit") && first_parent_is_before) {
+		op.kind = parents > 1 ? "merge" : "commit";
+		if (parents > 1) {
+			op.merged = merged_name(String::utf8(git_commit_summary(commit)));
+		}
+	} else if (message.begins_with("pull") || message.begins_with("merge ")) {
+		// A fast-forward, or a merge commit on top of where HEAD was.
+		const bool forward = git_graph_descendant_of(p_repo, &op.after, &op.before) == 1;
+		if (forward || first_parent_is_before) {
+			op.kind = message.begins_with("pull") ? "pull" : "merge";
+			if (op.kind == "merge") {
+				op.merged = message.trim_prefix("merge ").get_slice(":", 0);
+			}
+		}
+	}
+	return op;
+}
+
+String short_id(const git_oid *p_id) {
+	return String(git_oid_tostr_s(p_id)).left(7);
+}
+
+} // namespace
+
+// What Undo would undo: the last thing that moved HEAD (from its reflog, so a commit, pull, merge
+// or switch made in a terminal counts too). { } when there's nothing it can undo, else
+// { "kind": "commit" | "amend" | "pull" | "merge" | "switch", "label": "Undo Pull" (a menu item),
+//   "detail": what undoing does, in a sentence or two, "reason": why it can't be undone now ("" when
+//   it can), "branch": the branch a switch would go back to }.
+// Undo never touches uncommitted changes, and doesn't take back what's pushed (Revert does that).
+Dictionary GitRepository::get_undo() {
+	ERR_FAIL_NULL_V_MSG(repo, Dictionary(), "Repository is not open.");
+	const LastOperation op = last_operation(repo);
+	Dictionary result;
+	if (op.kind.is_empty()) {
+		return result;
+	}
+	result["kind"] = op.kind;
+	ReferencePtr head;
+	const String branch = head_branch(head.out(), repo) >= 0 ? String::utf8(git_reference_shorthand(head)) : String("HEAD");
+	CommitPtr after, before;
+	git_commit_lookup(after.out(), repo, &op.after);
+	git_commit_lookup(before.out(), repo, &op.before);
+	const String after_summary = after.get() ? String::utf8(git_commit_summary(after)) : String();
+	const String before_summary = before.get() ? String::utf8(git_commit_summary(before)) : String();
+	String reason;
+
+	if (op.kind == "switch") {
+		result["label"] = vformat("Switch Back to %s", op.previous_branch);
+		result["detail"] = vformat("Back to %s, the branch you were on before %s. Your uncommitted changes come along, as when you switch yourself.", op.previous_branch, branch);
+		result["branch"] = op.previous_branch;
+	} else if (op.kind == "commit") {
+		result["label"] = "Undo Commit";
+		result["detail"] = vformat("Takes back \"%s\": its changes go back to Staged Changes, and its message into the message box.", after_summary);
+		if (on_remote_branch(repo, &op.after)) {
+			reason = "It's already pushed: undoing it here would leave your teammates with a commit you no longer have. Revert it instead (right-click it in History).";
+		}
+	} else if (op.kind == "amend") {
+		result["label"] = "Undo Amend";
+		result["detail"] = vformat("Puts the commit back as it was before you amended it (\"%s\"). What the amend added goes back to Staged Changes.", before_summary);
+		if (on_remote_branch(repo, &op.after)) {
+			reason = "The amended commit is already pushed, so taking it back here would leave your teammates with a commit you no longer have.";
+		}
+	} else {
+		size_t ahead = 0, behind = 0;
+		git_graph_ahead_behind(&ahead, &behind, repo, &op.after, &op.before);
+		if (ahead > 1 && after.get() && git_commit_parentcount(after) > 1) {
+			ahead--; // The merge commit itself isn't one it brought in ("Pulled and merged 1 commit").
+		}
+		const String what = op.kind == "pull" ? String("the pull") : (op.merged.is_empty() ? String("the merge") : vformat("merging %s", op.merged));
+		result["label"] = op.kind == "pull" ? "Undo Pull" : "Undo Merge";
+		result["detail"] = vformat("Moves %s back to where it was before %s (%s \"%s\"), taking back the %s it brought in. Your uncommitted changes stay where they are.%s", branch, what, short_id(&op.before), before_summary,
+				ahead == 1 ? String("commit") : vformat("%d commits", (int)ahead), op.kind == "pull" ? " You can pull again any time." : (op.merged.is_empty() ? "" : vformat(" %s itself stays as it is.", op.merged)));
+		// A merge commit made here and pushed since can't be taken back here; a fast-forward only
+		// brought in commits that are on the remote anyway.
+		if (git_oid_cmp(&op.after, &op.before) != 0 && after.get() && git_commit_parentcount(after) > 1 && on_remote_branch(repo, &op.after)) {
+			reason = vformat("The merge commit is already pushed, so taking %s back here would leave your teammates with a commit you no longer have.", what);
+		} else {
+			// Only files the pull or merge changed are put back; your changes to them would be lost.
+			const HashSet<String> changed = changed_paths(repo, &op.before, &op.after);
+			PackedStringArray in_the_way;
+			for (const String &path : uncommitted_paths(repo)) {
+				if (changed.has(path)) {
+					in_the_way.push_back(path);
+				}
+			}
+			if (!in_the_way.is_empty()) {
+				reason = vformat("You have uncommitted changes to %s, which %s changed. Commit, stash or discard them first.", name_list(in_the_way), what);
+			}
+		}
+	}
+	const Dictionary operation = get_operation();
+	if (!String(operation.get("kind", String())).is_empty()) {
+		reason = "Finish or abort what's in progress first.";
+	}
+	result["reason"] = reason;
+	return result;
+}
+
+// Undoes what get_undo describes. Changes nothing when it can't (get_last_error says why).
+Error GitRepository::undo_last_operation() {
+	ERR_FAIL_NULL_V_MSG(repo, ERR_UNCONFIGURED, "Repository is not open.");
+	git_error_clear();
+	const Dictionary undo = get_undo();
+	if (undo.is_empty()) {
+		return fail("There's nothing to undo.");
+	}
+	if (!String(undo["reason"]).is_empty()) {
+		return fail(undo["reason"]);
+	}
+	const String kind = undo["kind"];
+	if (kind == "switch") {
+		return checkout_branch(undo["branch"]);
+	}
+	const LastOperation op = last_operation(repo);
+	ObjectPtr before;
+	if (git_object_lookup(before.out(), repo, &op.before, GIT_OBJECT_COMMIT) < 0) {
+		return to_error(-1);
+	}
+	if (kind == "commit" || kind == "amend") {
+		// What it committed goes back to staged: only the branch moves.
+		return to_error(git_reset(repo, before, GIT_RESET_SOFT, nullptr));
+	}
+	if (require_lfs(repo, "undoing it") != OK) {
+		return FAILED;
+	}
+	// A pull or merge: the files it changed go back too. Safe checkout, all or nothing; your other
+	// uncommitted changes are left alone (get_undo refused if any were in its files).
+	ReferencePtr head;
+	if (head_branch(head.out(), repo) < 0) {
+		return to_error(-1);
+	}
+	git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
+	opts.checkout_strategy = GIT_CHECKOUT_SAFE;
+	int err = checkout_all_or_nothing(repo, before, opts);
+	if (err == GIT_ECONFLICT) {
+		return fail("Nothing was undone: your uncommitted changes are in files it would change. Commit, stash or discard them first.");
+	}
+	if (err >= 0) {
+		ReferencePtr moved;
+		err = git_reference_set_target(moved.out(), head, &op.before, vformat("reset: %s", String(undo["label"]).to_lower()).utf8().get_data());
+	}
+	return to_error(err);
+}
+
 // Adds a commit that undoes p_hash (for a merge, what it brought in), with git's message
 // ("Revert "..."" / "This reverts commit ..."). Changes nothing if it can't be done cleanly: when
 // newer commits changed the same lines, or when you have uncommitted changes in its files or

@@ -359,6 +359,9 @@ TreeItem *GitDock::_add_commit_file_row(Tree *p_tree, TreeItem *p_parent, const 
 	// The status letter in the ages' column, so it lines up with the letters of the lists
 	// above (at the right edge) instead of stopping short of this column.
 	item->set_text(1, status_letter(state));
+	// Never trimmed, or it doesn't count toward the column's width (gotcha 4), which then has
+	// nothing to size it (commit rows leave it empty) and cuts the letter off.
+	item->set_text_overrun_behavior(1, TextServer::OVERRUN_NO_TRIMMING);
 	item->set_custom_color(1, _status_color(state));
 	item->set_text_alignment(1, HORIZONTAL_ALIGNMENT_RIGHT);
 	item->set_tooltip_text(1, what);
@@ -585,6 +588,75 @@ void GitDock::_undo_last_commit() {
 	}
 	refresh();
 	_set_status(STATUS_SUCCESS, vformat("Undid \"%s\": its changes are staged again", last.get("summary", String())));
+}
+
+// Puts Undo on the result just shown, when Undo would take back what it reports (a commit, pull,
+// merge or switch). It's checked again when pressed.
+void GitDock::_offer_undo() {
+	const Dictionary undo = repo->get_undo();
+	if (undo.is_empty() || !String(undo["reason"]).is_empty()) {
+		return;
+	}
+	status_undo = true;
+	status_undo_button->set_tooltip_text(undo["detail"]);
+	_update_status();
+}
+
+// Undo, from the strip or the ⋮ menu: takes back the last commit, amend, pull, merge or switch.
+// A commit goes straight back to staged (its message into the box), like Undo Last Commit; the
+// rest asks first, saying exactly what will happen.
+void GitDock::_start_undo() {
+	const Dictionary undo = repo->get_undo();
+	if (undo.is_empty()) {
+		_set_status(STATUS_NEUTRAL, "There's nothing to undo anymore.");
+		return;
+	}
+	const String reason = undo["reason"];
+	if (!reason.is_empty()) {
+		_set_status(STATUS_WARNING, vformat("Can't undo: %s", reason));
+		return;
+	}
+	const String kind = undo["kind"];
+	if (kind == "commit") {
+		_undo_last_commit();
+		return;
+	}
+	if (kind == "switch") {
+		_switch_branch(undo["branch"]); // Saves, carries changes and downloads like any switch.
+		return;
+	}
+	undo_confirm->set_title(undo["label"]);
+	undo_confirm->get_ok_button()->set_text(undo["label"]);
+	undo_confirm->set_text(undo["detail"]);
+	undo_confirm->popup_centered();
+}
+
+void GitDock::_on_undo_confirmed() {
+	const Dictionary undo = repo->get_undo();
+	if (undo.is_empty()) {
+		return;
+	}
+	const String kind = undo["kind"];
+	// A pull or merge rewrites files: unsaved scenes and scripts are offered to be saved first.
+	if (kind != "amend" && _ask_to_save("Undo", callable_mp(this, &GitDock::_on_undo_confirmed))) {
+		return;
+	}
+	const String branch = repo->get_current_branch();
+	_remember_open_scenes();
+	const Error err = repo->undo_last_operation();
+	_report(err, "Undo");
+	if (err != OK) {
+		return;
+	}
+	EditorInterface::get_singleton()->get_resource_filesystem()->scan();
+	refresh();
+	const String where = repo->get_commit("HEAD").get("id", String());
+	if (kind == "amend") {
+		_set_status(STATUS_SUCCESS, vformat("Undid the amend: %s is back as it was, and what the amend added is staged", where));
+	} else {
+		_set_status(STATUS_SUCCESS, vformat("Undid the %s: %s is back at %s", kind, branch, where));
+	}
+	_reload_changed_scenes();
 }
 
 void GitDock::_confirm_revert(const String &p_hash, const String &p_summary) {

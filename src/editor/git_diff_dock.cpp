@@ -39,6 +39,9 @@ EditorSettings *editor_settings() {
 void GitDiffDock::_bind_methods() {
 	ADD_SIGNAL(MethodInfo("open_requested", PropertyInfo(Variant::STRING, "path")));
 	ADD_SIGNAL(MethodInfo("options_changed")); // Context lines or whitespace: the Git dock reads the diff again.
+	// Stage, unstage or discard some lines ("stage", "unstage", "discard"), as
+	// GitRepository::apply_line_changes takes them.
+	ADD_SIGNAL(MethodInfo("line_changes_requested", PropertyInfo(Variant::STRING, "action"), PropertyInfo(Variant::ARRAY, "lines")));
 }
 
 GitDiffDock::GitDiffDock() {

@@ -335,6 +335,9 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			} else {
 				_set_status(STATUS_SUCCESS, vformat("Pulled %s from %s%s", plural(commits, "commit", "commits"), p_upstream, kept));
 			}
+			if (commits > 0) {
+				_offer_undo();
+			}
 			_reload_changed_scenes(); // After the status: a scene it couldn't reload warns there.
 		} break;
 		case NETWORK_PUSH: {
@@ -346,6 +349,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		} break;
 		case NETWORK_SWITCH: {
 			_set_status(STATUS_SUCCESS, vformat("Switched to %s", repo->get_current_branch()));
+			_offer_undo();
 			_reload_changed_scenes();
 		} break;
 		case NETWORK_ABORT: {
@@ -390,6 +394,9 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			} else {
 				_set_status(STATUS_SUCCESS, vformat("Merged %s into %s: %s, no merge commit needed%s", network_branch, current, plural(commits, "commit", "commits"), kept));
 			}
+			if (commits > 0) {
+				_offer_undo();
+			}
 			_reload_changed_scenes();
 		} break;
 		case NETWORK_LOCK: {
@@ -400,6 +407,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		} break;
 		case NETWORK_REVERT: {
 			_set_status(STATUS_SUCCESS, vformat("Reverted \"%s\" in a new commit, %s", pending_revert_summary, repo->get_commit("HEAD").get("id", String())));
+			_offer_undo();
 			pending_revert = String();
 			_reload_changed_scenes();
 		} break;

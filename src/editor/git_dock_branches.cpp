@@ -456,6 +456,7 @@ void GitDock::_switch_branch(const String &p_branch) {
 	refresh();
 	if (err == OK) {
 		_set_status(STATUS_SUCCESS, vformat("Switched to %s", repo->get_current_branch()));
+		_offer_undo();
 		_reload_changed_scenes(); // After the status: a scene it couldn't reload warns there.
 	}
 }

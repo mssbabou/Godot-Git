@@ -269,4 +269,5 @@ void GitDock::_report_commit(bool p_amended, int p_files, const String &p_old_id
 	} else {
 		_set_status(STATUS_SUCCESS, vformat("Amended %s, now %s", p_old_id, last_commit_id));
 	}
+	_offer_undo();
 }

@@ -13,6 +13,8 @@ void GitDock::set_diff_dock(GitDiffDock *p_dock) {
 	diff_dock->connect("open_requested", callable_mp(this, &GitDock::_open_path));
 	diff_dock->get_conflict_view()->connect("resolve_requested", callable_mp(this, &GitDock::_on_conflict_text));
 	diff_dock->connect("options_changed", callable_mp(this, &GitDock::_on_diff_options_changed));
+	diff_dock->connect("line_changes_requested", callable_mp(this, &GitDock::_on_diff_line_changes));
+	line_discard_confirm = _make_confirm("Discard Lines", "Discard", callable_mp(this, &GitDock::_on_line_discard_confirmed));
 	diff_dock->get_conflict_view()->connect("side_requested", callable_mp(this, &GitDock::_on_conflict_side));
 	diff_dock->get_conflict_view()->connect("settings_requested", callable_mp(this, &GitDock::_on_conflict_settings));
 }
@@ -182,4 +184,38 @@ void GitDock::_on_diff_options_changed() {
 	repo->set_diff_options(diff_dock->get_context_lines(), diff_dock->is_ignoring_whitespace());
 	diff_commit_shown = String(); // A commit's diff is otherwise never read twice.
 	_update_diff();
+}
+
+// Staging, unstaging or discarding part of the file shown (a hunk or chosen lines, from the Diff
+// panel). Discarding asks first: those edits are gone from the file afterwards.
+void GitDock::_on_diff_line_changes(const String &p_action, const Array &p_lines) {
+	if (!diff_commit.is_empty() || diff_path.is_empty() || p_lines.is_empty()) {
+		return;
+	}
+	if (p_action == "discard") {
+		pending_line_discard = p_lines;
+		line_discard_confirm->set_text(vformat("Discard %s in %s?\n\nThe file goes back to how it was there. The rest of your changes stay. This can't be undone.", plural(p_lines.size(), "changed line", "changed lines"), diff_path.get_file()));
+		line_discard_confirm->popup_centered();
+		return;
+	}
+	_apply_line_changes(p_action, p_lines);
+}
+
+void GitDock::_on_line_discard_confirmed() {
+	_apply_line_changes("discard", pending_line_discard);
+	pending_line_discard.clear();
+}
+
+void GitDock::_apply_line_changes(const String &p_action, const Array &p_lines) {
+	const bool discard = p_action == "discard";
+	if (discard) {
+		_remember_open_scenes();
+	}
+	const Error err = repo->apply_line_changes(diff_path, diff_staged, p_action, p_lines);
+	_report(err, discard ? "Discard" : (p_action == "stage" ? "Stage" : "Unstage"));
+	refresh();
+	if (err == OK && discard) {
+		_set_status(STATUS_SUCCESS, vformat("Discarded %s in %s", plural(p_lines.size(), "changed line", "changed lines"), diff_path.get_file()));
+		_reload_changed_scenes(); // An open script gets the file's new text (or asks, per Godot's setting).
+	}
 }

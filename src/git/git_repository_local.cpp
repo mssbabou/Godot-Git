@@ -220,18 +220,7 @@ bool GitRepository::is_head_pushed() const {
 	if (git_reference_name_to_id(&head, repo, "HEAD") < 0) {
 		return false;
 	}
-	LocalVector<git_oid> remote_tips;
-	BranchIteratorPtr it;
-	if (git_branch_iterator_new(it.out(), repo, GIT_BRANCH_REMOTE) == 0) {
-		ReferencePtr ref;
-		git_branch_t type;
-		while (git_branch_next(ref.out(), &type, it) == 0) {
-			if (git_reference_type(ref) == GIT_REFERENCE_DIRECT) {
-				remote_tips.push_back(*git_reference_target(ref));
-			}
-		}
-	}
-	return !remote_tips.is_empty() && git_graph_reachable_from_any(repo, &head, remote_tips.ptr(), remote_tips.size()) == 1;
+	return on_remote_branch(repo, &head);
 }
 
 // Replaces the last commit with one that has p_message and what's staged now (which may be
@@ -275,7 +264,17 @@ Error GitRepository::amend(const String &p_message) {
 	}
 	if (err >= 0) {
 		git_oid id;
-		err = git_commit_amend(&id, last, "HEAD", nullptr, committer, nullptr, p_message.utf8().get_data(), tree);
+		err = git_commit_amend(&id, last, nullptr, nullptr, committer, nullptr, p_message.utf8().get_data(), tree);
+		if (err >= 0) {
+			// git's reflog message, "commit (amend): ...", which is how Undo knows it was an amend
+			// (get_undo); libgit2's own entry would only say "commit".
+			CommitPtr amended;
+			ReferencePtr moved;
+			err = git_commit_lookup(amended.out(), repo, &id);
+			if (err >= 0) {
+				err = git_reference_set_target(moved.out(), head, &id, vformat("commit (amend): %s", String::utf8(git_commit_summary(amended))).utf8().get_data());
+			}
+		}
 	}
 	return to_error(err);
 }

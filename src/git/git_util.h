@@ -67,6 +67,7 @@ using IndexConflictIteratorPtr = Owned<git_index_conflict_iterator, git_index_co
 using ObjectPtr = Owned<git_object, git_object_free>;
 using OdbPtr = Owned<git_odb, git_odb_free>;
 using PatchPtr = Owned<git_patch, git_patch_free>;
+using ReflogPtr = Owned<git_reflog, git_reflog_free>;
 using ReferencePtr = Owned<git_reference, git_reference_free>;
 using ReferenceIteratorPtr = Owned<git_reference_iterator, git_reference_iterator_free>;
 using RemotePtr = Owned<git_remote, git_remote_free>;
@@ -157,6 +158,9 @@ PackedStringArray stashed_paths(git_repository *p_repo, const git_oid *p_stash);
 
 // Every path with uncommitted changes: staged, unstaged, or new (untracked) files.
 PackedStringArray uncommitted_paths(git_repository *p_repo);
+
+// Whether p_commit is on a remote-tracking branch (pushed, or pulled from there).
+bool on_remote_branch(git_repository *p_repo, const git_oid *p_commit);
 
 // p_path's blob in p_tree, if it has one (false for a folder, or no such path).
 bool read_tree_blob(git_repository *p_repo, git_tree *p_tree, const String &p_path, BlobPtr &r_blob);

@@ -128,6 +128,9 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("resolve_settings_conflict", "path", "choices"), &GitRepository::resolve_settings_conflict);
 	ClassDB::bind_static_method("GitRepository", D_METHOD("is_lfs_installed"), &GitRepository::is_lfs_installed);
 	ClassDB::bind_method(D_METHOD("undo_last_commit"), &GitRepository::undo_last_commit);
+	ClassDB::bind_method(D_METHOD("get_undo"), &GitRepository::get_undo);
+	ClassDB::bind_method(D_METHOD("undo_last_operation"), &GitRepository::undo_last_operation);
+	ClassDB::bind_method(D_METHOD("apply_line_changes", "path", "staged", "action", "lines"), &GitRepository::apply_line_changes);
 	ClassDB::bind_method(D_METHOD("revert_commit", "hash"), &GitRepository::revert_commit);
 	ClassDB::bind_method(D_METHOD("uses_lfs"), &GitRepository::uses_lfs);
 	ClassDB::bind_method(D_METHOD("has_file_at", "revision", "path"), &GitRepository::has_file_at);

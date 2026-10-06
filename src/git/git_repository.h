@@ -117,6 +117,9 @@ public:
 	Error create_branch_at(const String &p_name, const String &p_hash);
 	Error restore_file_version(const String &p_revision, const String &p_path);
 	Error undo_last_commit();
+	Dictionary get_undo();
+	Error undo_last_operation();
+	Error apply_line_changes(const String &p_path, bool p_staged, const String &p_action, const Array &p_lines);
 	Error revert_commit(const String &p_hash);
 	Error rename_branch(const String &p_branch, const String &p_new_name);
 	Error delete_branch(const String &p_branch);

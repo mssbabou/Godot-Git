@@ -15,6 +15,7 @@
 #include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/style_box_empty.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
+#include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/v_box_container.hpp>
 #include <godot_cpp/core/math.hpp>
 
@@ -165,6 +166,7 @@ GitDock::GitDock() {
 	large_ignore_button = large_confirm->add_button("Unstage and Ignore", false, "ignore");
 	large_confirm->connect("custom_action", callable_mp(this, &GitDock::_on_large_custom_action));
 	revert_confirm = _make_confirm("Revert Commit", "Revert", callable_mp(this, &GitDock::_on_revert_confirmed));
+	undo_confirm = _make_confirm("Undo", "Undo", callable_mp(this, &GitDock::_on_undo_confirmed));
 	_build_settings_dialog();
 	_build_ignore_dialog();
 
@@ -228,6 +230,9 @@ void GitDock::_notification(int p_what) {
 		} break;
 
 		case NOTIFICATION_EXIT_TREE: {
+			if (watcher.is_valid()) {
+				watcher->stop();
+			}
 			// Don't let a login window nobody finishes keep the editor from closing.
 			GitRepository::cancel_network();
 			_finish_network_thread();
@@ -360,6 +365,15 @@ void GitDock::_build_more_menu() {
 	PopupMenu *more = more_menu->get_popup();
 	more->clear();
 
+	// Undo first: it's what you look for right after something went the wrong way.
+	const Dictionary undo = repo.is_valid() && repo->is_open() ? repo->get_undo() : Dictionary();
+	if (!undo.is_empty()) {
+		more->add_icon_item(get_theme_icon("UndoRedo", "EditorIcons"), String(undo["label"]) + (String(undo["kind"]) == "commit" || String(undo["kind"]) == "switch" ? "" : "..."), MORE_UNDO);
+		const String reason = undo["reason"];
+		more->set_item_disabled(more->get_item_count() - 1, !reason.is_empty() || _shown_network_op() != NETWORK_NONE);
+		more->set_item_tooltip(more->get_item_count() - 1, reason.is_empty() ? String(undo["detail"]) : reason);
+		more->add_separator();
+	}
 	more->add_icon_item(_icon("Add"), "Stage All Changes", MORE_STAGE_ALL);
 	more->set_item_disabled(more->get_item_count() - 1, unstaged_paths.is_empty());
 	more->add_icon_item(_icon("GitMinus"), "Unstage All Changes", MORE_UNSTAGE_ALL);
@@ -486,6 +500,20 @@ Color GitDock::_status_color(const String &p_state) const {
 	return status_color(p_state); // The one palette (git_colors.h).
 }
 
+// Files changed outside the panel (GitWatcher; on the main thread, once things are quiet). A refresh
+// that started after the first change saw it already: the panel's own actions, and saves in Godot
+// (filesystem_changed), refresh right away. A moment of slack covers the notification arriving
+// just after that refresh started.
+void GitDock::_on_files_changed(const PackedStringArray &p_paths, int64_t p_first_change_msec) {
+	if (!is_inside_tree() || repo.is_null() || !repo->is_open() || (network_op != NETWORK_NONE && !network_quiet)) {
+		return; // The network operation refreshes when it's done.
+	}
+	if ((int64_t)last_refresh_msec >= p_first_change_msec - 150) {
+		return;
+	}
+	refresh();
+}
+
 // Godot's default ("Selected Only" in Editor Settings) draws the lines from a parent to its children
 // only while that branch is selected, so an expanded commit's lines came and went as the selection
 // moved to another list. In History and Stashes they always show, unless lines are switched off.
@@ -520,6 +548,16 @@ void GitDock::refresh() {
 	no_repo_ui->hide();
 	repo_ui->show();
 	folder_types.clear(); // Files may have come and gone since.
+	last_refresh_msec = Time::get_singleton()->get_ticks_msec();
+	if (watched_dir != repo->get_workdir()) {
+		// Changes made outside the panel (a terminal, another editor) show up without waiting
+		// for the editor to get focus back.
+		watched_dir = repo->get_workdir();
+		if (watcher.is_null()) {
+			watcher.instantiate();
+		}
+		watcher->start(watched_dir, callable_mp(this, &GitDock::_on_files_changed));
+	}
 
 	project_file_time = FileAccess::get_modified_time("res://project.godot");
 	sync_status = repo->get_sync_status();
@@ -853,6 +891,9 @@ void GitDock::_on_more_menu_id(int p_id) {
 		} break;
 		case MORE_ABORT_MERGE: {
 			_confirm_abort_merge();
+		} break;
+		case MORE_UNDO: {
+			_start_undo();
 		} break;
 		case MORE_BUILD_INFO: {
 			const String url = String::utf8(build_url());

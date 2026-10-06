@@ -89,6 +89,21 @@ PackedStringArray stashed_paths(git_repository *p_repo, const git_oid *p_stash) 
 	return result;
 }
 
+bool on_remote_branch(git_repository *p_repo, const git_oid *p_commit) {
+	LocalVector<git_oid> remote_tips;
+	BranchIteratorPtr it;
+	if (git_branch_iterator_new(it.out(), p_repo, GIT_BRANCH_REMOTE) == 0) {
+		ReferencePtr ref;
+		git_branch_t type;
+		while (git_branch_next(ref.out(), &type, it) == 0) {
+			if (git_reference_type(ref) == GIT_REFERENCE_DIRECT) {
+				remote_tips.push_back(*git_reference_target(ref));
+			}
+		}
+	}
+	return !remote_tips.is_empty() && git_graph_reachable_from_any(p_repo, p_commit, remote_tips.ptr(), remote_tips.size()) == 1;
+}
+
 PackedStringArray uncommitted_paths(git_repository *p_repo) {
 	PackedStringArray result;
 	git_status_options opts = GIT_STATUS_OPTIONS_INIT;

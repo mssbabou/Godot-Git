@@ -425,7 +425,14 @@ Error merge_and_commit(git_repository *p_repo, git_reference *p_head, const git_
 	}
 	if (err >= 0) {
 		const git_commit *parents[2] = { ours, their_commit };
-		err = git_commit_create(&commit_oid, p_repo, "HEAD", signature, signature, nullptr, message.utf8().get_data(), tree, 2, parents);
+		err = git_commit_create(&commit_oid, p_repo, nullptr, signature, signature, nullptr, message.utf8().get_data(), tree, 2, parents);
+	}
+	if (err >= 0) {
+		// The reflog says what git's would ("pull: Merge made by ..."), which is how Undo tells a
+		// pull from a merge (get_undo); libgit2's own entry would only say "commit".
+		ReferencePtr moved;
+		const String reflog = p_words.pull ? String("pull: Merge made by the 'ort' strategy.") : vformat("merge %s: Merge made by the 'ort' strategy.", p_words.name);
+		err = git_reference_set_target(moved.out(), p_head, &commit_oid, reflog.utf8().get_data());
 	}
 	git_repository_state_cleanup(p_repo);
 	return to_error(err);

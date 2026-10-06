@@ -66,6 +66,15 @@ void GitDock::_build_status_strip(Control *p_parent) {
 	status_log_label->set_context_menu_enabled(true);
 	status_log_popup->add_child(status_log_label);
 
+	// "Undo", on a commit, pull, merge or switch it can take back (see _offer_undo).
+	status_undo_button = memnew(Button);
+	status_undo_button->set_flat(true);
+	status_undo_button->set_text("Undo");
+	status_undo_button->set_v_size_flags(SIZE_SHRINK_BEGIN);
+	status_undo_button->hide();
+	status_undo_button->connect("pressed", callable_mp(this, &GitDock::_start_undo));
+	status_hb->add_child(status_undo_button);
+
 	status_button = memnew(Button);
 	status_button->set_flat(true);
 	status_button->set_v_size_flags(SIZE_SHRINK_BEGIN);
@@ -116,6 +125,7 @@ void GitDock::_set_status(StatusKind p_kind, const String &p_text) {
 	status_step = String();
 	status_time = (int64_t)Time::get_singleton()->get_unix_time_from_system();
 	status_cancellable = false;
+	status_undo = false;
 	_update_status_style();
 	_update_status();
 
@@ -183,6 +193,7 @@ void GitDock::_update_status() {
 	const bool dismissable = status_kind == STATUS_WARNING || status_kind == STATUS_ERROR;
 	status_button->set_visible(dismissable || (status_kind == STATUS_BUSY && status_cancellable));
 	status_log_button->set_visible(!status_log.is_empty() && status_kind != STATUS_BUSY);
+	status_undo_button->set_visible(status_undo && status_kind == STATUS_SUCCESS);
 	status_button->set_tooltip_text(status_kind == STATUS_BUSY ? String("Cancel") : String("Dismiss"));
 	status_strip->show();
 }

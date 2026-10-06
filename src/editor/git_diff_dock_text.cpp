@@ -7,6 +7,8 @@
 #include <godot_cpp/classes/editor_interface.hpp>
 #include <godot_cpp/classes/editor_settings.hpp>
 #include <godot_cpp/classes/gd_script_syntax_highlighter.hpp>
+#include <godot_cpp/classes/input_event.hpp>
+#include <godot_cpp/classes/popup_menu.hpp>
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/core/math.hpp>
 #include <godot_cpp/templates/local_vector.hpp>
@@ -169,8 +171,10 @@ Dictionary GitDiffHighlighter::_get_line_syntax_highlighting(int32_t p_line) con
 	return code.is_valid() ? code->get_line_syntax_highlighting(p_line) : Dictionary();
 }
 
-void GitDiffDock::Rows::add(const String &p_text, RowKind p_kind, int p_old, int p_new, const PackedInt32Array &p_words) {
+void GitDiffDock::Rows::add(const String &p_text, RowKind p_kind, int p_old, int p_new, const PackedInt32Array &p_words, int p_hunk, int p_line) {
 	words.push_back(p_words);
+	hunks.push_back(p_hunk);
+	lines.push_back(p_line);
 	text.push_back(p_text);
 	kinds.push_back(p_kind);
 	old_numbers.push_back(p_old);
@@ -219,6 +223,12 @@ void GitDiffDock::_make_pane(PaneIndex p_index, Control *p_parent, int p_number_
 	edit->set_syntax_highlighter(pane.highlighter);
 	// Changed words, under the text (TextEdit draws its rows on a canvas item above this one).
 	edit->connect("draw", callable_mp(this, &GitDiffDock::_draw_words).bind(p_index));
+	// Staging part of a file: buttons on hunk headers, and items in the right-click menu.
+	edit->connect("draw", callable_mp(this, &GitDiffDock::_draw_hunk_buttons).bind(p_index));
+	edit->connect("gui_input", callable_mp(this, &GitDiffDock::_on_pane_input).bind(p_index));
+	edit->connect("mouse_exited", callable_mp(this, &GitDiffDock::_on_pane_mouse_exited).bind(p_index));
+	edit->get_menu()->connect("about_to_popup", callable_mp(this, &GitDiffDock::_update_pane_menu).bind(p_index));
+	edit->get_menu()->connect("id_pressed", callable_mp(this, &GitDiffDock::_on_pane_menu).bind(p_index));
 }
 
 // The rows of both views. The unified view lists each hunk's lines in order. The split view puts
@@ -237,9 +247,9 @@ void GitDiffDock::_build_rows(Rows &r_unified, Rows &r_old, Rows &r_new) const {
 		if ((int)hunk["old_lines"] > 0 && (int)hunk["new_lines"] > 0) {
 			const String context = hunk["context"];
 			const String header_text = vformat("@@ -%d,%d +%d,%d @@%s", (int)hunk["old_start"], (int)hunk["old_lines"], (int)hunk["new_start"], (int)hunk["new_lines"], context.is_empty() ? String() : " " + context);
-			r_unified.add(header_text, ROW_HEADER, -1, -1);
-			r_old.add(header_text, ROW_HEADER, -1, -1);
-			r_new.add(header_text, ROW_HEADER, -1, -1);
+			r_unified.add(header_text, ROW_HEADER, -1, -1, PackedInt32Array(), h, -1);
+			r_old.add(header_text, ROW_HEADER, -1, -1, PackedInt32Array(), h, -1);
+			r_new.add(header_text, ROW_HEADER, -1, -1, PackedInt32Array(), h, -1);
 		}
 
 		// Each removed line next to the added line that replaces it (by position in their runs):
@@ -272,14 +282,14 @@ void GitDiffDock::_build_rows(Rows &r_unified, Rows &r_old, Rows &r_new) const {
 
 		for (int i = 0; i < origins.size(); i++) {
 			const RowKind kind = origins[i] == '+' ? ROW_ADDED : (origins[i] == '-' ? ROW_REMOVED : ROW_CONTEXT);
-			r_unified.add(lines[i], kind, old_numbers[i], new_numbers[i], words_of(i));
+			r_unified.add(lines[i], kind, old_numbers[i], new_numbers[i], words_of(i), h, i);
 		}
 
 		int i = 0;
 		while (i < origins.size()) {
 			if (origins[i] == ' ') {
-				r_old.add(lines[i], ROW_CONTEXT, old_numbers[i], -1);
-				r_new.add(lines[i], ROW_CONTEXT, -1, new_numbers[i]);
+				r_old.add(lines[i], ROW_CONTEXT, old_numbers[i], -1, PackedInt32Array(), h, i);
+				r_new.add(lines[i], ROW_CONTEXT, -1, new_numbers[i], PackedInt32Array(), h, i);
 				i++;
 				continue;
 			}
@@ -295,14 +305,14 @@ void GitDiffDock::_build_rows(Rows &r_unified, Rows &r_old, Rows &r_new) const {
 			const int added = i - added_start;
 			for (int r = 0; r < MAX(removed, added); r++) {
 				if (r < removed) {
-					r_old.add(lines[removed_start + r], ROW_REMOVED, old_numbers[removed_start + r], -1, words_of(removed_start + r));
+					r_old.add(lines[removed_start + r], ROW_REMOVED, old_numbers[removed_start + r], -1, words_of(removed_start + r), h, removed_start + r);
 				} else {
-					r_old.add(String(), ROW_FILLER, -1, -1);
+					r_old.add(String(), ROW_FILLER, -1, -1, PackedInt32Array(), h, -1);
 				}
 				if (r < added) {
-					r_new.add(lines[added_start + r], ROW_ADDED, -1, new_numbers[added_start + r], words_of(added_start + r));
+					r_new.add(lines[added_start + r], ROW_ADDED, -1, new_numbers[added_start + r], words_of(added_start + r), h, added_start + r);
 				} else {
-					r_new.add(String(), ROW_FILLER, -1, -1);
+					r_new.add(String(), ROW_FILLER, -1, -1, PackedInt32Array(), h, -1);
 				}
 			}
 		}
@@ -318,6 +328,8 @@ void GitDiffDock::_fill_pane(Pane &r_pane, const Rows &p_rows) {
 	r_pane.old_numbers = p_rows.old_numbers;
 	r_pane.new_numbers = p_rows.new_numbers;
 	r_pane.words = p_rows.words;
+	r_pane.hunks = p_rows.hunks;
+	r_pane.lines = p_rows.lines;
 
 	// The highlighter reads the mirror, where hunk headers and fillers are blank lines. Plain text
 	// has no highlighter, and then no mirror text either: setting a long text costs real time.

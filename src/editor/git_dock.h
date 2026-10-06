@@ -29,6 +29,7 @@
 
 #include "editor/git_dock_util.h"
 #include "git/git_repository.h"
+#include "git/git_watcher.h"
 
 class GitDiffDock;
 class GitFileSystemColors;
@@ -83,6 +84,7 @@ class GitDock : public EditorDock {
 		MORE_STASH_ALL,
 		MORE_SETTINGS,
 		MORE_ABORT_MERGE,
+		MORE_UNDO,
 	};
 
 	// The buttons on a hovered stash row.
@@ -159,6 +161,8 @@ class GitDock : public EditorDock {
 	TextureRect *status_icon = nullptr;
 	RichTextLabel *status_label = nullptr; // The text, then dimmed: the current step, or "5m ago".
 	Button *status_button = nullptr; // Cancel (busy) or dismiss (warning, error).
+	Button *status_undo_button = nullptr; // On the result of something Undo can take back.
+	bool status_undo = false; // The result shown is one Undo takes back (see _offer_undo).
 	// Earlier results, newest last ([{ "kind", "text", "time" }], this session, up to 50): what
 	// the panel did this afternoon, behind the clock button on the strip.
 	ScrollContainer *lists_scroll = nullptr; // The sections' shared scroll area.
@@ -263,6 +267,7 @@ class GitDock : public EditorDock {
 	Button *history_file_close = nullptr;
 	String history_path; // The file whose commits History shows (repository path), or "" for all.
 	ConfirmationDialog *revert_confirm = nullptr;
+	ConfirmationDialog *undo_confirm = nullptr;
 	String pending_revert; // The commit a NETWORK_REVERT reverts.
 	String pending_revert_summary;
 	String branch_here; // The commit Create Branch Here creates the branch at.
@@ -375,6 +380,9 @@ class GitDock : public EditorDock {
 	GitFileSystemColors *filesystem_colors = nullptr;
 	GitScriptMarks *script_marks = nullptr; // Changed lines marked in the script editor.
 	GitAvatars *avatars = nullptr; // Authors' GitHub pictures for History.
+	Ref<GitWatcher> watcher; // Changes made outside the panel (see _on_files_changed).
+	String watched_dir;
+	uint64_t last_refresh_msec = 0;
 	AcceptDialog *settings_dialog = nullptr; // Git Settings (the menu's Settings...).
 	CheckBox *settings_checks[godot_git::SETTING_COUNT] = {}; // In the order of SETTINGS in git_dock_editor.cpp.
 
@@ -385,6 +393,8 @@ class GitDock : public EditorDock {
 	String diff_commit; // Set when the file shown is from a commit (History), not uncommitted.
 	bool diff_stash = false; // diff_commit is a stash (Stashes), not a commit.
 	bool diff_conflict = false; // diff_path is conflicted: the panel shows the resolver.
+	ConfirmationDialog *line_discard_confirm = nullptr;
+	Array pending_line_discard; // The lines Discard Lines asked about.
 	String diff_commit_shown; // "hash:path" already in the panel; commit diffs never change.
 
 	// Line counts (+/-) for the two lists. Counted on a worker thread with its own GitRepository:
@@ -420,6 +430,7 @@ class GitDock : public EditorDock {
 	Ref<Texture2D> _icon(const String &p_name) const;
 	void _draw_own_icons();
 	void _update_tree_lines();
+	void _on_files_changed(const PackedStringArray &p_paths, int64_t p_first_change_msec);
 	String _file_type(const String &p_res_path);
 	Color _status_color(const String &p_state) const;
 	Color _dim_color() const;
@@ -523,6 +534,12 @@ class GitDock : public EditorDock {
 	void _undo_last_commit();
 	void _confirm_revert(const String &p_hash, const String &p_summary);
 	void _on_revert_confirmed();
+	void _on_diff_line_changes(const String &p_action, const Array &p_lines);
+	void _on_line_discard_confirmed();
+	void _apply_line_changes(const String &p_action, const Array &p_lines);
+	void _offer_undo();
+	void _start_undo();
+	void _on_undo_confirmed();
 	void _restore_version(const String &p_revision, const String &p_path, const String &p_what);
 	void _show_branch_here(const String &p_hash);
 
