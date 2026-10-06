@@ -33,6 +33,7 @@
 class GitDiffDock;
 class GitFileSystemColors;
 class GitScriptMarks;
+class GitAvatars;
 
 using namespace godot;
 
@@ -373,6 +374,7 @@ class GitDock : public EditorDock {
 	Dictionary open_scene_hashes; // res:// path -> MD5 of the file, before the operation.
 	GitFileSystemColors *filesystem_colors = nullptr;
 	GitScriptMarks *script_marks = nullptr; // Changed lines marked in the script editor.
+	GitAvatars *avatars = nullptr; // Authors' GitHub pictures for History.
 	AcceptDialog *settings_dialog = nullptr; // Git Settings (the menu's Settings...).
 	CheckBox *settings_checks[godot_git::SETTING_COUNT] = {}; // In the order of SETTINGS in git_dock_editor.cpp.
 
@@ -417,6 +419,7 @@ class GitDock : public EditorDock {
 	Ref<Texture2D> _file_icon(const String &p_path);
 	Ref<Texture2D> _icon(const String &p_name) const;
 	void _draw_own_icons();
+	void _update_tree_lines();
 	String _file_type(const String &p_res_path);
 	Color _status_color(const String &p_state) const;
 	Color _dim_color() const;
@@ -492,6 +495,7 @@ class GitDock : public EditorDock {
 	void _on_tree_mouse_exited(Object *p_tree);
 	void _click_row_button(uint64_t p_item, int p_id);
 	void _on_file_activated(Object *p_tree);
+	void _on_row_activated(Object *p_tree);
 	void _on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_button, Object *p_tree);
 	bool _build_commit_menu();
 	bool _build_file_menu(Tree *p_tree);
@@ -501,6 +505,8 @@ class GitDock : public EditorDock {
 	// git_dock_history.cpp: History.
 	void _fill_history();
 	void _fill_commit(TreeItem *p_item);
+	void _draw_commit_row(TreeItem *p_item, const Rect2 &p_rect);
+	void _on_avatars_changed();
 	int _add_commit_file_rows(Tree *p_tree, TreeItem *p_parent, const Array &p_files, const String &p_hash, int p_max_rows);
 	TreeItem *_add_commit_file_row(Tree *p_tree, TreeItem *p_parent, const Dictionary &p_file, const String &p_hash);
 	void _on_history_item_collapsed(TreeItem *p_item);

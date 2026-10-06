@@ -291,7 +291,7 @@ func _run() -> void:
 			dock.show_commit(c.hash)
 	await _frames()
 	var shown := _commit_row("Rename clamp01")
-	_check(shown != null and not shown.collapsed and shown.get_child_count() > 1, "Show Commit opens that commit in History, expanded")
+	_check(shown != null and not shown.collapsed and shown.get_child_count() > 0 and shown.get_first_child().get_meta("git_row") == "file", "Show Commit opens that commit in History, expanded, its files listed")
 	for button: Button in _section("History").find_children("*", "Button", true, false):
 		if button.tooltip_text.begins_with("Search commits") and button.button_pressed:
 			button.pressed.emit() # Closes the search again.

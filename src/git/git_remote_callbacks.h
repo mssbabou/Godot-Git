@@ -6,6 +6,7 @@
 #include <git2.h>
 
 #include <godot_cpp/variant/callable.hpp>
+#include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/string.hpp>
 
 using namespace godot;
@@ -56,5 +57,9 @@ bool is_cancel_requested();
 // cancel_network_operation() is ERR_SKIP with "Canceled. Nothing was changed." (libgit2 only
 // says GIT_EUSER).
 Error finish_network_operation(RemoteContext &p_ctx, int p_err);
+
+// A login git's credential helper already has for p_url: { "username", "password" }, or {} when
+// it has none. Never opens a sign-in window. For requests that aren't git's own (GitHub's API).
+Dictionary saved_login(const String &p_workdir, const String &p_url);
 
 } // namespace godot_git

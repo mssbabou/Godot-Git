@@ -58,7 +58,7 @@ String percent(uint64_t p_current, uint64_t p_total) {
 // Runs `git credential <p_action>` (fill, approve or reject) with a credential description as
 // input, the way the git CLI talks to its credential helper (e.g. Git Credential Manager,
 // osxkeychain), and returns what it printed. p_interactive sets credential.interactive.
-String run_git_credential(const String &p_workdir, const String &p_action, const String &p_input, const String &p_interactive = String()) {
+String run_git_credential(const String &p_workdir, const String &p_action, const String &p_input, const String &p_interactive = String(), bool p_track = true) {
 	PackedStringArray args;
 	args.push_back("-C");
 	args.push_back(p_workdir);
@@ -80,7 +80,9 @@ String run_git_credential(const String &p_workdir, const String &p_action, const
 	}
 
 	const int64_t pid = process.get("pid", -1);
-	track_process(pid);
+	if (p_track) {
+		track_process(pid);
+	}
 	io->store_string(p_input + String("\n"));
 	io->flush();
 
@@ -96,7 +98,9 @@ String run_git_credential(const String &p_workdir, const String &p_action, const
 			break;
 		}
 	}
-	track_process(0);
+	if (p_track) {
+		track_process(0);
+	}
 	wait_for_exit_code(pid); // Reaps it.
 	return output;
 }
@@ -324,6 +328,20 @@ void track_process(int64_t p_pid) {
 
 bool is_cancel_requested() {
 	return cancel_requested;
+}
+
+Dictionary saved_login(const String &p_workdir, const String &p_url) {
+	Dictionary result;
+	if (!git_installed()) {
+		return result;
+	}
+	// Not tracked as the network operation's process: this runs beside them, and Cancel is theirs.
+	const String credential = run_git_credential(p_workdir, "fill", vformat("url=%s\n", p_url), "never", false);
+	if (credential.contains("password=")) {
+		result["username"] = credential_field(credential, "username");
+		result["password"] = credential_field(credential, "password");
+	}
+	return result;
 }
 
 } // namespace godot_git

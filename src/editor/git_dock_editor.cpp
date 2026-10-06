@@ -16,6 +16,7 @@
 
 #include <godot_cpp/core/math.hpp>
 
+#include "editor/avatars.h"
 #include "editor/filesystem_colors.h"
 #include "editor/git_colors.h"
 #include "editor/git_diff_dock.h"
@@ -38,6 +39,7 @@ const SettingEntry SETTINGS[SETTING_COUNT] = {
 	{ FILESYSTEM_COLORS_SETTING, "Color changed files in the FileSystem dock", "Changed files in the colors of their status letters, with a dot on the folders that hold them." },
 	{ AUTO_FETCH_SETTING, "Fetch automatically", "Checks for new commits every few minutes in the background. It never changes your files or asks you to sign in." },
 	{ ASK_PULL_MERGE_SETTING, "Ask before a pull stops at conflicts", "When the new commits change the same lines as yours, Pull asks first. Off: it pulls and stops at the conflicts right away, to resolve under Conflicts (Abort Merge still puts everything back)." },
+	{ AVATARS_SETTING, "Show profile pictures from GitHub", "History shows each author's GitHub picture instead of their initials, asked from GitHub once per person and kept. For a private repository it uses git's saved login for GitHub; it never asks you to sign in." },
 };
 
 } // namespace
@@ -284,7 +286,7 @@ void GitDock::_register_settings() {
 		}
 	}
 	// All on by default: the panel's pick for anything someone might not want.
-	for (const char *name : { CHANGE_MARKS_SETTING, FILESYSTEM_COLORS_SETTING, AUTO_FETCH_SETTING, ASK_PULL_MERGE_SETTING }) {
+	for (const char *name : { CHANGE_MARKS_SETTING, FILESYSTEM_COLORS_SETTING, AUTO_FETCH_SETTING, ASK_PULL_MERGE_SETTING, AVATARS_SETTING }) {
 		if (!settings->has_setting(name)) {
 			settings->set_setting(name, true);
 		}
@@ -304,6 +306,8 @@ bool GitDock::_is_change_marks_enabled() const {
 // it opens; auto-fetch reads its setting on every tick).
 void GitDock::_on_editor_settings_changed() {
 	script_marks->set_enabled(_is_change_marks_enabled());
+	avatars->set_enabled(EditorInterface::get_singleton()->get_editor_settings()->get_setting(AVATARS_SETTING));
+	history_tree->queue_redraw();
 	if (repo.is_valid() && repo->is_open()) {
 		_update_filesystem_colors(repo->get_status());
 	}

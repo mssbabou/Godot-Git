@@ -8,6 +8,7 @@
 #include <godot_cpp/godot.hpp>
 
 #include "addon_files.h"
+#include "editor/avatars.h"
 #include "editor/filesystem_colors.h"
 #include "editor/filesystem_menu.h"
 #include "editor/git_diff_dock.h"
@@ -71,6 +72,7 @@ void initialize_godot_git_module(ModuleInitializationLevel p_level) {
 		GDREGISTER_INTERNAL_CLASS(GitScriptMarks);
 		GDREGISTER_INTERNAL_CLASS(GitChangePreview);
 		GDREGISTER_INTERNAL_CLASS(GitScriptMenu);
+		GDREGISTER_INTERNAL_CLASS(GitAvatars);
 		GDREGISTER_INTERNAL_CLASS(GitEditorPlugin);
 		EditorPlugins::add_by_type<GitEditorPlugin>();
 	}

@@ -36,6 +36,7 @@ void GitDock::_build_stashes(Control *p_parent) {
 	stashes_tree->set_column_expand(1, false);
 	stashes_tree->connect("item_mouse_selected", callable_mp(this, &GitDock::_on_tree_mouse_selected).bind(stashes_tree));
 	stashes_tree->connect("item_selected", callable_mp(this, &GitDock::_on_stash_item_selected));
+	stashes_tree->connect("item_activated", callable_mp(this, &GitDock::_on_row_activated).bind(stashes_tree));
 	stashes_tree->connect("item_collapsed", callable_mp(this, &GitDock::_on_stash_item_collapsed));
 	stashes_tree->connect("button_clicked", callable_mp(this, &GitDock::_on_stash_button_clicked));
 	stashes_tree->connect("gui_input", callable_mp(this, &GitDock::_on_stashes_gui_input));

@@ -264,6 +264,13 @@ void GitRepository::set_login_prompts_allowed(bool p_allowed) {
 	login_prompts_allowed = p_allowed;
 }
 
+// The login git's credential helper has saved for p_url ("https://github.com"): { "username",
+// "password" } (for GitHub, the password is a token), or {} without one. Never asks for one. For
+// the History's profile pictures, which ask GitHub's API about a private repository's commits.
+Dictionary GitRepository::get_saved_login(const String &p_url) const {
+	return saved_login(is_open() ? get_workdir() : String("."), p_url);
+}
+
 // Asks the running fetch/pull/push (on any thread) to stop as soon as it can, including one that
 // waits on a login window. It then fails with ERR_SKIP and "Canceled. Nothing was changed."
 // The local part of a pull (updating files, merging) is quick and isn't interrupted.

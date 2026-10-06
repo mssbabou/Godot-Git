@@ -183,6 +183,7 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_pull_result"), &GitRepository::get_pull_result);
 	ClassDB::bind_method(D_METHOD("set_progress_callback", "callback"), &GitRepository::set_progress_callback);
 	ClassDB::bind_method(D_METHOD("set_login_prompts_allowed", "allowed"), &GitRepository::set_login_prompts_allowed);
+	ClassDB::bind_method(D_METHOD("get_saved_login", "url"), &GitRepository::get_saved_login);
 
 	ClassDB::bind_static_method("GitRepository", D_METHOD("init_repository", "path", "project_path"), &GitRepository::init_repository);
 	ClassDB::bind_static_method("GitRepository", D_METHOD("set_config_home", "path"), &GitRepository::set_config_home);

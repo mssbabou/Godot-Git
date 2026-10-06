@@ -6,24 +6,55 @@
 #include <godot_cpp/classes/button.hpp>
 #include <godot_cpp/classes/editor_file_system.hpp>
 #include <godot_cpp/classes/editor_interface.hpp>
+#include <godot_cpp/classes/editor_settings.hpp>
+#include <godot_cpp/classes/font.hpp>
 #include <godot_cpp/classes/h_box_container.hpp>
 #include <godot_cpp/classes/input_event_key.hpp>
 #include <godot_cpp/classes/line_edit.hpp>
 #include <godot_cpp/classes/margin_container.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/classes/scroll_container.hpp>
 #include <godot_cpp/classes/style_box_flat.hpp>
+#include <godot_cpp/classes/text_line.hpp>
 #include <godot_cpp/classes/text_server.hpp>
 #include <godot_cpp/classes/texture_rect.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/classes/timer.hpp>
 #include <godot_cpp/core/math.hpp>
 
+#include "editor/avatars.h"
 #include "editor/git_diff_dock.h"
 #include "editor/git_dock_util.h"
 #include "editor/ui_text.h"
 
 using namespace godot_git;
+
+namespace {
+
+// "Markus Steen" -> "MS", "mssbabou" -> "M".
+String initials(const String &p_name) {
+	const PackedStringArray words = p_name.strip_edges().split(" ", false);
+	if (words.is_empty()) {
+		return "?";
+	}
+	String result = words[0].left(1).to_upper();
+	if (words.size() > 1) {
+		result += words[words.size() - 1].left(1).to_upper();
+	}
+	return result;
+}
+
+// One color per person, the same every time: a hue from their email (their name without one).
+Color person_color(const Dictionary &p_commit) {
+	String key = String(p_commit.get("email", String())).to_lower();
+	if (key.is_empty()) {
+		key = p_commit.get("author", String());
+	}
+	return Color::from_hsv((key.hash() % 360) / 360.0, 0.45, 0.62);
+}
+
+} // namespace
 
 // History: the latest commits, each expandable to its details and changed files (loaded when
 // first expanded). Rebuilt only when the commits changed, so expanded commits, the selection and
@@ -42,14 +73,19 @@ void GitDock::_fill_history() {
 	last_commit_message = last.get("message", String());
 	last_commit_pushed = has_commits && bool(sync_status.get("has_remotes", false)) && !bool(last.get("unpushed", false));
 
+	// Pictures are asked about on the remote History's links would open (see _web_commit_url).
+	String remote = String(sync_status.get("upstream", String())).get_slice("/", 0);
+	const PackedStringArray remotes = repo->get_remotes();
+	if (remote.is_empty() || !remotes.has(remote)) {
+		remote = remotes.has("origin") || remotes.is_empty() ? String("origin") : remotes[0];
+	}
+	avatars->set_repository(repo->get_workdir(), remotes.is_empty() ? String() : repo->get_remote_url(remote));
+	avatars->set_enabled(EditorInterface::get_singleton()->get_editor_settings()->get_setting(AVATARS_SETTING));
+
 	TreeItem *root = history_tree->get_root();
 	if (root && commits == history_shown && more == history_more) {
-		// Same commits: only the ages ("5m") move on.
-		for (TreeItem *item = root->get_first_child(); item; item = item->get_next()) {
-			if (row_kind(item) == "commit") {
-				item->set_text(1, relative_time((int64_t)Dictionary(item->get_metadata(0))["time"]));
-			}
-		}
+		// Same commits: only the ages ("5m") move on, which the rows draw as they go.
+		history_tree->queue_redraw();
 		return;
 	}
 	history_shown = commits;
@@ -70,30 +106,35 @@ void GitDock::_fill_history() {
 		return;
 	}
 
-	const Ref<Texture2D> icon = get_theme_icon("VCSCommit", "EditorIcons");
 	const Color accent = get_theme_color("accent_color", "Editor");
-	const Color dim = _dim_color();
+	// Two lines (summary, then who and when) next to the author's avatar.
+	const Ref<Font> font = history_tree->get_theme_font("font");
+	const int font_size = history_tree->get_theme_font_size("font_size");
+	const float scale = EditorInterface::get_singleton()->get_editor_scale();
+	const int row_height = Math::round(font->get_height(font_size + Math::round(scale)) + font->get_height(font_size) + 10 * scale);
 
 	for (int i = 0; i < commits.size(); i++) {
 		const Dictionary commit = commits[i];
-		const int64_t time = commit["time"];
 		const bool unpushed = commit["unpushed"];
-		const String date = local_date_time(time);
 
 		TreeItem *item = history_tree->create_item(root);
 		item->set_meta("git_row", "commit");
 		item->set_metadata(0, commit);
-		item->set_icon(0, icon);
-		if (unpushed) {
-			item->set_icon_modulate(0, accent);
-		}
+		item->set_cell_mode(0, TreeItem::CELL_MODE_CUSTOM);
+		item->set_custom_draw_callback(0, callable_mp(this, &GitDock::_draw_commit_row));
+		item->set_custom_minimum_height(row_height);
+		// The summary as the cell's text, invisible (drawn by _draw_commit_row), for type-to-search.
 		item->set_text(0, commit["summary"]);
-		item->set_tooltip_text(0, vformat(String::utf8("%s\n\n%s · %s · %s%s"), commit["message"], commit["id"], commit["author"], date, unpushed ? "\nNot pushed yet" : ""));
-		item->set_text(1, relative_time(time));
-		item->set_text_overrun_behavior(1, TextServer::OVERRUN_NO_TRIMMING);
-		item->set_custom_color(1, dim);
-		item->set_text_alignment(1, HORIZONTAL_ALIGNMENT_RIGHT);
-		item->set_tooltip_text(1, date);
+		item->set_custom_color(0, Color(0, 0, 0, 0));
+		String tooltip = vformat(String::utf8("%s\n\n%s · %s · %s"), commit["message"], commit["id"], commit["author"], local_date_time(commit["time"]));
+		if (unpushed) {
+			tooltip += "\nNot pushed yet.";
+		}
+		if (bool(commit.get("merge", false))) {
+			tooltip += "\nA merge: its files and diffs show what it brought into this branch.";
+		}
+		item->set_tooltip_text(0, tooltip);
+		item->set_tooltip_text(1, tooltip);
 
 		// Collapsed with a placeholder child, so it shows the arrow; the details load on expand.
 		TreeItem *placeholder = history_tree->create_item(item);
@@ -119,7 +160,8 @@ void GitDock::_fill_history() {
 	}
 }
 
-// Fills an expanded commit: who and when, the rest of its message, and the files it changed.
+// Fills an expanded commit with the files it changed. Who and when are on its row; the whole
+// message, its parents and the branches that have it go in the row's tooltip.
 void GitDock::_fill_commit(TreeItem *p_item) {
 	while (p_item->get_first_child()) {
 		memdelete(p_item->get_first_child());
@@ -127,21 +169,16 @@ void GitDock::_fill_commit(TreeItem *p_item) {
 	const Dictionary commit = p_item->get_metadata(0);
 	const String hash = commit["hash"];
 	const Color dim = _dim_color();
-	const String date = local_date_time(commit["time"]);
 
-	// Notes are single lines, trimmed to the width with the whole text in the tooltip. Not
-	// wrapped: the tree measures its height before wrapping, so rows below got cut off.
-	const String message = commit["message"];
 	// Notes are information, not buttons. The Tree highlights every row under the mouse, but draws
 	// a row's own background above that highlight, so the section's color covers it.
 	const Ref<StyleBoxFlat> section = history_pane->get_theme_stylebox("panel");
 	const Color background = section.is_valid() ? section->get_bg_color() : Color(0, 0, 0, 0);
-	auto add_note = [&](const String &p_text, const String &p_tooltip) {
+	auto add_note = [&](const String &p_text) {
 		TreeItem *note = history_tree->create_item(p_item);
 		note->set_meta("git_row", "note");
 		note->set_text(0, p_text);
 		note->set_custom_color(0, dim);
-		note->set_tooltip_text(0, p_tooltip);
 		for (int column = 0; column < 2; column++) {
 			note->set_selectable(column, false);
 			if (background.a > 0) {
@@ -150,40 +187,26 @@ void GitDock::_fill_commit(TreeItem *p_item) {
 		}
 	};
 
-	// The time for today's commits, the date for older ones; both, and the full hash, in the tooltip.
-	const String when = date.left(10) == local_date_time(Time::get_singleton()->get_unix_time_from_system()).left(10) ? date.substr(11, 5) : date.left(10);
-	add_note(vformat(String::utf8("%s · %s"), commit["author"], when), vformat(String::utf8("%s · %s · %s"), commit["author"], date, commit["hash"]));
-	// The rest of the message, a few lines of it.
-	const PackedStringArray body = message.substr(String(commit["summary"]).length()).strip_edges().split("\n", false);
-	for (int i = 0; i < MIN(body.size(), 6); i++) {
-		add_note(i == 5 && body.size() > 6 ? String("...") : body[i].strip_edges(), message);
-	}
-	if (bool(commit.get("merge", false))) {
-		add_note("Merge: what it brought into this branch", "A merge commit. Its files and diffs show what it brought into this branch (compared with its first parent).");
-	}
-	// Where it comes from and where it is: its parents, and the branches that have it.
-	const Dictionary details = repo->get_commit_details(hash);
-	const Array parents = details.get("parents", Array());
-	const PackedStringArray branches = details.get("branches", PackedStringArray());
-	PackedStringArray parent_hashes, parent_lines;
-	for (int i = 0; i < parents.size(); i++) {
-		const Dictionary parent = parents[i];
-		parent_hashes.push_back(parent["hash"]);
-		parent_lines.push_back(vformat("%s %s", parent["hash"], parent["summary"]));
-	}
-	PackedStringArray parts;
-	if (!parent_hashes.is_empty()) {
-		parts.push_back(vformat("%s %s", parent_hashes.size() == 1 ? "Parent" : "Parents", String(", ").join(parent_hashes)));
-	}
-	if (!branches.is_empty()) {
-		parts.push_back(vformat("on %s", join_list(branches, 3)));
-	}
-	if (!parts.is_empty()) {
-		String tooltip = parent_lines.is_empty() ? String() : vformat("%s:\n%s", parent_lines.size() == 1 ? "Parent" : "Parents", String("\n").join(parent_lines));
-		if (!branches.is_empty()) {
-			tooltip += vformat("%sOn %s.", tooltip.is_empty() ? "" : "\n\n", join_list(branches, 20));
+	if (!p_item->has_meta("git_details")) {
+		const Dictionary details = repo->get_commit_details(hash);
+		const Array parents = details.get("parents", Array());
+		const PackedStringArray branches = details.get("branches", PackedStringArray());
+		PackedStringArray parent_lines;
+		for (int i = 0; i < parents.size(); i++) {
+			const Dictionary parent = parents[i];
+			parent_lines.push_back(vformat("%s %s", parent["hash"], parent["summary"]));
 		}
-		add_note(String::utf8(" · ").join(parts), tooltip);
+		String extra;
+		if (!parent_lines.is_empty()) {
+			extra += vformat("\n\n%s:\n%s", parent_lines.size() == 1 ? "Parent" : "Parents", String("\n").join(parent_lines));
+		}
+		if (!branches.is_empty()) {
+			extra += vformat("\n\nOn %s.", join_list(branches, 20));
+		}
+		p_item->set_meta("git_details", true);
+		for (int column = 0; column < 2; column++) {
+			p_item->set_tooltip_text(column, p_item->get_tooltip_text(column) + extra);
+		}
 	}
 
 	if (!commit_files.has(hash)) {
@@ -191,13 +214,92 @@ void GitDock::_fill_commit(TreeItem *p_item) {
 	}
 	const Array files = commit_files[hash];
 	if (files.is_empty()) {
-		add_note("No file changes.", String());
+		add_note("No file changes.");
 	}
 	// 500 rows is enough for any real commit; beyond that the tree would only get slow.
 	const int left_out = _add_commit_file_rows(history_tree, p_item, files, hash, 500);
 	if (left_out > 0) {
-		add_note(vformat("...and %d more files, not listed.", left_out), String());
+		add_note(vformat("...and %d more files, not listed.", left_out));
 	}
+}
+
+// A commit row: the author's avatar (initials in their color), the summary, and under it who and
+// how long ago, plus "not pushed" (and a ring around the avatar) for commits on no remote branch.
+void GitDock::_draw_commit_row(TreeItem *p_item, const Rect2 &p_rect) {
+	Tree *tree = p_item->get_tree();
+	const Dictionary commit = p_item->get_metadata(0);
+	const Ref<Font> font = tree->get_theme_font("font");
+	const int font_size = tree->get_theme_font_size("font_size");
+	const float scale = EditorInterface::get_singleton()->get_editor_scale();
+	const RID canvas = tree->get_custom_drawing_canvas_item();
+	RenderingServer *rs = RenderingServer::get_singleton();
+	const bool unpushed = commit.get("unpushed", false);
+	const Color accent = get_theme_color("accent_color", "Editor");
+
+	const float diameter = MIN(Math::round(28 * scale), p_rect.size.y - 8 * scale);
+	const Vector2 center(p_rect.position.x + 3 * scale + diameter / 2, p_rect.position.y + p_rect.size.y / 2);
+	// Their GitHub picture once it's here (see GitAvatars), else their initials in their color.
+	const Ref<Texture2D> picture = avatars->get_avatar(commit);
+	if (picture.is_valid()) {
+		picture->draw_rect(canvas, Rect2(center - Vector2(diameter, diameter) / 2, Vector2(diameter, diameter)), false);
+	} else {
+		rs->canvas_item_add_circle(canvas, center, diameter / 2, person_color(commit), true);
+		const String letters = initials(commit.get("author", String()));
+		const int letter_size = Math::round(diameter * 0.42);
+		const float letters_width = font->get_string_size(letters, HORIZONTAL_ALIGNMENT_LEFT, -1, letter_size).x;
+		font->draw_string(canvas, Vector2(center.x - letters_width / 2, center.y - font->get_height(letter_size) / 2 + font->get_ascent(letter_size)), letters, HORIZONTAL_ALIGNMENT_LEFT, -1, letter_size, Color(1, 1, 1, 0.95));
+	}
+	if (unpushed) {
+		PackedVector2Array ring;
+		const float radius = diameter / 2 + 2.5 * scale;
+		for (int i = 0; i <= 48; i++) {
+			ring.push_back(center + Vector2(radius, 0).rotated(Math::TAU * i / 48));
+		}
+		rs->canvas_item_add_polyline(canvas, ring, PackedColorArray({ accent }), 1.5 * scale, true);
+	}
+
+	const float x = center.x + diameter / 2 + 8 * scale;
+	// Up to the row's end: the second column (a commit's files put their letters there) is empty here.
+	const float width = p_rect.get_end().x + tree->get_column_width(1) - x - 4 * scale;
+	if (width < font_size) {
+		return;
+	}
+	// The summary a pixel larger than the line under it (the maintainer's ask). The two lines are
+	// placed by their baselines and centered on the avatar as they look (the summary's capitals to
+	// the name's baseline), not by their line boxes, whose empty space above and below differs.
+	const int summary_size = font_size + Math::round(scale);
+	const float summary_cap = font->get_ascent(summary_size) * 0.72f; // Roughly the capitals' height.
+	const float name_cap = font->get_ascent(font_size) * 0.72f;
+	const float gap = 9 * scale; // From the summary's baseline to the top of the name's capitals.
+	const float summary_baseline = Math::round(center.y - (summary_cap + gap + name_cap) / 2 + summary_cap);
+	const float name_baseline = Math::round(summary_baseline + gap + name_cap);
+	const float top = summary_baseline - font->get_ascent(summary_size); // TextLine draws from its top.
+	const float line_height = name_baseline - font->get_ascent(font_size) - top; // Where the second line starts.
+	// Draws one line trimmed to p_width; returns how wide it came out.
+	auto draw_line = [&](const String &p_text, float p_x, float p_y, float p_width, const Color &p_color, int p_size = 0) -> float {
+		Ref<TextLine> line;
+		line.instantiate();
+		line->add_string(p_text, font, p_size > 0 ? p_size : font_size);
+		line->set_width(p_width);
+		line->set_text_overrun_behavior(TextServer::OVERRUN_TRIM_ELLIPSIS);
+		line->draw(canvas, Vector2(p_x, p_y), p_color);
+		return MIN(line->get_size().x, p_width);
+	};
+	draw_line(commit.get("summary", String()), x, top, width, tree->get_theme_color(p_item->is_selected(0) ? "font_selected_color" : "font_color"), summary_size);
+	const String who = vformat(String::utf8("%s · %s"), commit.get("author", String()), relative_time(commit.get("time", 0)));
+	if (!unpushed) {
+		draw_line(who, x, top + line_height, width, _dim_color());
+		return;
+	}
+	// "not pushed" in the accent color after it, never trimmed away: the name gives way first.
+	const String suffix = String::utf8(" · not pushed");
+	const float suffix_width = font->get_string_size(suffix, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x;
+	const float who_width = draw_line(who, x, top + line_height, MAX(float(font_size), width - suffix_width), _dim_color());
+	draw_line(suffix, x + who_width, top + line_height, MAX(0.0f, width - who_width), accent);
+}
+
+void GitDock::_on_avatars_changed() {
+	history_tree->queue_redraw();
 }
 
 // A commit's or stash's files under p_parent, with companions (player.gd.uid) on their file's row

@@ -136,6 +136,7 @@ Dictionary commit_item(git_commit *p_commit, bool p_unpushed) {
 	item["summary"] = summary ? String::utf8(summary) : String();
 	item["message"] = message ? String::utf8(message).strip_edges() : String();
 	item["author"] = author ? String::utf8(author->name) : String();
+	item["email"] = author ? String::utf8(author->email) : String();
 	item["time"] = (int64_t)git_commit_time(p_commit);
 	item["unpushed"] = p_unpushed;
 	item["merge"] = git_commit_parentcount(p_commit) > 1;
@@ -146,7 +147,7 @@ Dictionary commit_item(git_commit *p_commit, bool p_unpushed) {
 
 // Returns up to p_max_count commits reachable from HEAD, newest first:
 // [{ "id": String (short hash), "hash": String, "summary": String, "message": String,
-//    "author": String, "time": int (unix), "unpushed": bool, "merge": bool }, ...]
+//    "author": String, "email": String, "time": int (unix), "unpushed": bool, "merge": bool }, ...]
 // "unpushed" means the commit isn't on any remote-tracking branch yet.
 // p_path: only commits that changed that file, following it back through renames (like
 // git log --follow); each then has "path", the file's name in that commit. p_query: only commits

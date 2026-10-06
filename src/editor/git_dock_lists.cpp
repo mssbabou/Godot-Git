@@ -58,6 +58,7 @@ void GitDock::_build_lists(Control *p_parent) {
 	history_tree->connect("item_mouse_selected", callable_mp(this, &GitDock::_on_tree_mouse_selected).bind(history_tree));
 	history_tree->connect("item_selected", callable_mp(this, &GitDock::_on_history_item_selected));
 	history_tree->connect("item_collapsed", callable_mp(this, &GitDock::_on_history_item_collapsed));
+	history_tree->connect("item_activated", callable_mp(this, &GitDock::_on_row_activated).bind(history_tree));
 	history_empty = _make_body(history_pane, history_tree);
 	_build_history_filters();
 

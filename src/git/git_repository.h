@@ -144,6 +144,7 @@ public:
 	Dictionary get_pull_result() const;
 	void set_progress_callback(const Callable &p_callback);
 	void set_login_prompts_allowed(bool p_allowed);
+	Dictionary get_saved_login(const String &p_url) const;
 
 	static Error init_repository(const String &p_path, const String &p_project_path);
 	static void set_config_home(const String &p_path);

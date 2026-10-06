@@ -176,6 +176,19 @@ void GitDock::_on_file_activated(Object *p_tree) {
 	}
 }
 
+// A click on a commit or stash opens or closes it (_on_tree_mouse_selected). A second click soon
+// after is a double-click to the Tree, which then reports item_activated instead, so without
+// this, closing a commit right after opening it (or clicking again when nothing seemed to happen)
+// took another click.
+void GitDock::_on_row_activated(Object *p_tree) {
+	Tree *tree = Object::cast_to<Tree>(p_tree);
+	TreeItem *item = tree ? tree->get_selected() : nullptr;
+	const String row = row_kind(item);
+	if (row == "commit" || row == "stash") {
+		item->set_collapsed(!item->is_collapsed());
+	}
+}
+
 void GitDock::_on_tree_mouse_selected(const Vector2 &p_position, int p_mouse_button, Object *p_tree) {
 	if (p_mouse_button == MOUSE_BUTTON_LEFT && p_tree == stashes_tree) {
 		TreeItem *item = stashes_tree->get_item_at_position(p_position);

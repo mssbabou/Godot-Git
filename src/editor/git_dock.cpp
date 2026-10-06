@@ -20,6 +20,7 @@
 
 #include "addon_files.h"
 #include "build_info.h"
+#include "editor/avatars.h"
 #include "editor/file_opener.h"
 #include "editor/filesystem_colors.h"
 #include "editor/git_colors.h"
@@ -174,6 +175,9 @@ GitDock::GitDock() {
 	script_marks->connect("history_requested", callable_mp(this, &GitDock::show_file_history));
 	script_marks->connect("line_commit_requested", callable_mp(this, &GitDock::show_line_commit));
 	add_child(script_marks);
+	avatars = memnew(GitAvatars);
+	avatars->connect("avatars_changed", callable_mp(this, &GitDock::_on_avatars_changed));
+	add_child(avatars);
 
 	// Timers. Saves of scenes, scripts and resources reach us through "filesystem_changed", but
 	// Project Settings writes project.godot directly; checking its modified time is one cheap stat.
@@ -197,12 +201,14 @@ void GitDock::_notification(int p_what) {
 			// colors (white ages, black note bars). Expanded commits are re-expanded.
 			history_shown.clear();
 			_update_icons();
+			_update_tree_lines();
 		} break;
 
 		case NOTIFICATION_READY: {
 			EditorFileSystem *fs = EditorInterface::get_singleton()->get_resource_filesystem();
 			fs->connect("filesystem_changed", callable_mp(this, &GitDock::refresh));
 			_update_status_style(); // Needs the commit box's theme, which isn't final at THEME_CHANGED.
+			_update_tree_lines(); // The lists don't exist yet at the first THEME_CHANGED.
 			_check_git();
 			_register_settings();
 			script_marks->set_enabled(_is_change_marks_enabled());
@@ -478,6 +484,21 @@ String GitDock::_file_type(const String &p_res_path) {
 
 Color GitDock::_status_color(const String &p_state) const {
 	return status_color(p_state); // The one palette (git_colors.h).
+}
+
+// Godot's default ("Selected Only" in Editor Settings) draws the lines from a parent to its children
+// only while that branch is selected, so an expanded commit's lines came and went as the selection
+// moved to another list. In History and Stashes they always show, unless lines are switched off.
+void GitDock::_update_tree_lines() {
+	for (Tree *tree : { history_tree, stashes_tree }) {
+		if (!tree) {
+			continue;
+		}
+		tree->remove_theme_constant_override("relationship_line_width");
+		if (tree->get_theme_constant("draw_relationship_lines") > 0 && tree->get_theme_constant("relationship_line_width") == 0) {
+			tree->add_theme_constant_override("relationship_line_width", 1);
+		}
+	}
 }
 
 Color GitDock::_dim_color() const {
