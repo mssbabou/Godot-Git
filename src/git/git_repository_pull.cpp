@@ -15,6 +15,7 @@
 #include <godot_cpp/templates/local_vector.hpp>
 
 #include <string>
+#include <vector>
 
 #include "git/git_cli.h"
 #include "git/git_lfs.h"
@@ -49,6 +50,9 @@ struct MergeOutcome {
 
 // An uncommitted edit a pull carries across: set aside before the pull, then merged into the
 // version the pull brought (see plan_pull).
+// Kept in std::vector, not LocalVector: LocalVector moves its elements byte by byte when it
+// grows, which breaks std::string on Linux (libstdc++ keeps short strings behind a pointer into
+// the string itself; "free(): invalid pointer" in CI).
 struct CarriedEdit {
 	String path;
 	PackedByteArray original; // The file on disk, byte for byte, to put back if anything fails.
@@ -86,7 +90,7 @@ bool merge_text(const String &p_path, const std::string &p_base, const std::stri
 // conflict. A pull with any of those changes nothing.
 // Edits that overlap the incoming changes (same lines) aren't refused here but listed in
 // r_conflicting, and carried with conflicts set: they can come back as conflicts to resolve.
-PackedStringArray plan_pull(git_repository *p_repo, const git_oid *p_head, const git_oid *p_theirs, LocalVector<CarriedEdit> *r_carried, PackedStringArray *r_conflicting = nullptr) {
+PackedStringArray plan_pull(git_repository *p_repo, const git_oid *p_head, const git_oid *p_theirs, std::vector<CarriedEdit> *r_carried, PackedStringArray *r_conflicting = nullptr) {
 	PackedStringArray refused;
 	git_oid base_oid;
 	if (git_merge_base(&base_oid, p_repo, p_head, p_theirs) != 0) {
@@ -165,8 +169,8 @@ PackedStringArray plan_pull(git_repository *p_repo, const git_oid *p_head, const
 // Before the pull: the carried files back to HEAD's version, so the pull sees no local changes
 // there. Copies go to .git/godot-git-pull first (with a README naming each file), so the edits
 // exist on disk even if the editor goes down mid-pull.
-Error set_aside_edits(git_repository *p_repo, const LocalVector<CarriedEdit> &p_edits, const MergeWords &p_words, String &r_backup) {
-	if (p_edits.is_empty()) {
+Error set_aside_edits(git_repository *p_repo, const std::vector<CarriedEdit> &p_edits, const MergeWords &p_words, String &r_backup) {
+	if (p_edits.empty()) {
 		return OK;
 	}
 	const String git_dir = String::utf8(git_repository_path(p_repo));
@@ -258,8 +262,8 @@ bool write_carried_conflict(git_repository *p_repo, const CarriedEdit &p_edit, c
 // overlap come back as conflicts (r_conflicted); then the copies stay, with a note in the git dir
 // (pull_state_path) so Abort can put everything back. Otherwise the copies are removed once
 // every file is back. Returns what couldn't be done, or "".
-String finish_carried_edits(git_repository *p_repo, const LocalVector<CarriedEdit> &p_edits, const String &p_backup, bool p_pulled, PackedStringArray &r_carried, const git_oid *p_old_head, const String &p_upstream, PackedStringArray &r_conflicted) {
-	if (p_edits.is_empty()) {
+String finish_carried_edits(git_repository *p_repo, const std::vector<CarriedEdit> &p_edits, const String &p_backup, bool p_pulled, PackedStringArray &r_carried, const git_oid *p_old_head, const String &p_upstream, PackedStringArray &r_conflicted) {
+	if (p_edits.empty()) {
 		return String();
 	}
 	const String workdir = String::utf8(git_repository_workdir(p_repo));
@@ -521,7 +525,7 @@ Error merge_into_head(git_repository *p_repo, git_reference *p_head, const git_a
 	const git_oid *their_oid = git_annotated_commit_id(p_theirs);
 
 	PackedStringArray conflicting;
-	LocalVector<CarriedEdit> carried;
+	std::vector<CarriedEdit> carried;
 	const PackedStringArray blocking = plan_pull(p_repo, head_oid, their_oid, &carried, &conflicting);
 	if (!blocking.is_empty()) {
 		// Checked before anything is touched, so your edits never end up in a stash only a
@@ -566,7 +570,7 @@ Error merge_into_head(git_repository *p_repo, git_reference *p_head, const git_a
 	}
 	// A merge left at its conflicts is finished by committing the index, so nothing else may be
 	// staged; and your uncommitted edits can't be carried across a merge that isn't done.
-	const bool leave_merge = p_start_merge && !fast_forward_only && carried.is_empty() && !has_staged_changes(p_repo);
+	const bool leave_merge = p_start_merge && !fast_forward_only && carried.empty() && !has_staged_changes(p_repo);
 	PackedStringArray carried_paths;
 	for (const CarriedEdit &edit : carried) {
 		carried_paths.push_back(edit.path);
@@ -590,7 +594,7 @@ Error merge_into_head(git_repository *p_repo, git_reference *p_head, const git_a
 					r_outcome.conflicts = merge_conflicts; // The panel asks whether to start a merge.
 				} else {
 					fail(vformat("%s: your commits and %s changed the same lines in %s, and %s. Commit or discard your changes first, then %s again.", p_words.nothing(), p_words.name, name_list(merge_conflicts),
-							carried.is_empty() ? String("you have staged changes") : vformat("you have uncommitted changes to %s", name_list(carried_paths)), p_words.verb()));
+							carried.empty() ? String("you have staged changes") : vformat("you have uncommitted changes to %s", name_list(carried_paths)), p_words.verb()));
 				}
 			}
 		}
@@ -885,7 +889,7 @@ Dictionary GitRepository::get_merge_preview(const String &p_branch) const {
 	result["fast_forward"] = fast_forward_only;
 
 	PackedStringArray conflicting;
-	LocalVector<CarriedEdit> carried;
+	std::vector<CarriedEdit> carried;
 	const PackedStringArray blocking = plan_pull(repo, ours, theirs, &carried, &conflicting);
 	if (!blocking.is_empty()) {
 		result["problem"] = vformat("Your uncommitted changes to %s can't be merged with the commits on %s (they're staged, new, deleted or binary). Commit, stash or discard them first.", name_list(blocking), p_branch);
@@ -916,7 +920,7 @@ Dictionary GitRepository::get_merge_preview(const String &p_branch) const {
 			}
 		}
 		git_error_clear();
-		if (!commit_conflicts.is_empty() && (!carried.is_empty() || has_staged_changes(repo))) {
+		if (!commit_conflicts.is_empty() && (!carried.empty() || has_staged_changes(repo))) {
 			// merge_into_head refuses this too: a merge stopped at conflicts is finished by
 			// committing the index, so your own changes can't be in the way.
 			PackedStringArray mine;
@@ -924,7 +928,7 @@ Dictionary GitRepository::get_merge_preview(const String &p_branch) const {
 				mine.push_back(edit.path);
 			}
 			result["problem"] = vformat("Your commits and %s changed the same lines in %s, and %s. Commit or discard your changes first.", p_branch, name_list(commit_conflicts),
-					carried.is_empty() ? String("you have staged changes") : vformat("you have uncommitted changes to %s", name_list(mine)));
+					carried.empty() ? String("you have staged changes") : vformat("you have uncommitted changes to %s", name_list(mine)));
 		}
 	}
 	commit_conflicts.append_array(conflicting);

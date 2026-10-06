@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 #include "git/git_lfs.h"
 #include "git/git_util.h"
@@ -20,7 +21,8 @@ using namespace godot_git;
 
 namespace {
 
-// One line of a diff that covers the whole file: kept, removed or added.
+// One line of a diff that covers the whole file: kept, removed or added. Kept in std::vector,
+// not LocalVector, which moves elements byte by byte and so breaks std::string on Linux.
 struct DiffOp {
 	char origin = ' '; // GIT_DIFF_LINE_CONTEXT, _ADDITION or _DELETION.
 	std::string content; // With its line ending, if it has one.
@@ -30,7 +32,7 @@ struct DiffOp {
 
 // The diff from p_old to p_new as every line of both, in order (all of it is context, not just
 // three lines around each change).
-bool whole_file_diff(const std::string &p_old, const std::string &p_new, const String &p_path, LocalVector<DiffOp> &r_ops) {
+bool whole_file_diff(const std::string &p_old, const std::string &p_new, const String &p_path, std::vector<DiffOp> &r_ops) {
 	git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
 	// More context than either version has lines, so it's one hunk from the first line to the last.
 	const uint32_t lines = (uint32_t)MAX(std::count(p_old.begin(), p_old.end(), '\n'), std::count(p_new.begin(), p_new.end(), '\n')) + 2;
@@ -145,7 +147,7 @@ Error GitRepository::apply_line_changes(const String &p_path, bool p_staged, con
 		return fail(vformat("%s is a binary file, so it can only be staged, unstaged or discarded as a whole.", p_path.get_file()));
 	}
 
-	LocalVector<DiffOp> ops;
+	std::vector<DiffOp> ops;
 	if (!whole_file_diff(old_text, new_text, p_path, ops)) {
 		return to_error(-1);
 	}
