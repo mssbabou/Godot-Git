@@ -1,7 +1,10 @@
 extends RefCounted
+
 ## Base class for test suites. A suite overrides run() (which may await) and uses check() for
 ## assertions. Repositories are built with the real git CLI, so results are checked against what
 ## git itself says, not against our own code.
+
+const GitApi = preload("res://tests/git_api.gd")
 
 var dir := "" ## This suite's scratch folder (absolute path).
 var online := false ## True when network tests against GitHub are enabled.
@@ -87,8 +90,8 @@ func teammate_pushes(shared: Dictionary, file: String, text: String, message := 
 	git(shared.theirs, ["push", "-q"])
 
 
-func open(repo: String) -> GitRepository:
-	var r := GitRepository.new()
+func open(repo: String) -> GitApi:
+	var r := GitApi.new()
 	r.open(repo)
 	return r
 

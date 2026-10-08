@@ -56,12 +56,12 @@ func _switch_branch_with_locked_file() -> void:
 	lock.close()
 
 	check("switch fails while a file is locked", err != OK)
-	check("says which file", GitRepository.get_last_error().contains("d.txt"), GitRepository.get_last_error())
+	check("says which file", GitApi.get_last_error().contains("d.txt"), GitApi.get_last_error())
 	check("still on main", git(shared.mine, ["symbolic-ref", "--short", "HEAD"]) == "main")
 	check("working tree exactly as before", _tree_snapshot(shared.mine) == before, [_tree_snapshot(shared.mine), before])
 	check("git status as before", git(shared.mine, ["status", "--porcelain"]) == status_before, git(shared.mine, ["status", "--porcelain"]))
 
-	check("switch works once the file is free", r.checkout_branch("origin/other") == OK, GitRepository.get_last_error())
+	check("switch works once the file is free", r.checkout_branch("origin/other") == OK, GitApi.get_last_error())
 	check("switched", git(shared.mine, ["symbolic-ref", "--short", "HEAD"]) == "other" and read(shared.mine.path_join("c.txt")) == "c changed\n")
 
 
@@ -85,7 +85,7 @@ func _pull_with_locked_file() -> void:
 	check("pull fails while a file is locked", err != OK)
 	check("HEAD unchanged", git(shared.mine, ["rev-parse", "HEAD"]) == head)
 	check("working tree exactly as before", _tree_snapshot(shared.mine) == before, [_tree_snapshot(shared.mine), before])
-	check("pull works once the file is free", r.pull() == OK, GitRepository.get_last_error())
+	check("pull works once the file is free", r.pull() == OK, GitApi.get_last_error())
 
 
 func _merge_with_locked_file() -> void:
@@ -112,7 +112,7 @@ func _merge_with_locked_file() -> void:
 	check("working tree exactly as before, uncommitted edit included", _tree_snapshot(shared.mine) == before, [_tree_snapshot(shared.mine), before])
 	check("no merge in progress", not exists(shared.mine.path_join(".git/MERGE_HEAD")))
 	check("no stash left behind", git(shared.mine, ["stash", "list"]).is_empty(), git(shared.mine, ["stash", "list"]))
-	check("merging pull works once the file is free", r.pull() == OK and r.get_pull_result().merged, GitRepository.get_last_error())
+	check("merging pull works once the file is free", r.pull() == OK and r.get_pull_result().merged, GitApi.get_last_error())
 
 
 func _lock_released_soon() -> void:
@@ -126,5 +126,5 @@ func _lock_released_soon() -> void:
 	var r := open(shared.mine)
 	var err := r.checkout_branch("origin/other")
 	releaser.wait_to_finish()
-	check("switch succeeds when the file is free again soon", err == OK, GitRepository.get_last_error())
+	check("switch succeeds when the file is free again soon", err == OK, GitApi.get_last_error())
 	check("fully switched", read(shared.mine.path_join("c.txt")) == "c changed\n" and not exists(shared.mine.path_join("d.txt")))

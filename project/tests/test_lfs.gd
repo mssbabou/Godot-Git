@@ -63,7 +63,7 @@ func _pull_fast_forward() -> void:
 
 	var r := open(shared.mine)
 	check("repository uses LFS", r.uses_lfs())
-	check("pull succeeds", r.pull() == OK, GitRepository.get_last_error())
+	check("pull succeeds", r.pull() == OK, GitApi.get_last_error())
 	check("pulled image is the real file", FileAccess.get_file_as_bytes(shared.mine.path_join("new.png")) == image, "a pointer file" if _is_pointer(shared.mine.path_join("new.png")) else "different bytes")
 	check("status clean after pull", r.get_status().is_empty(), r.get_status())
 	check("git agrees it's clean", git(shared.mine, ["status", "--porcelain"]).is_empty(), git(shared.mine, ["status", "--porcelain"]))
@@ -78,7 +78,7 @@ func _pull_merge() -> void:
 	commit_all(shared.mine, "My notes")
 
 	var r := open(shared.mine)
-	check("diverged pull merges", r.pull() == OK and r.get_pull_result().merged, GitRepository.get_last_error())
+	check("diverged pull merges", r.pull() == OK and r.get_pull_result().merged, GitApi.get_last_error())
 	check("merged-in image is the real file", FileAccess.get_file_as_bytes(shared.mine.path_join("theirs.png")) == image)
 	check("status clean after merge", r.get_status().is_empty(), r.get_status())
 
@@ -87,11 +87,11 @@ func _commit_and_push() -> void:
 	var shared := _make_lfs_shared("commit")
 	var image := _write_image(shared.mine.path_join("mine.png"), 5000)
 	var r := open(shared.mine)
-	check("stage and commit an image", r.stage("mine.png") == OK and r.commit("Add mine.png") == OK, GitRepository.get_last_error())
+	check("stage and commit an image", r.stage("mine.png") == OK and r.commit("Add mine.png") == OK, GitApi.get_last_error())
 	check("committed into LFS", git(shared.mine, ["lfs", "ls-files", "-n"]).split("\n").has("mine.png"), git(shared.mine, ["lfs", "ls-files", "-n"]))
 	check("git holds only a pointer", git(shared.mine, ["cat-file", "-s", "HEAD:mine.png"]).to_int() < 200, git(shared.mine, ["cat-file", "-s", "HEAD:mine.png"]))
 	check("status clean after commit", r.get_status().is_empty(), r.get_status())
-	check("push succeeds", r.push() == OK, GitRepository.get_last_error())
+	check("push succeeds", r.push() == OK, GitApi.get_last_error())
 
 	# A teammate gets the real image from the remote, so the file itself was uploaded too.
 	git(shared.theirs, ["pull", "-q"])
@@ -106,8 +106,8 @@ func _switch_branch() -> void:
 	git(shared.theirs, ["push", "-q", "-u", "origin", "feature"])
 
 	var r := open(shared.mine)
-	check("fetch", r.fetch() == OK, GitRepository.get_last_error())
-	check("switch to the remote branch", r.checkout_branch("origin/feature") == OK, GitRepository.get_last_error())
+	check("fetch", r.fetch() == OK, GitApi.get_last_error())
+	check("switch to the remote branch", r.checkout_branch("origin/feature") == OK, GitApi.get_last_error())
 	check("switched-to image is the real file", FileAccess.get_file_as_bytes(shared.mine.path_join("feature.png")) == image)
 	check("status clean after switching", r.get_status().is_empty(), r.get_status())
 
@@ -153,11 +153,11 @@ func _track_with_lfs() -> void:
 	check("not LFS yet", not r.uses_lfs())
 	# The install above already made the hook; remove it so the check below shows track_with_lfs made it.
 	DirAccess.remove_absolute(repo.path_join(".git/hooks/pre-push"))
-	check("track with LFS", r.track_with_lfs(["*.psd"], ["big.psd"]) == OK, GitRepository.get_last_error())
+	check("track with LFS", r.track_with_lfs(["*.psd"], ["big.psd"]) == OK, GitApi.get_last_error())
 	check("track_with_lfs installs the pre-push hook", exists(repo.path_join(".git/hooks/pre-push")))
 	check("the rule is in .gitattributes", read(repo.path_join(".gitattributes")).contains("*.psd filter=lfs diff=lfs merge=lfs -text"), read(repo.path_join(".gitattributes")))
 	check("tracking twice adds no second line", r.track_with_lfs(["*.psd"], ["big.psd"]) == OK and read(repo.path_join(".gitattributes")).count("*.psd") == 1)
-	check("commit", r.commit("Add big.psd") == OK, GitRepository.get_last_error())
+	check("commit", r.commit("Add big.psd") == OK, GitApi.get_last_error())
 	check("committed into LFS", git(repo, ["lfs", "ls-files", "-n"]).split("\n").has("big.psd"), git(repo, ["lfs", "ls-files", "-n"]))
 	check("git holds only a pointer", git(repo, ["cat-file", "-s", "HEAD:big.psd"]).to_int() < 200, git(repo, ["cat-file", "-s", "HEAD:big.psd"]))
 	check(".gitattributes committed with it", git(repo, ["ls-files", ".gitattributes"]).strip_edges() == ".gitattributes")

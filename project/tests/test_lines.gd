@@ -29,7 +29,7 @@ func _two_hunk_repo(name: String) -> Array:
 
 
 ## The changed lines of hunk p_hunk of p_path's diff, as the Diff panel sends them.
-func _hunk_lines(r: GitRepository, path: String, staged: bool, hunk_index: int) -> Array:
+func _hunk_lines(r: GitApi, path: String, staged: bool, hunk_index: int) -> Array:
 	var hunk: Dictionary = r.get_diff(path, staged).hunks[hunk_index]
 	var result := []
 	for i in hunk.origins.size():
@@ -44,9 +44,9 @@ func _hunk_lines(r: GitRepository, path: String, staged: bool, hunk_index: int) 
 func _stage_one_hunk() -> void:
 	var setup := _two_hunk_repo("hunk")
 	var repo: String = setup[0]
-	var r: GitRepository = setup[1]
+	var r: GitApi = setup[1]
 	check("hunk: two hunks", r.get_diff("a.txt", false).hunks.size() == 2)
-	check("hunk: staged the first", r.apply_line_changes("a.txt", false, "stage", _hunk_lines(r, "a.txt", false, 0)) == OK, GitRepository.get_last_error())
+	check("hunk: staged the first", r.apply_line_changes("a.txt", false, "stage", _hunk_lines(r, "a.txt", false, 0)) == OK, GitApi.get_last_error())
 	var cached := git(repo, ["diff", "--cached", "-U0"])
 	var unstaged := git(repo, ["diff", "-U0"])
 	check("hunk: only line 2 is staged", cached.contains("+line 2 changed") and not cached.contains("line 18"), cached)
@@ -56,9 +56,9 @@ func _stage_one_hunk() -> void:
 func _stage_added_line_only() -> void:
 	var setup := _two_hunk_repo("added")
 	var repo: String = setup[0]
-	var r: GitRepository = setup[1]
+	var r: GitApi = setup[1]
 	var lines := _hunk_lines(r, "a.txt", false, 0).filter(func(l: Dictionary) -> bool: return l.new > 0)
-	check("added only: staged", r.apply_line_changes("a.txt", false, "stage", lines) == OK, GitRepository.get_last_error())
+	check("added only: staged", r.apply_line_changes("a.txt", false, "stage", lines) == OK, GitApi.get_last_error())
 	var staged := git(repo, ["show", ":a.txt"]).split("\n")
 	check("added only: the index has the old line and the new one", staged[1] == "line 2" and staged[2] == "line 2 changed" and staged.size() == 21, staged)
 
@@ -66,9 +66,9 @@ func _stage_added_line_only() -> void:
 func _unstage_hunk() -> void:
 	var setup := _two_hunk_repo("unstage")
 	var repo: String = setup[0]
-	var r: GitRepository = setup[1]
+	var r: GitApi = setup[1]
 	r.stage("a.txt")
-	check("unstage: unstaged the second hunk", r.apply_line_changes("a.txt", true, "unstage", _hunk_lines(r, "a.txt", true, 1)) == OK, GitRepository.get_last_error())
+	check("unstage: unstaged the second hunk", r.apply_line_changes("a.txt", true, "unstage", _hunk_lines(r, "a.txt", true, 1)) == OK, GitApi.get_last_error())
 	var cached := git(repo, ["diff", "--cached", "-U0"])
 	var unstaged := git(repo, ["diff", "-U0"])
 	check("unstage: line 2 still staged, line 18 not", cached.contains("+line 2 changed") and not cached.contains("line 18"), cached)
@@ -79,8 +79,8 @@ func _unstage_hunk() -> void:
 func _discard_lines() -> void:
 	var setup := _two_hunk_repo("discard")
 	var repo: String = setup[0]
-	var r: GitRepository = setup[1]
-	check("discard: discarded the second hunk", r.apply_line_changes("a.txt", false, "discard", _hunk_lines(r, "a.txt", false, 1)) == OK, GitRepository.get_last_error())
+	var r: GitApi = setup[1]
+	check("discard: discarded the second hunk", r.apply_line_changes("a.txt", false, "discard", _hunk_lines(r, "a.txt", false, 1)) == OK, GitApi.get_last_error())
 	var text := read(repo.path_join("a.txt")).replace("\r", "")
 	check("discard: line 18 is back, line 2 still changed", text.contains("line 2 changed") and text.contains("line 18\n") and not text.contains("line 18 changed"), text)
 	check("discard: nothing staged", git(repo, ["diff", "--cached"]) == "")
@@ -99,10 +99,10 @@ func _crlf_kept() -> void:
 	write(repo.path_join("w.txt"), "\r\n".join(lines) + "\r\n")
 	var r := open(repo)
 	check("crlf: two hunks", r.get_diff("w.txt", false).hunks.size() == 2)
-	check("crlf: discarded the first change", r.apply_line_changes("w.txt", false, "discard", _hunk_lines(r, "w.txt", false, 0)) == OK, GitRepository.get_last_error())
+	check("crlf: discarded the first change", r.apply_line_changes("w.txt", false, "discard", _hunk_lines(r, "w.txt", false, 0)) == OK, GitApi.get_last_error())
 	var on_disk := FileAccess.get_file_as_string(repo.path_join("w.txt"))
 	check("crlf: line 2 back, line 19 still changed, CRLF line endings kept", on_disk.begins_with("line 1\r\nline 2\r\n") and on_disk.contains("LINE 19\r\n") and on_disk.count("\r\n") == 20, on_disk.c_escape())
-	check("crlf: staged the other", r.apply_line_changes("w.txt", false, "stage", _hunk_lines(r, "w.txt", false, 0)) == OK, GitRepository.get_last_error())
+	check("crlf: staged the other", r.apply_line_changes("w.txt", false, "stage", _hunk_lines(r, "w.txt", false, 0)) == OK, GitApi.get_last_error())
 	check("crlf: git stores LF, nothing left unstaged", git(repo, ["show", ":w.txt"]).contains("LINE 19\nline 20") and git(repo, ["diff"]) == "", git(repo, ["diff"]))
 
 
@@ -113,19 +113,19 @@ func _new_file() -> void:
 	write(repo.path_join("n.txt"), "keep 1\nleave out\nkeep 2\n")
 	var r := open(repo)
 	var lines := _hunk_lines(r, "n.txt", false, 0).filter(func(l: Dictionary) -> bool: return l.text != "leave out")
-	check("new: staged two of its lines", r.apply_line_changes("n.txt", false, "stage", lines) == OK, GitRepository.get_last_error())
+	check("new: staged two of its lines", r.apply_line_changes("n.txt", false, "stage", lines) == OK, GitApi.get_last_error())
 	check("new: the index has just those", git(repo, ["show", ":n.txt"]) == "keep 1\nkeep 2", git(repo, ["show", ":n.txt"]))
 	check("new: unstaged all of it: not staged at all", r.apply_line_changes("n.txt", true, "unstage", _hunk_lines(r, "n.txt", true, 0)) == OK and git(repo, ["status", "--porcelain"]) == "?? n.txt", git(repo, ["status", "--porcelain"]))
-	check("new: discarding every line deletes it", r.apply_line_changes("n.txt", false, "discard", _hunk_lines(r, "n.txt", false, 0)) == OK and not exists(repo.path_join("n.txt")), GitRepository.get_last_error())
+	check("new: discarding every line deletes it", r.apply_line_changes("n.txt", false, "discard", _hunk_lines(r, "n.txt", false, 0)) == OK and not exists(repo.path_join("n.txt")), GitApi.get_last_error())
 
 
 func _stale_refused() -> void:
 	var setup := _two_hunk_repo("stale")
 	var repo: String = setup[0]
-	var r: GitRepository = setup[1]
+	var r: GitApi = setup[1]
 	var lines := _hunk_lines(r, "a.txt", false, 0)
 	write(repo.path_join("a.txt"), read(repo.path_join("a.txt")).replace("line 2 changed", "line 2 changed again"))
-	check("stale: refused", r.apply_line_changes("a.txt", false, "stage", lines) != OK and GitRepository.get_last_error().contains("changed since"), GitRepository.get_last_error())
+	check("stale: refused", r.apply_line_changes("a.txt", false, "stage", lines) != OK and GitApi.get_last_error().contains("changed since"), GitApi.get_last_error())
 	check("stale: nothing staged", git(repo, ["diff", "--cached"]) == "")
 
 
@@ -139,4 +139,4 @@ func _binary_refused() -> void:
 	f.store_buffer(PackedByteArray([0, 1, 9, 3, 0, 10]))
 	f.close()
 	var r := open(repo)
-	check("binary: refused", r.apply_line_changes("b.bin", false, "stage", [{ "old": 1, "new": -1, "text": "x" }]) != OK and GitRepository.get_last_error().contains("binary"), GitRepository.get_last_error())
+	check("binary: refused", r.apply_line_changes("b.bin", false, "stage", [{ "old": 1, "new": -1, "text": "x" }]) != OK and GitApi.get_last_error().contains("binary"), GitApi.get_last_error())

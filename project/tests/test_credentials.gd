@@ -59,7 +59,7 @@ func run() -> void:
 func _saved_login_works() -> void:
 	var repo := _clone_with_helper("works", RIGHT, RIGHT)
 	var r := open(repo)
-	check("fetch with a saved login", r.fetch() == OK, GitRepository.get_last_error())
+	check("fetch with a saved login", r.fetch() == OK, GitApi.get_last_error())
 	check("login confirmed to the helper", _log(repo) == ["get", "store"], _log(repo))
 
 
@@ -68,7 +68,7 @@ func _saved_login_works() -> void:
 func _stale_login_is_replaced() -> void:
 	var repo := _clone_with_helper("stale", WRONG, RIGHT)
 	var r := open(repo)
-	check("fetch recovers from a rejected login", r.fetch() == OK, GitRepository.get_last_error())
+	check("fetch recovers from a rejected login", r.fetch() == OK, GitApi.get_last_error())
 	check("old login removed, new one asked for and saved", _log(repo) == ["get", "erase", "get", "store"], _log(repo))
 
 
@@ -78,7 +78,7 @@ func _stale_login_without_prompts() -> void:
 	var r := open(repo)
 	r.set_login_prompts_allowed(false)
 	check("quiet fetch with a rejected login fails", r.fetch() != OK)
-	check("says the login was removed", GitRepository.get_last_error().contains("removed"), GitRepository.get_last_error())
+	check("says the login was removed", GitApi.get_last_error().contains("removed"), GitApi.get_last_error())
 	check("removed without asking again", _log(repo) == ["get", "erase"], _log(repo))
 
 
@@ -87,7 +87,7 @@ func _rejected_twice() -> void:
 	var repo := _clone_with_helper("rejected", WRONG, WRONG)
 	var r := open(repo)
 	check("fetch with logins that never work fails", r.fetch() != OK)
-	check("says the server rejected it", GitRepository.get_last_error().contains("rejected"), GitRepository.get_last_error())
+	check("says the server rejected it", GitApi.get_last_error().contains("rejected"), GitApi.get_last_error())
 	check("asked twice, never saved", _log(repo) == ["get", "erase", "get", "erase"], _log(repo))
 
 
@@ -96,9 +96,9 @@ func _no_login() -> void:
 	var repo := _clone_with_helper("none", "", "")
 	var r := open(repo)
 	check("fetch without any login fails", r.fetch() != OK)
-	check("explains it", not GitRepository.get_last_error().is_empty(), GitRepository.get_last_error())
+	check("explains it", not GitApi.get_last_error().is_empty(), GitApi.get_last_error())
 	check("nothing saved", not _log(repo).has("store"), _log(repo))
-	check("doesn't claim there's no helper", not GitRepository.get_last_error().contains("no credential helper"), GitRepository.get_last_error())
+	check("doesn't claim there's no helper", not GitApi.get_last_error().contains("no credential helper"), GitApi.get_last_error())
 
 
 # No credential helper at all (common on macOS and Linux): say how to set one up. Signing in
@@ -111,7 +111,7 @@ func _no_helper() -> void:
 	config.close()
 	var r := open(repo)
 	check("fetch without a helper fails", r.fetch() != OK)
-	var message := GitRepository.get_last_error()
+	var message := GitApi.get_last_error()
 	check("says there's no helper, and how to get one", message.contains("no credential helper") and message.contains("gh auth login") and message.contains("Git Credential Manager"), message)
 	check("helper not asked", _log(repo).is_empty(), _log(repo))
 
@@ -120,12 +120,12 @@ func _no_helper() -> void:
 func _no_git() -> void:
 	var repo := _clone_with_helper("no-git", RIGHT, RIGHT)
 	var r := open(repo)
-	GitRepository.set_git_program("git-not-installed-for-tests")
+	GitApi.set_git_program("git-not-installed-for-tests")
 	check("fetch needing a login fails without git", r.fetch() != OK)
-	var message := GitRepository.get_last_error()
+	var message := GitApi.get_last_error()
 	check("says logins need git", message.contains("credential helper") and message.contains("git-scm.com"), message)
-	GitRepository.set_git_program("git")
-	check("works again with git", r.fetch() == OK, GitRepository.get_last_error())
+	GitApi.set_git_program("git")
+	check("works again with git", r.fetch() == OK, GitApi.get_last_error())
 
 
 ## A clone of the test remote, fetched over HTTP from the local server, with a fake credential

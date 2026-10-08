@@ -8,6 +8,7 @@
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/packed_string_array.hpp>
 #include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/variant.hpp>
 
 struct git_oid;
 struct git_repository;
@@ -159,6 +160,11 @@ public:
 	static String get_last_error();
 	static String get_libgit2_version();
 	static Array diff_lines(const String &p_old, const String &p_new);
+
+	// The tests' way in: GDScript calls methods by name through these (project/tests/git_api.gd), so the
+	// library doesn't carry a generated binding per method.
+	Variant call_api(const String &p_name, const Array &p_args);
+	static Variant call_static_api(const String &p_name, const Array &p_args);
 
 	~GitRepository();
 };

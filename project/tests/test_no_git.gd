@@ -18,9 +18,9 @@ func run() -> void:
 	git(shared.mine, ["remote", "add", "github-ssh", "git@github.com:godot-git/does-not-exist.git"])
 	git(shared.mine, ["remote", "add", "github-https", "https://github.com/godot-git/does-not-exist.git"])
 
-	check("git found normally", GitRepository.is_git_installed())
-	GitRepository.set_git_program(MISSING)
-	check("missing git noticed", not GitRepository.is_git_installed())
+	check("git found normally", GitApi.is_git_installed())
+	GitApi.set_git_program(MISSING)
+	check("missing git noticed", not GitApi.is_git_installed())
 
 	_libgit2_still_works(shared)
 	_needs(shared, hooked, lfs)
@@ -28,8 +28,8 @@ func run() -> void:
 	_ssh_refuses(shared)
 	_lfs_refuses(lfs)
 
-	GitRepository.set_git_program("git")
-	check("git found again once it's back", GitRepository.is_git_installed())
+	GitApi.set_git_program("git")
+	check("git found again once it's back", GitApi.is_git_installed())
 
 
 func _install_hook(repo: String, name: String, body: String) -> void:
@@ -47,12 +47,12 @@ func _says_install_git(label: String, message: String, reason: String) -> void:
 func _libgit2_still_works(shared: Dictionary) -> void:
 	var r := open(shared.mine)
 	write(shared.mine.path_join("a.txt"), "a\n")
-	check("stage without git", r.stage("a.txt") == OK, GitRepository.get_last_error())
-	check("commit without git", r.commit("Add a") == OK, GitRepository.get_last_error())
-	check("push without git", r.push() == OK, GitRepository.get_last_error())
+	check("stage without git", r.stage("a.txt") == OK, GitApi.get_last_error())
+	check("commit without git", r.commit("Add a") == OK, GitApi.get_last_error())
+	check("push without git", r.push() == OK, GitApi.get_last_error())
 	check("pushed for real", git(shared.remote, ["log", "-1", "--format=%s", "main"]) == "Add a")
 	teammate_pushes(shared, "x.txt", "x2\n")
-	check("pull without git", r.pull() == OK, GitRepository.get_last_error())
+	check("pull without git", r.pull() == OK, GitApi.get_last_error())
 	check("pulled for real", read(shared.mine.path_join("x.txt")) == "x2\n")
 
 
@@ -74,7 +74,7 @@ func _hooks_refuse(hooked: Dictionary) -> void:
 	write(hooked.mine.path_join("b.txt"), "b\n")
 	r.stage("b.txt")
 	check("commit refused: the pre-commit hook can't run", r.commit("Add b") != OK)
-	_says_install_git("says it's the hook, and to install git", GitRepository.get_last_error(), "pre-commit")
+	_says_install_git("says it's the hook, and to install git", GitApi.get_last_error(), "pre-commit")
 	check("no commit made", git(hooked.mine, ["rev-parse", "HEAD"]) == head)
 	check("still staged", r.get_status().size() == 1 and r.get_status()[0].index == "new", r.get_status())
 	check("amend refused too", r.amend("Changed") != OK)
@@ -84,7 +84,7 @@ func _hooks_refuse(hooked: Dictionary) -> void:
 	commit_all(hooked.mine, "Add b")
 	var remote_head := git(hooked.remote, ["rev-parse", "main"])
 	check("push refused: the pre-push hook can't run", r.push() != OK)
-	_says_install_git("says it's the pre-push hook", GitRepository.get_last_error(), "pre-push")
+	_says_install_git("says it's the pre-push hook", GitApi.get_last_error(), "pre-push")
 	check("nothing pushed", git(hooked.remote, ["rev-parse", "main"]) == remote_head)
 
 
@@ -93,18 +93,18 @@ func _ssh_refuses(shared: Dictionary) -> void:
 	git(shared.mine, ["remote", "set-url", "origin", "git@github.com:godot-git/does-not-exist.git"])
 	var started := Time.get_ticks_msec()
 	check("SSH fetch refused", r.fetch() != OK)
-	_says_install_git("says SSH needs git", GitRepository.get_last_error(), "SSH")
+	_says_install_git("says SSH needs git", GitApi.get_last_error(), "SSH")
 	check("refused at once", Time.get_ticks_msec() - started < 2000, Time.get_ticks_msec() - started)
 	write(shared.mine.path_join("c.txt"), "c\n")
 	r.stage("c.txt")
 	r.commit("Add c")
 	check("SSH push refused", r.push() != OK)
-	_says_install_git("says SSH needs git (push)", GitRepository.get_last_error(), "SSH")
+	_says_install_git("says SSH needs git (push)", GitApi.get_last_error(), "SSH")
 	git(shared.mine, ["remote", "set-url", "origin", shared.remote])
 
 
 func _lfs_refuses(lfs: String) -> void:
 	var r := open(lfs)
 	check("staging an LFS file refused", r.stage("art.png") != OK)
-	_says_install_git("says LFS needs git", GitRepository.get_last_error(), "Git LFS")
+	_says_install_git("says LFS needs git", GitApi.get_last_error(), "Git LFS")
 	check("nothing staged", git(lfs, ["diff", "--cached", "--name-only"]) == "")

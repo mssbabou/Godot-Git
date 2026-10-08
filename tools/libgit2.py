@@ -16,10 +16,13 @@ LIBGIT2_OPTIONS = {
     "BUILD_EXAMPLES": "OFF",
     "BUILD_FUZZERS": "OFF",
     "USE_BUNDLED_ZLIB": "ON",
+    # libgit2 needs regex on every fetch and push (url.*.insteadOf). Windows has no system regex,
+    # so it gets the bundled PCRE2 (~150 KB); Linux and macOS use their own (set below).
     "REGEX_BACKEND": "builtin",
     "USE_HTTP_PARSER": "builtin",
-    # SSH remotes run the system's `ssh` client, so the user's keys, agent and ~/.ssh/config just work.
-    "USE_SSH": "exec",
+    # Off: fetch and push for SSH remotes go through the git program (is_ssh_url in
+    # src/git/git_cli.cpp), so libgit2's own SSH transport was never reached.
+    "USE_SSH": "OFF",
     "USE_GSSAPI": "OFF",
 }
 
@@ -48,6 +51,10 @@ def _cmake_args(env):
     elif platform == "macos":
         options["USE_HTTPS"] = "SecureTransport"
         options["USE_ICONV"] = "ON"
+        # Both ship with every macOS: regcomp_l is libgit2's own default there, and zlib is
+        # always present, so neither adds a dependency.
+        options["REGEX_BACKEND"] = "regcomp_l"
+        options["USE_BUNDLED_ZLIB"] = "OFF"
         options["CMAKE_OSX_ARCHITECTURES"] = "arm64;x86_64" if arch == "universal" else arch
         # Same minimum as the extension itself (set in SConstruct); must never be "default",
         # which would mean "the macOS version of the build machine".
@@ -56,6 +63,9 @@ def _cmake_args(env):
     elif platform == "linux":
         # Loads OpenSSL at runtime, so the extension doesn't hard-depend on a libssl version.
         options["USE_HTTPS"] = "OpenSSL-Dynamic"
+        # glibc's POSIX regex (libgit2's patterns are all plain ERE). zlib stays bundled: a system
+        # one would add a libz.so dependency.
+        options["REGEX_BACKEND"] = "regcomp"
         options["CMAKE_POSITION_INDEPENDENT_CODE"] = "ON"
         # One section per function, so the extension's --gc-sections link can drop unused ones.
         options["CMAKE_C_FLAGS"] = "-ffunction-sections -fdata-sections"
@@ -72,7 +82,7 @@ def _system_libs(env):
         return ["winhttp", "rpcrt4", "crypt32", "ole32", "ws2_32", "secur32", "advapi32"]
     if platform == "linux":
         return ["pthread", "dl", "rt"]
-    return ["iconv"]
+    return ["iconv", "z"]  # macOS: its own zlib (USE_BUNDLED_ZLIB off).
 
 
 def setup(env, root_dir):

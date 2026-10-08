@@ -36,9 +36,9 @@ func _edit_on_other_lines_carried_on_fast_forward() -> void:
 	var s := _shared_doc("carry-ff")
 	write(s.mine.path_join("doc.txt"), DOC.replace("g\n", "G-mine\n"))
 	var r := open(s.mine)
-	check("carry: fetch", r.fetch() == OK, GitRepository.get_last_error())
+	check("carry: fetch", r.fetch() == OK, GitApi.get_last_error())
 	check("carry: no blockers for an edit on other lines", r.get_pull_blockers().is_empty(), r.get_pull_blockers())
-	check("carry: pull goes ahead", r.pull() == OK, GitRepository.get_last_error())
+	check("carry: pull goes ahead", r.pull() == OK, GitApi.get_last_error())
 	check("carry: both changes in the file", read(s.mine.path_join("doc.txt")) == DOC.replace("a\n", "A-theirs\n").replace("g\n", "G-mine\n"), read(s.mine.path_join("doc.txt")))
 	check("carry: HEAD is the teammate's commit", git(s.mine, ["rev-parse", "HEAD"]) == git(s.mine, ["rev-parse", "origin/main"]))
 	check("carry: my edit is still uncommitted, unstaged", git(s.mine, ["status", "--porcelain"]) == "M doc.txt", git(s.mine, ["status", "--porcelain"]))
@@ -53,7 +53,7 @@ func _edit_on_other_lines_carried_through_a_merge() -> void:
 	commit_all(s.mine, "My y") # Diverged: the pull makes a merge commit.
 	write(s.mine.path_join("doc.txt"), DOC.replace("g\n", "G-mine\n"))
 	var r := open(s.mine)
-	check("carry merge: pull goes ahead", r.pull() == OK, GitRepository.get_last_error())
+	check("carry merge: pull goes ahead", r.pull() == OK, GitApi.get_last_error())
 	check("carry merge: a merge commit", git(s.mine, ["rev-list", "--parents", "-n", "1", "HEAD"]).split(" ").size() == 3)
 	check("carry merge: both changes in the file", read(s.mine.path_join("doc.txt")) == DOC.replace("a\n", "A-theirs\n").replace("g\n", "G-mine\n"), read(s.mine.path_join("doc.txt")))
 	check("carry merge: my edit is still uncommitted", git(s.mine, ["status", "--porcelain"]) == "M doc.txt", git(s.mine, ["status", "--porcelain"]))
@@ -71,7 +71,7 @@ func _carried_edit_restored_when_the_merge_conflicts() -> void:
 	write(s.mine.path_join("doc.txt"), mine)
 	var head := git(s.mine, ["rev-parse", "HEAD"])
 	var r := open(s.mine)
-	check("carry conflict: refused, naming the conflicting file", r.pull() != OK and Array(r.get_pull_result().conflicts) == ["y.txt"], [GitRepository.get_last_error(), r.get_pull_result().conflicts])
+	check("carry conflict: refused, naming the conflicting file", r.pull() != OK and Array(r.get_pull_result().conflicts) == ["y.txt"], [GitApi.get_last_error(), r.get_pull_result().conflicts])
 	check("carry conflict: HEAD unchanged", git(s.mine, ["rev-parse", "HEAD"]) == head)
 	check("carry conflict: my file exactly as it was", FileAccess.get_file_as_string(s.mine.path_join("doc.txt")) == mine, FileAccess.get_file_as_string(s.mine.path_join("doc.txt")))
 	check("carry conflict: no stash, no backups left", git(s.mine, ["stash", "list"]) == "" and not DirAccess.dir_exists_absolute(s.mine.path_join(".git/godot-git-pull")))
@@ -86,7 +86,7 @@ func _carried_edit_keeps_crlf() -> void:
 	git(s.mine, ["checkout", "--", "doc.txt"]) # Checked out again, now with CRLF.
 	write(s.mine.path_join("doc.txt"), DOC.replace("g\n", "G-mine\n").replace("\n", "\r\n"))
 	var r := open(s.mine)
-	check("carry crlf: pull goes ahead", r.pull() == OK, GitRepository.get_last_error())
+	check("carry crlf: pull goes ahead", r.pull() == OK, GitApi.get_last_error())
 	var raw := FileAccess.get_file_as_string(s.mine.path_join("doc.txt"))
 	check("carry crlf: CRLF throughout", raw == DOC.replace("a\n", "A-theirs\n").replace("g\n", "G-mine\n").replace("\n", "\r\n"), raw.c_escape())
 	check("carry crlf: only my line differs", git(s.mine, ["diff", "--numstat"]) == "1\t1\tdoc.txt", git(s.mine, ["diff", "--numstat"]))
@@ -102,7 +102,7 @@ func _refused_when_incoming_touches_uncommitted_edit() -> void:
 	var r := open(s.mine)
 
 	var err := r.pull()
-	var message := GitRepository.get_last_error()
+	var message := GitApi.get_last_error()
 	check("refused", err != OK, message)
 	check("message names the file, and the conflict is reported for the panel to ask", message.contains("x.txt") and Array(r.get_pull_result().conflicts) == ["x.txt"], [message, r.get_pull_result().conflicts])
 	check("HEAD unchanged", git(s.mine, ["rev-parse", "HEAD"]) == head)
@@ -112,7 +112,7 @@ func _refused_when_incoming_touches_uncommitted_edit() -> void:
 
 	# After committing the edit, the same pull goes ahead (and conflicts are then git's business).
 	git(s.mine, ["checkout", "-q", "--", "x.txt"])
-	check("pull works once the edit is gone", r.pull() == OK, GitRepository.get_last_error())
+	check("pull works once the edit is gone", r.pull() == OK, GitApi.get_last_error())
 
 
 func _refused_when_incoming_touches_staged_edit() -> void:
@@ -121,7 +121,7 @@ func _refused_when_incoming_touches_staged_edit() -> void:
 	write(s.mine.path_join("x.txt"), "x-staged\n")
 	git(s.mine, ["add", "x.txt"])
 	var r := open(s.mine)
-	check("refused", r.pull() != OK and GitRepository.get_last_error().contains("x.txt"), GitRepository.get_last_error())
+	check("refused", r.pull() != OK and GitApi.get_last_error().contains("x.txt"), GitApi.get_last_error())
 	check("still staged, unchanged", git(s.mine, ["diff", "--cached", "--name-only"]) == "x.txt" and read(s.mine.path_join("x.txt")) == "x-staged\n")
 	check("no stash left behind", git(s.mine, ["stash", "list"]) == "")
 
@@ -131,7 +131,7 @@ func _refused_when_incoming_adds_a_file_you_created() -> void:
 	teammate_pushes(s, "level.tscn", "theirs\n")
 	write(s.mine.path_join("level.tscn"), "mine, never committed\n")
 	var r := open(s.mine)
-	check("refused", r.pull() != OK and GitRepository.get_last_error().contains("level.tscn"), GitRepository.get_last_error())
+	check("refused", r.pull() != OK and GitApi.get_last_error().contains("level.tscn"), GitApi.get_last_error())
 	check("my file untouched", read(s.mine.path_join("level.tscn")) == "mine, never committed\n")
 
 
@@ -140,7 +140,7 @@ func _refused_on_fast_forward_too() -> void:
 	teammate_pushes(s, "x.txt", "x-theirs\n")
 	write(s.mine.path_join("x.txt"), "x-my-uncommitted\n")
 	var r := open(s.mine)
-	check("refused the same way", r.pull() != OK and Array(r.get_pull_result().conflicts) == ["x.txt"], GitRepository.get_last_error())
+	check("refused the same way", r.pull() != OK and Array(r.get_pull_result().conflicts) == ["x.txt"], GitApi.get_last_error())
 	check("my edit untouched", read(s.mine.path_join("x.txt")) == "x-my-uncommitted\n")
 
 
@@ -157,7 +157,7 @@ func _unrelated_edits_survive_a_merge() -> void:
 	write(s.mine.path_join("notes.txt"), "untracked\n")
 	var r := open(s.mine)
 
-	check("pull merges", r.pull() == OK, GitRepository.get_last_error())
+	check("pull merges", r.pull() == OK, GitApi.get_last_error())
 	check("no warning", r.get_notice() == "", r.get_notice())
 	check("their change arrived", read(s.mine.path_join("x.txt")) == "x-theirs\n")
 	check("uncommitted edit kept", read(s.mine.path_join("z.txt")) == "z-uncommitted\n")
@@ -177,7 +177,7 @@ func _unrelated_edits_survive_a_refused_conflict() -> void:
 	var head := git(s.mine, ["rev-parse", "HEAD"])
 	var r := open(s.mine)
 
-	check("conflicting pull refused", r.pull() != OK and GitRepository.get_last_error().contains("same lines"), GitRepository.get_last_error())
+	check("conflicting pull refused", r.pull() != OK and GitApi.get_last_error().contains("same lines"), GitApi.get_last_error())
 	check("HEAD unchanged", git(s.mine, ["rev-parse", "HEAD"]) == head)
 	check("uncommitted edit restored", read(s.mine.path_join("z.txt")) == "z-uncommitted\n")
 	check("staged edit restored and still staged", git(s.mine, ["diff", "--cached", "--name-only"]) == "y.txt", git(s.mine, ["status", "--short"]))
@@ -198,6 +198,6 @@ func _leftovers() -> void:
 	var r := open(repo)
 	var leftovers := r.get_pull_leftovers()
 	check("leftovers: listed", leftovers.size() == 1 and leftovers[0].files.size() == 1 and leftovers[0].files[0].path == "a.txt" and not leftovers[0].files[0].back, leftovers)
-	check("leftovers: put back", r.resolve_pull_leftovers(leftovers[0].folder, true) == OK, GitRepository.get_last_error())
+	check("leftovers: put back", r.resolve_pull_leftovers(leftovers[0].folder, true) == OK, GitApi.get_last_error())
 	check("leftovers: the edit is back, byte for byte", FileAccess.get_file_as_string(repo.path_join("a.txt")) == "my edit\n")
 	check("leftovers: the copies are gone", not DirAccess.dir_exists_absolute(folder) and r.get_pull_leftovers().is_empty())

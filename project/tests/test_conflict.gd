@@ -76,10 +76,10 @@ func _resolve_with_text() -> void:
 	var repo := _merge_conflict("resolve-text")
 	var r := open(repo)
 	var text := _joined(r.get_conflict("a.txt"), "both")
-	check("resolve: with text", r.resolve_conflict("a.txt", text) == OK, GitRepository.get_last_error())
+	check("resolve: with text", r.resolve_conflict("a.txt", text) == OK, GitApi.get_last_error())
 	check("resolve: the file has it", read(repo.path_join("a.txt")) == text, read(repo.path_join("a.txt")))
 	check("resolve: no longer conflicted, staged", r.get_operation().conflicts.is_empty() and git(repo, ["diff", "--cached", "--name-only"]) == "a.txt", git(repo, ["status", "--porcelain"]))
-	check("resolve: then the merge commits", r.continue_operation() == OK and git(repo, ["show", "HEAD:a.txt"]) + "\n" == text, GitRepository.get_last_error())
+	check("resolve: then the merge commits", r.continue_operation() == OK and git(repo, ["show", "HEAD:a.txt"]) + "\n" == text, GitApi.get_last_error())
 	check("resolve: nothing left to resolve", r.resolve_conflict("a.txt", "x\n") != OK)
 
 
@@ -87,7 +87,7 @@ func _resolve_with_side() -> void:
 	var repo := _merge_conflict("resolve-side")
 	var r := open(repo)
 	var theirs := git(repo, ["show", ":3:a.txt"]) + "\n"
-	check("take theirs", r.resolve_conflict_with("a.txt", "theirs") == OK, GitRepository.get_last_error())
+	check("take theirs", r.resolve_conflict_with("a.txt", "theirs") == OK, GitApi.get_last_error())
 	check("take theirs: the whole file is theirs", read(repo.path_join("a.txt")) == theirs, read(repo.path_join("a.txt")))
 	check("take theirs: resolved", r.get_operation().conflicts.is_empty())
 
@@ -125,7 +125,7 @@ func _deleted_on_one_side() -> void:
 	var r := open(repo)
 	var conflict := r.get_conflict("a.txt")
 	check("deleted: theirs doesn't exist, no blocks", conflict.mine_exists and not conflict.theirs_exists and conflict.blocks.is_empty(), conflict)
-	check("deleted: taking theirs deletes it", r.resolve_conflict_with("a.txt", "theirs") == OK and not exists(repo.path_join("a.txt")), GitRepository.get_last_error())
+	check("deleted: taking theirs deletes it", r.resolve_conflict_with("a.txt", "theirs") == OK and not exists(repo.path_join("a.txt")), GitApi.get_last_error())
 	check("deleted: resolved, as git sees it", r.get_operation().conflicts.is_empty() and git(repo, ["diff", "--name-only", "--diff-filter=U"]) == "", git(repo, ["status", "--porcelain"]))
 
 
@@ -158,7 +158,7 @@ func _crlf() -> void:
 	var repo := _merge_conflict("crlf")
 	git(repo, ["config", "core.autocrlf", "true"])
 	var r := open(repo)
-	check("crlf: resolve", r.resolve_conflict("a.txt", "a\nb\n") == OK, GitRepository.get_last_error())
+	check("crlf: resolve", r.resolve_conflict("a.txt", "a\nb\n") == OK, GitApi.get_last_error())
 	check("crlf: written with CRLF", FileAccess.get_file_as_string(repo.path_join("a.txt")) == "a\r\nb\r\n", FileAccess.get_file_as_string(repo.path_join("a.txt")).c_escape())
 	check("crlf: staged as LF", git(repo, ["show", ":a.txt"]) == "a\nb", git(repo, ["show", ":a.txt"]))
 
@@ -190,7 +190,7 @@ func _import_settings() -> void:
 	check("settings: its three values", conflict.settings[0].base == "0" and conflict.settings[0].mine == "2" and conflict.settings[0].theirs == "1", conflict.settings)
 	check("settings: the importer", conflict.importer == "texture", conflict.importer)
 	check("settings: refused without a choice", r.resolve_settings_conflict("icon.png.import", {}) != OK)
-	check("settings: resolved with theirs", r.resolve_settings_conflict("icon.png.import", {"params\ncompress/mode": "theirs"}) == OK, GitRepository.get_last_error())
+	check("settings: resolved with theirs", r.resolve_settings_conflict("icon.png.import", {"params\ncompress/mode": "theirs"}) == OK, GitApi.get_last_error())
 	var expected := IMPORT_BASE.replace("compress/mode=0", "compress/mode=1").replace("quality=0.7", "quality=0.8").replace("generate=false", "generate=true")
 	check("settings: theirs' mode, mine's quality, theirs' mipmaps", read(repo.path_join("icon.png.import")) == expected, read(repo.path_join("icon.png.import")))
 	check("settings: staged, no conflicts left", r.get_operation().conflicts.is_empty(), r.get_operation())

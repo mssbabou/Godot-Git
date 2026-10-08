@@ -18,7 +18,7 @@ func _https_fetch() -> void:
 	var repo := make_repo("https")
 	git(repo, ["remote", "add", "origin", SMALL_REPO])
 	var r := open(repo)
-	check("public HTTPS fetch", r.fetch() == OK, GitRepository.get_last_error())
+	check("public HTTPS fetch", r.fetch() == OK, GitApi.get_last_error())
 	check("remote branches arrived", r.get_remote_branches().has("origin/main"), r.get_remote_branches())
 
 
@@ -32,13 +32,13 @@ func _no_login_prompts() -> void:
 	thread.start(func():
 		var r := open(repo)
 		r.set_login_prompts_allowed(false)
-		return [r.fetch(), GitRepository.get_last_error()])
+		return [r.fetch(), GitApi.get_last_error()])
 	var deadline := Time.get_ticks_msec() + 30000
 	while thread.is_alive() and Time.get_ticks_msec() < deadline:
 		await tree.process_frame
 	var finished := not thread.is_alive()
 	if not finished:
-		GitRepository.cancel_network() # Don't leave a sign-in window hanging.
+		GitApi.cancel_network() # Don't leave a sign-in window hanging.
 	var result: Array = thread.wait_to_finish()
 	check("finishes on its own without a sign-in", finished, "still waiting after 30 s")
 	check("fails with an explanation", result[0] != OK and not String(result[1]).is_empty(), result)
@@ -48,7 +48,7 @@ func _no_login_prompts() -> void:
 	git(small, ["remote", "add", "origin", SMALL_REPO])
 	var r := open(small)
 	r.set_login_prompts_allowed(false)
-	check("public fetch still works with prompts off", r.fetch() == OK, GitRepository.get_last_error())
+	check("public fetch still works with prompts off", r.fetch() == OK, GitApi.get_last_error())
 
 
 func _cancel_fetch() -> void:
@@ -60,13 +60,13 @@ func _cancel_fetch() -> void:
 		var r := open(repo)
 		r.set_progress_callback(func(step: String, _fraction: float, _cancellable: bool): steps.append(step))
 		var err := r.fetch()
-		return [err, GitRepository.get_last_error()])
+		return [err, GitApi.get_last_error()])
 
 	# Cancel once data is actually flowing.
 	var deadline := Time.get_ticks_msec() + 60000
 	while Time.get_ticks_msec() < deadline and not steps.any(func(x): return x.begins_with("Receiving")):
 		await tree.process_frame
-	GitRepository.cancel_network()
+	GitApi.cancel_network()
 	var result: Array = thread.wait_to_finish()
 	await frames()
 

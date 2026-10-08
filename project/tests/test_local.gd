@@ -14,6 +14,7 @@ func run() -> void:
 	_rename_and_delete_branches()
 	_branch_list()
 	_large_staged_files()
+	_api_names()
 
 
 func _status_and_staging() -> void:
@@ -30,11 +31,11 @@ func _status_and_staging() -> void:
 	check("modified file is listed", states.get("a.txt") == ["", "modified"], states)
 	check("new file in a new folder is listed by path", states.get("new/b.txt") == ["", "untracked"], states)
 
-	check("stage", r.stage("a.txt") == OK, GitRepository.get_last_error())
+	check("stage", r.stage("a.txt") == OK, GitApi.get_last_error())
 	check("git sees it staged", git(repo, ["diff", "--cached", "--name-only"]) == "a.txt")
-	check("unstage", r.unstage("a.txt") == OK, GitRepository.get_last_error())
+	check("unstage", r.unstage("a.txt") == OK, GitApi.get_last_error())
 	check("git sees nothing staged", git(repo, ["diff", "--cached", "--name-only"]) == "")
-	check("stage all", r.stage_all() == OK, GitRepository.get_last_error())
+	check("stage all", r.stage_all() == OK, GitApi.get_last_error())
 	check("stage all includes new files", git(repo, ["diff", "--cached", "--name-only"]).split("\n").size() == 2, git(repo, ["status", "--short"]))
 
 
@@ -50,7 +51,7 @@ func _unstage_all() -> void:
 		write(repo.path_join("b.txt"), "new\n")
 		var r := open(repo)
 		r.stage_all()
-		check("unstage all (%s)" % kind, r.unstage_all() == OK, GitRepository.get_last_error())
+		check("unstage all (%s)" % kind, r.unstage_all() == OK, GitApi.get_last_error())
 		check("nothing staged afterwards (%s)" % kind, git(repo, ["diff", "--cached", "--name-only"]) == "", git(repo, ["status", "--short"]))
 		check("files untouched (%s)" % kind, read(repo.path_join("b.txt")) == "new\n")
 
@@ -62,9 +63,9 @@ func _discard() -> void:
 	write(repo.path_join("a.txt"), "changed\n")
 	write(repo.path_join("new.txt"), "new\n")
 	var r := open(repo)
-	check("discard modified", r.discard("a.txt") == OK, GitRepository.get_last_error())
+	check("discard modified", r.discard("a.txt") == OK, GitApi.get_last_error())
 	check("modified file is back to committed version", read(repo.path_join("a.txt")) == "a\n", read(repo.path_join("a.txt")))
-	check("discard untracked", r.discard("new.txt") == OK, GitRepository.get_last_error())
+	check("discard untracked", r.discard("new.txt") == OK, GitApi.get_last_error())
 	check("untracked file is deleted", not exists(repo.path_join("new.txt")))
 	check("working tree clean", r.get_status().is_empty(), r.get_status())
 
@@ -124,10 +125,10 @@ func _commit_and_history() -> void:
 	check("no commits yet", r.get_commits(10).is_empty())
 	write(repo.path_join("a.txt"), "a\n")
 	r.stage("a.txt")
-	check("first commit", r.commit("First commit") == OK, GitRepository.get_last_error())
+	check("first commit", r.commit("First commit") == OK, GitApi.get_last_error())
 	write(repo.path_join("a.txt"), "b\n")
 	r.stage("a.txt")
-	check("second commit", r.commit("Second commit\n\nWith a body.") == OK, GitRepository.get_last_error())
+	check("second commit", r.commit("Second commit\n\nWith a body.") == OK, GitApi.get_last_error())
 	var commits := r.get_commits(10)
 	check("history newest first", commits.size() == 2 and commits[0].summary == "Second commit", commits)
 	check("full message kept", commits[0].message.contains("With a body."), commits[0].message)
@@ -141,10 +142,10 @@ func _branches() -> void:
 	write(repo.path_join("a.txt"), "a\n")
 	commit_all(repo, "init")
 	var r := open(repo)
-	check("create branch", r.create_branch("feature/x") == OK, GitRepository.get_last_error())
+	check("create branch", r.create_branch("feature/x") == OK, GitApi.get_last_error())
 	check("switched to it", r.get_current_branch() == "feature/x")
 	check("listed", r.get_branches().has("feature/x") and r.get_branches().has("main"), r.get_branches())
-	check("switch back", r.checkout_branch("main") == OK and r.get_current_branch() == "main", GitRepository.get_last_error())
+	check("switch back", r.checkout_branch("main") == OK and r.get_current_branch() == "main", GitApi.get_last_error())
 
 	# The dock asks before switching to a branch that would delete the addon itself.
 	git(repo, ["checkout", "-q", "-b", "no-addon"])
@@ -164,14 +165,14 @@ func _rename_and_delete_branches() -> void:
 	var repo: String = shared.mine
 	var r := open(repo)
 
-	check("rename the current branch", r.rename_branch("main", "trunk") == OK, GitRepository.get_last_error())
+	check("rename the current branch", r.rename_branch("main", "trunk") == OK, GitApi.get_last_error())
 	check("HEAD follows the rename", git(repo, ["symbolic-ref", "--short", "HEAD"]).strip_edges() == "trunk", git(repo, ["symbolic-ref", "HEAD"]))
 	check("upstream moves with it, like git branch -m", git(repo, ["rev-parse", "--abbrev-ref", "trunk@{upstream}"]).strip_edges() == "origin/main")
 	check("old name is gone", not r.get_branches().has("main"), r.get_branches())
 	r.create_branch("other")
 	r.checkout_branch("trunk")
-	check("rename to an existing name refused", r.rename_branch("trunk", "other") != OK and GitRepository.get_last_error().contains("already exists"), GitRepository.get_last_error())
-	check("invalid name refused", r.rename_branch("trunk", "a..b") != OK and GitRepository.get_last_error().contains("valid"), GitRepository.get_last_error())
+	check("rename to an existing name refused", r.rename_branch("trunk", "other") != OK and GitApi.get_last_error().contains("already exists"), GitApi.get_last_error())
+	check("invalid name refused", r.rename_branch("trunk", "a..b") != OK and GitApi.get_last_error().contains("valid"), GitApi.get_last_error())
 
 	# "other" points at the same commit as trunk: nothing to lose, and no upstream.
 	var details := r.get_branch_details("other")
@@ -191,8 +192,8 @@ func _rename_and_delete_branches() -> void:
 	check("not lost while another branch has them", r.get_branch_details("lonely").unique == 0, r.get_branch_details("lonely"))
 	git(repo, ["branch", "-q", "-D", "keeper"])
 
-	check("can't delete the current branch", r.delete_branch("trunk") != OK and GitRepository.get_last_error().contains("Switch to another branch"), GitRepository.get_last_error())
-	check("delete", r.delete_branch("lonely") == OK, GitRepository.get_last_error())
+	check("can't delete the current branch", r.delete_branch("trunk") != OK and GitApi.get_last_error().contains("Switch to another branch"), GitApi.get_last_error())
+	check("delete", r.delete_branch("lonely") == OK, GitApi.get_last_error())
 	check("gone for git too", git(repo, ["branch", "--list", "lonely"]).strip_edges() == "")
 	check("deleting a missing branch refused", r.delete_branch("lonely") != OK)
 	check("remote branch untouched", git(repo, ["branch", "-r"]).contains("origin/main"))
@@ -247,3 +248,34 @@ func _bytes(count: int) -> PackedByteArray:
 	var data := PackedByteArray()
 	data.resize(count)
 	return data
+
+
+# git_api.gd mirrors the names GitRepository dispatches (call_api, call_static_api). A method added on
+# one side and not the other would only show up as a failed call, so both lists are compared here.
+func _api_names() -> void:
+	var names: Dictionary = GitRepository.call_static_api("api_names", [])
+	var mirror := GitApi.new()
+	var listed := PackedStringArray()
+	var missing := PackedStringArray()
+	for n: String in names.instance:
+		listed.push_back(n)
+		if not mirror.has_method(n):
+			missing.push_back(n)
+	var api_script: Script = GitApi
+	var static_methods := {}
+	for method: Dictionary in api_script.get_script_method_list():
+		static_methods[method.name] = true
+	for n: String in names["static"]:
+		listed.push_back(n)
+		if not static_methods.has(n):
+			missing.push_back(n)
+	check("every library method has a mirror in git_api.gd", missing.is_empty(), "missing: %s" % ", ".join(missing))
+
+	var extra := PackedStringArray()
+	for method: Dictionary in api_script.get_script_method_list():
+		var n: String = method.name
+		if n.begins_with("_") or n == "get_raw":
+			continue
+		if not listed.has(n):
+			extra.push_back(n)
+	check("every mirror method exists in the library", extra.is_empty(), "not in the library: %s" % ", ".join(extra))

@@ -36,7 +36,7 @@ func _pre_commit_stops_commit() -> void:
 	var r := open(shared.mine)
 	r.stage("player.gd")
 	check("pre-commit hook stops the commit", r.commit("Add player") != OK)
-	check("the hook's own words are shown", GitRepository.get_last_error().contains("player.gd has 2 errors"), GitRepository.get_last_error())
+	check("the hook's own words are shown", GitApi.get_last_error().contains("player.gd has 2 errors"), GitApi.get_last_error())
 	check("no commit made", git(shared.mine, ["rev-parse", "HEAD"]) == head)
 	var status := r.get_status()
 	check("file still staged", status.size() == 1 and status[0].index == "new", status)
@@ -49,12 +49,12 @@ func _hooks_run_on_commit_and_amend() -> void:
 	write(shared.mine.path_join("a.txt"), "a\n")
 	var r := open(shared.mine)
 	r.stage("a.txt")
-	check("commit with hooks succeeds", r.commit("Add a") == OK, GitRepository.get_last_error())
+	check("commit with hooks succeeds", r.commit("Add a") == OK, GitApi.get_last_error())
 	check("pre-commit hook ran", exists(shared.mine.path_join(".git/pre-commit-ran")))
 	check("commit-msg hook changed the message", git(shared.mine, ["log", "-1", "--format=%B"]).contains("Checked-by: hook"), git(shared.mine, ["log", "-1", "--format=%B"]))
 	check("status clean afterwards", r.get_status().is_empty(), r.get_status())
 
-	check("amend with hooks succeeds", r.amend("Add a, properly") == OK, GitRepository.get_last_error())
+	check("amend with hooks succeeds", r.amend("Add a, properly") == OK, GitApi.get_last_error())
 	check("amended message went through the hook", git(shared.mine, ["log", "-1", "--format=%B"]).contains("Add a, properly") and git(shared.mine, ["log", "-1", "--format=%B"]).contains("Checked-by: hook"))
 	check("still one new commit", git(shared.mine, ["rev-list", "--count", "origin/main..HEAD"]) == "1")
 
@@ -70,7 +70,7 @@ func _merge_commit_hooks() -> void:
 	var head := git(shared.mine, ["rev-parse", "HEAD"])
 	var r := open(shared.mine)
 	check("pull refused when the merge commit is", r.pull() != OK)
-	check("says nothing was pulled, and why", GitRepository.get_last_error().contains("Nothing was pulled") and GitRepository.get_last_error().contains("no merge commits here"), GitRepository.get_last_error())
+	check("says nothing was pulled, and why", GitApi.get_last_error().contains("Nothing was pulled") and GitApi.get_last_error().contains("no merge commits here"), GitApi.get_last_error())
 	check("HEAD unchanged", git(shared.mine, ["rev-parse", "HEAD"]) == head)
 	check("teammate's change not applied", read(shared.mine.path_join("x.txt")) == "x1\n")
 	check("uncommitted edit kept", read(shared.mine.path_join("z.txt")) == "my uncommitted edit\n")
@@ -78,7 +78,7 @@ func _merge_commit_hooks() -> void:
 
 	# Allowed: the merge commit goes through the hook.
 	_install_hook(shared.mine, "commit-msg", "echo \"\" >> \"$1\"\necho \"Checked-by: hook\" >> \"$1\"")
-	check("pull merges with the hook", r.pull() == OK and r.get_pull_result().merged, GitRepository.get_last_error())
+	check("pull merges with the hook", r.pull() == OK and r.get_pull_result().merged, GitApi.get_last_error())
 	check("merge commit has two parents", git(shared.mine, ["rev-list", "--parents", "-1", "HEAD"]).split(" ").size() == 3)
 	check("merge commit went through the hook", git(shared.mine, ["log", "-1", "--format=%B"]).contains("Checked-by: hook"))
 	check("uncommitted edit still there", read(shared.mine.path_join("z.txt")) == "my uncommitted edit\n")
@@ -92,11 +92,11 @@ func _pre_push() -> void:
 	var remote_head := git(shared.remote, ["rev-parse", "main"])
 	var r := open(shared.mine)
 	check("pre-push hook stops the push", r.push() != OK)
-	check("the hook's words are shown", GitRepository.get_last_error().contains("tests failed: 3 of 40"), GitRepository.get_last_error())
+	check("the hook's words are shown", GitApi.get_last_error().contains("tests failed: 3 of 40"), GitApi.get_last_error())
 	check("remote unchanged", git(shared.remote, ["rev-parse", "main"]) == remote_head)
 
 	_install_hook(shared.mine, "pre-push", "echo ran >> .git/pre-push-ran")
-	check("push with a passing hook", r.push() == OK, GitRepository.get_last_error())
+	check("push with a passing hook", r.push() == OK, GitApi.get_last_error())
 	check("pre-push hook ran", exists(shared.mine.path_join(".git/pre-push-ran")))
 	check("remote got the commit", git(shared.remote, ["rev-parse", "main"]) == git(shared.mine, ["rev-parse", "HEAD"]))
 
@@ -104,7 +104,7 @@ func _pre_push() -> void:
 	write(shared.mine.path_join("b.txt"), "b\n")
 	commit_all(shared.mine, "Add b")
 	check("behind the remote: refused", r.push() != OK)
-	check("says to pull first", GitRepository.get_last_error().contains("Pull first"), GitRepository.get_last_error())
+	check("says to pull first", GitApi.get_last_error().contains("Pull first"), GitApi.get_last_error())
 
 
 func _signing() -> void:
@@ -127,11 +127,11 @@ func _signing() -> void:
 
 	write(shared.mine.path_join("a.txt"), "a\n")
 	r.stage("a.txt")
-	check("signed commit succeeds", r.commit("Signed work") == OK, GitRepository.get_last_error())
+	check("signed commit succeeds", r.commit("Signed work") == OK, GitApi.get_last_error())
 	check("commit is signed", git(shared.mine, ["cat-file", "-p", "HEAD"]).contains("BEGIN SSH SIGNATURE"))
-	check("amend succeeds", r.amend("Signed work, amended") == OK, GitRepository.get_last_error())
+	check("amend succeeds", r.amend("Signed work, amended") == OK, GitApi.get_last_error())
 	check("amended commit is signed", git(shared.mine, ["cat-file", "-p", "HEAD"]).contains("BEGIN SSH SIGNATURE"))
 
 	teammate_pushes(shared, "x.txt", "x2\n")
-	check("pull merges", r.pull() == OK and r.get_pull_result().merged, GitRepository.get_last_error())
+	check("pull merges", r.pull() == OK and r.get_pull_result().merged, GitApi.get_last_error())
 	check("merge commit is signed", git(shared.mine, ["cat-file", "-p", "HEAD"]).contains("BEGIN SSH SIGNATURE"))

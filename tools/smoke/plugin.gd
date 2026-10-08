@@ -285,8 +285,8 @@ func _run() -> void:
 	# Show Commit (Show Commit for This Line uses it) opens History at that commit, expanded. It
 	# stayed shut once: building the row collapsed it first, which forgot it should be open.
 	var repo := GitRepository.new()
-	repo.open("res://")
-	for c in repo.get_commits(100):
+	repo.call_api("open", ["res://"])
+	for c in repo.call_api("get_commits", [100, "", ""]):
 		if c.summary == "Rename clamp01":
 			dock.show_commit(c.hash)
 	await _frames()

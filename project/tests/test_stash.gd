@@ -30,7 +30,7 @@ func _repo(name: String) -> String:
 func _nothing_to_stash() -> void:
 	var r := open(_repo("stash-nothing"))
 	check("stash: none yet", r.get_stashes().is_empty(), r.get_stashes())
-	check("stash: nothing to stash", r.stash(false) != OK and GitRepository.get_last_error().contains("nothing to stash"), GitRepository.get_last_error())
+	check("stash: nothing to stash", r.stash(false) != OK and GitApi.get_last_error().contains("nothing to stash"), GitApi.get_last_error())
 
 
 func _stash_staged_and_restore() -> void:
@@ -41,7 +41,7 @@ func _stash_staged_and_restore() -> void:
 	write(repo.path_join("c.txt"), "new\n")
 	var r := open(repo)
 
-	check("stash staged", r.stash(true) == OK, GitRepository.get_last_error())
+	check("stash staged", r.stash(true) == OK, GitApi.get_last_error())
 	var stashes := r.get_stashes()
 	check("stash staged: listed, named after its file, on main", stashes.size() == 1 and stashes[0].message == "a.txt" and stashes[0].branch == "main", stashes)
 	check("stash staged: git sees it too", git(repo, ["stash", "list"]).split("\n").size() == 1, git(repo, ["stash", "list"]))
@@ -53,7 +53,7 @@ func _stash_staged_and_restore() -> void:
 	var diff := r.get_stash_diff(stashes[0].hash, "a.txt")
 	check("stash staged: its diff", diff.get("kind") == "text" and "A2 staged" in diff.hunks[0].text, diff)
 
-	check("restore", r.restore_stash(stashes[0].hash) == OK, GitRepository.get_last_error())
+	check("restore", r.restore_stash(stashes[0].hash) == OK, GitApi.get_last_error())
 	check("restore: the edit is back, staged again", read(repo.path_join("a.txt")).contains("A2 staged") and git(repo, ["diff", "--cached", "--name-only"]) == "a.txt", git(repo, ["status", "--short"]))
 	check("restore: the stash is gone", r.get_stashes().is_empty() and git(repo, ["stash", "list"]) == "", git(repo, ["stash", "list"]))
 	check("restore: the other edits untouched", read(repo.path_join("b.txt")).contains("B3 unstaged") and exists(repo.path_join("c.txt")))
@@ -66,7 +66,7 @@ func _stash_everything_and_restore() -> void:
 	write(repo.path_join("b.txt"), "b1\nb2\nB3\nb4\nb5\n")
 	write(repo.path_join("c.txt"), "new\n")
 	var r := open(repo)
-	check("stash all", r.stash(false) == OK, GitRepository.get_last_error())
+	check("stash all", r.stash(false) == OK, GitApi.get_last_error())
 	check("stash all: nothing left, new file too", git(repo, ["status", "--porcelain"]) == "", git(repo, ["status", "--porcelain"]))
 	var stash: Dictionary = r.get_stashes()[0]
 	check("stash all: named after its files", stash.message == "a.txt, b.txt, c.txt", stash.message)
@@ -81,7 +81,7 @@ func _stash_everything_and_restore() -> void:
 	paths.sort()
 	check("stash all: its files, the new one included", paths == ["a.txt", "b.txt", "c.txt"], paths)
 	check("stash all: a new file's diff", r.get_stash_diff(stash.hash, "c.txt").get("kind") == "text", r.get_stash_diff(stash.hash, "c.txt"))
-	check("restore all", r.restore_stash(stash.hash) == OK, GitRepository.get_last_error())
+	check("restore all", r.restore_stash(stash.hash) == OK, GitApi.get_last_error())
 	check("restore all: everything back as it was", git(repo, ["status", "--porcelain"]).replace("\r", "") == "M  a.txt\n M b.txt\n?? c.txt", git(repo, ["status", "--porcelain"]))
 
 
@@ -93,10 +93,10 @@ func _stash_staged_half_of_a_file() -> void:
 	git(repo, ["add", "a.txt"])
 	write(repo.path_join("a.txt"), "a1\nA2 staged\na3\na4\nA5 not staged\n")
 	var r := open(repo)
-	check("half staged: stash", r.stash(true) == OK, GitRepository.get_last_error())
+	check("half staged: stash", r.stash(true) == OK, GitApi.get_last_error())
 	check("half staged: the unstaged change stays", read(repo.path_join("a.txt")) == "a1\na2\na3\na4\nA5 not staged\n" and git(repo, ["diff", "--cached", "--name-only"]) == "", read(repo.path_join("a.txt")))
 	git(repo, ["checkout", "--", "a.txt"]) # Out of the way: a restore refuses while the file has edits.
-	check("half staged: restore", r.restore_stash(r.get_stashes()[0].hash) == OK, GitRepository.get_last_error())
+	check("half staged: restore", r.restore_stash(r.get_stashes()[0].hash) == OK, GitApi.get_last_error())
 	check("half staged: the staged change is back, staged", read(repo.path_join("a.txt")) == "a1\nA2 staged\na3\na4\na5\n" and git(repo, ["diff", "--cached", "--name-only"]) == "a.txt", git(repo, ["status", "--short"]))
 
 
@@ -107,7 +107,7 @@ func _restore_refused_for_your_edits() -> void:
 	r.stash(false)
 	write(repo.path_join("b.txt"), "b1\nb2\nb3\nb4\nB5 mine now\n")
 	var hash: String = r.get_stashes()[0].hash
-	check("restore refused: your edits to the same file", r.restore_stash(hash) != OK and GitRepository.get_last_error().contains("b.txt"), GitRepository.get_last_error())
+	check("restore refused: your edits to the same file", r.restore_stash(hash) != OK and GitApi.get_last_error().contains("b.txt"), GitApi.get_last_error())
 	check("restore refused: nothing changed", read(repo.path_join("b.txt")) == "b1\nb2\nb3\nb4\nB5 mine now\n" and r.get_stashes().size() == 1, read(repo.path_join("b.txt")))
 
 
@@ -120,7 +120,7 @@ func _restore_refused_for_conflicting_commits() -> void:
 	commit_all(repo, "same line")
 	var head := git(repo, ["rev-parse", "HEAD"])
 	var hash: String = r.get_stashes()[0].hash
-	check("restore refused: conflicts with a newer commit", r.restore_stash(hash) != OK and GitRepository.get_last_error().contains("same lines"), GitRepository.get_last_error())
+	check("restore refused: conflicts with a newer commit", r.restore_stash(hash) != OK and GitApi.get_last_error().contains("same lines"), GitApi.get_last_error())
 	check("restore refused: nothing changed, stash kept", git(repo, ["status", "--porcelain"]) == "" and git(repo, ["rev-parse", "HEAD"]) == head and r.get_stashes().size() == 1, git(repo, ["status", "--porcelain"]))
 	check("restore refused: no conflict markers", not read(repo.path_join("a.txt")).contains("<<<<<<<"))
 
@@ -140,10 +140,10 @@ func _conflicting_stash(name: String) -> Array:
 func _restore_into_conflicts() -> void:
 	var made := _conflicting_stash("stash-merge")
 	var repo: String = made[0]
-	var r: GitRepository = made[1]
+	var r: GitApi = made[1]
 	var hash: String = r.get_stashes()[0].hash
 	check("stash merge: the conflicts named first", r.get_stash_conflicts(hash) == PackedStringArray(["a.txt"]), r.get_stash_conflicts(hash))
-	check("stash merge: restored into conflicts", r.restore_stash(hash, true) == OK, GitRepository.get_last_error())
+	check("stash merge: restored into conflicts", r.restore_stash(hash, true) == OK, GitApi.get_last_error())
 	var op := r.get_operation()
 	check("stash merge: an operation of its own", op.kind == "stash" and op.conflicts == PackedStringArray(["a.txt"]), op)
 	check("stash merge: the clean file is back, unstaged", read(repo.path_join("b.txt")) == "b1\nB2 stashed\nb3\nb4\nb5\n" and git(repo, ["status", "--porcelain"]).split("\n") == PackedStringArray(["UU a.txt", " M b.txt"]), git(repo, ["status", "--porcelain"]).split("\n"))
@@ -151,9 +151,9 @@ func _restore_into_conflicts() -> void:
 	check("stash merge: mine is the branch, theirs the stash", conflict.blocks.size() == 3 and conflict.blocks[1].mine == "A2 committed\n" and conflict.blocks[1].theirs == "A2 stashed\n" and conflict.theirs_label == "stash", conflict)
 	check("stash merge: the stash is kept until it's finished", r.get_stashes().size() == 1)
 	check("stash merge: commit refused meanwhile", r.commit("x") != OK)
-	check("stash merge: resolved with theirs", r.resolve_conflict_with("a.txt", "theirs") == OK, GitRepository.get_last_error())
+	check("stash merge: resolved with theirs", r.resolve_conflict_with("a.txt", "theirs") == OK, GitApi.get_last_error())
 	check("stash merge: the resolved file is an unstaged change", git(repo, ["diff", "--cached", "--name-only"]) == "" and git(repo, ["diff", "--name-only"]) == "a.txt\nb.txt", git(repo, ["status", "--porcelain"]))
-	check("stash merge: finished", r.continue_operation() == OK and r.get_operation().kind == "", GitRepository.get_last_error())
+	check("stash merge: finished", r.continue_operation() == OK and r.get_operation().kind == "", GitApi.get_last_error())
 	check("stash merge: the stash is gone", r.get_stashes().is_empty(), r.get_stashes())
 	check("stash merge: the files as resolved", read(repo.path_join("a.txt")) == "a1\nA2 stashed\na3\na4\na5\n", read(repo.path_join("a.txt")))
 
@@ -161,16 +161,16 @@ func _restore_into_conflicts() -> void:
 func _restore_into_conflicts_abort() -> void:
 	var made := _conflicting_stash("stash-merge-abort")
 	var repo: String = made[0]
-	var r: GitRepository = made[1]
+	var r: GitApi = made[1]
 	write(repo.path_join("c.txt"), "my other edit\n")
 	var hash: String = r.get_stashes()[0].hash
-	check("stash abort: restored into conflicts", r.restore_stash(hash, true) == OK, GitRepository.get_last_error())
-	check("stash abort: aborted", r.abort_operation() == OK and r.get_operation().kind == "", GitRepository.get_last_error())
+	check("stash abort: restored into conflicts", r.restore_stash(hash, true) == OK, GitApi.get_last_error())
+	check("stash abort: aborted", r.abort_operation() == OK and r.get_operation().kind == "", GitApi.get_last_error())
 	check("stash abort: the stash's files back as committed", git(repo, ["status", "--porcelain"]) == "?? c.txt" and read(repo.path_join("a.txt")) == "a1\nA2 committed\na3\na4\na5\n", git(repo, ["status", "--porcelain"]))
 	check("stash abort: your other edit untouched", read(repo.path_join("c.txt")) == "my other edit\n")
 	check("stash abort: the stash is kept", r.get_stashes().size() == 1 and r.get_stashes()[0].hash == hash)
 	git(repo, ["add", "c.txt"])
-	check("stash merge: refused while something is staged", r.restore_stash(hash, true) != OK and GitRepository.get_last_error().contains("staged"), GitRepository.get_last_error())
+	check("stash merge: refused while something is staged", r.restore_stash(hash, true) != OK and GitApi.get_last_error().contains("staged"), GitApi.get_last_error())
 
 
 func _restore_after_unrelated_commits() -> void:
@@ -180,7 +180,7 @@ func _restore_after_unrelated_commits() -> void:
 	r.stash(false)
 	write(repo.path_join("a.txt"), "a1\na2\na3\na4\nA5 committed\n")
 	commit_all(repo, "other line")
-	check("restore after new commits", r.restore_stash(r.get_stashes()[0].hash) == OK, GitRepository.get_last_error())
+	check("restore after new commits", r.restore_stash(r.get_stashes()[0].hash) == OK, GitApi.get_last_error())
 	check("restore after new commits: both changes", read(repo.path_join("a.txt")) == "a1\nA2 stashed\na3\na4\nA5 committed\n", read(repo.path_join("a.txt")))
 
 
@@ -194,7 +194,7 @@ func _terminal_stashes_and_delete() -> void:
 	var stashes := r.get_stashes()
 	check("terminal stashes: listed, newest first", stashes.size() == 2 and stashes[1].message == "trying something" and stashes[1].branch == "main", stashes)
 	check("terminal stashes: git's own WIP message", String(stashes[0].message).ends_with("first") and stashes[0].branch == "main", stashes[0])
-	check("delete", r.delete_stash(stashes[1].hash) == OK, GitRepository.get_last_error())
+	check("delete", r.delete_stash(stashes[1].hash) == OK, GitApi.get_last_error())
 	check("delete: that one is gone, the other kept", r.get_stashes().size() == 1 and r.get_stashes()[0].hash == stashes[0].hash and git(repo, ["stash", "list"]).split("\n").size() == 1, git(repo, ["stash", "list"]))
 	check("delete: a stash that's gone", r.delete_stash(stashes[1].hash) != OK)
 
@@ -209,9 +209,9 @@ func _switch_refusal_names_files() -> void:
 	git(repo, ["checkout", "-q", "main"])
 	write(repo.path_join("a.txt"), "my edit\n")
 	var r := open(repo)
-	check("switch refused: ERR_BUSY", r.checkout_branch("other") == ERR_BUSY, GitRepository.get_last_error())
-	check("switch refused: names the file", GitRepository.get_last_error().contains("a.txt") and GitRepository.get_last_error().contains("stash"), GitRepository.get_last_error())
-	check("switch after stashing", r.stash(false) == OK and r.checkout_branch("other") == OK and read(repo.path_join("a.txt")) == "other branch\n", GitRepository.get_last_error())
+	check("switch refused: ERR_BUSY", r.checkout_branch("other") == ERR_BUSY, GitApi.get_last_error())
+	check("switch refused: names the file", GitApi.get_last_error().contains("a.txt") and GitApi.get_last_error().contains("stash"), GitApi.get_last_error())
+	check("switch after stashing", r.stash(false) == OK and r.checkout_branch("other") == OK and read(repo.path_join("a.txt")) == "other branch\n", GitApi.get_last_error())
 
 
 # A new script and its .uid, stashed. Godot writes a fresh .uid as soon as the stashed one is
@@ -222,9 +222,9 @@ func _restore_over_regenerated_uid() -> void:
 	write(repo.path_join("hero.gd.uid"), "uid://original\n")
 	git(repo, ["add", "hero.gd", "hero.gd.uid"])
 	var r := open(repo)
-	check("uid: stash", r.stash(true) == OK, GitRepository.get_last_error())
+	check("uid: stash", r.stash(true) == OK, GitApi.get_last_error())
 	write(repo.path_join("hero.gd.uid"), "uid://regenerated\n") # What the editor does.
-	check("uid: restore over Godot's new one", r.restore_stash(r.get_stashes()[0].hash) == OK, GitRepository.get_last_error())
+	check("uid: restore over Godot's new one", r.restore_stash(r.get_stashes()[0].hash) == OK, GitApi.get_last_error())
 	check("uid: the stashed uid is back", read(repo.path_join("hero.gd.uid")) == "uid://original\n" and exists(repo.path_join("hero.gd")), read(repo.path_join("hero.gd.uid")))
 	# A tracked .import you changed is yours, though: that still blocks.
 	write(repo.path_join("a.txt"), "stashed\n")

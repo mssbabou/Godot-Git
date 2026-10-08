@@ -7,6 +7,8 @@ extends SceneTree
 ## those suites. Exits with code 1 if anything failed. Scratch repositories go to the OS temp
 ## folder; they're deleted after a clean run and kept (path printed) after a failure.
 
+const GitApi = preload("res://tests/git_api.gd")
+
 const SUITES := [
 	"res://tests/test_local.gd",
 	"res://tests/test_diff.gd",
@@ -52,7 +54,7 @@ func _main() -> void:
 
 	var root := OS.get_temp_dir().path_join("godot-git-tests").path_join("%d-%d" % [Time.get_unix_time_from_system(), Time.get_ticks_usec()])
 	DirAccess.make_dir_recursive_absolute(root)
-	print("libgit2 ", GitRepository.get_libgit2_version(), ", scratch folder ", root)
+	print("libgit2 ", GitApi.get_libgit2_version(), ", scratch folder ", root)
 
 	var checks := 0
 	var failures := 0

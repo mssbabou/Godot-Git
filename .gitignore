@@ -29,3 +29,6 @@ custom.py
 *.swp
 .DS_Store
 Thumbs.db
+
+# Claude Code (local agent definitions, worktrees)
+.claude/

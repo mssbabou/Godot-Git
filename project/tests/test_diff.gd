@@ -360,17 +360,17 @@ func _file_bytes() -> void:
 # The script editor's change marks: diff_lines, checked against the hunk headers of git diff -U0.
 func _line_changes() -> void:
 	var old := "a\nb\nc\nd\ne\n"
-	var h := GitRepository.diff_lines(old, "a\nB\nc\nd\ne\n")
+	var h := GitApi.diff_lines(old, "a\nB\nc\nd\ne\n")
 	check("one changed line", h.size() == 1 and h[0].old_start == 2 and h[0].old_count == 1 and h[0].new_start == 2 and h[0].new_count == 1 and h[0].old_lines == PackedStringArray(["b"]), h)
-	h = GitRepository.diff_lines(old, "a\nb\nx\ny\nc\nd\ne\n")
+	h = GitApi.diff_lines(old, "a\nb\nx\ny\nc\nd\ne\n")
 	check("added lines: no old lines", h.size() == 1 and h[0].old_count == 0 and h[0].new_start == 3 and h[0].new_count == 2, h)
-	h = GitRepository.diff_lines(old, "a\nd\ne\n")
+	h = GitApi.diff_lines(old, "a\nd\ne\n")
 	check("deleted lines: after the line they followed", h.size() == 1 and h[0].new_count == 0 and h[0].new_start == 1 and h[0].old_lines == PackedStringArray(["b", "c"]), h)
-	h = GitRepository.diff_lines(old, "c\nd\ne\n")
+	h = GitApi.diff_lines(old, "c\nd\ne\n")
 	check("deleted at the top", h.size() == 1 and h[0].new_start == 0 and h[0].new_count == 0, h)
-	check("CRLF and a missing final newline don't count", GitRepository.diff_lines(old, "a\nb\nc\nd\ne").is_empty(), GitRepository.diff_lines(old, "a\nb\nc\nd\ne"))
-	check("nothing changed", GitRepository.diff_lines(old, old).is_empty())
-	check("new file: all added", GitRepository.diff_lines("", "x\ny\n")[0].new_count == 2)
+	check("CRLF and a missing final newline don't count", GitApi.diff_lines(old, "a\nb\nc\nd\ne").is_empty(), GitApi.diff_lines(old, "a\nb\nc\nd\ne"))
+	check("nothing changed", GitApi.diff_lines(old, old).is_empty())
+	check("new file: all added", GitApi.diff_lines("", "x\ny\n")[0].new_count == 2)
 
 	# A bigger edit, against git itself.
 	var before := PackedStringArray()
@@ -395,7 +395,7 @@ func _line_changes() -> void:
 		if line.begins_with("@@"):
 			git_headers.append(line.get_slice(" @@", 0))
 	var ours := PackedStringArray()
-	for hunk in GitRepository.diff_lines("\n".join(before) + "\n", "\n".join(after) + "\n"):
+	for hunk in GitApi.diff_lines("\n".join(before) + "\n", "\n".join(after) + "\n"):
 		ours.append("@@ -%d,%d +%d,%d" % [hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count])
 	# git leaves out ",1"; spell its headers out the same way.
 	var normalized := PackedStringArray()

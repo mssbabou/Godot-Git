@@ -49,10 +49,10 @@ func _set_mode(fake: String, mode: String) -> void:
 func _fetch_and_pull(shared: Dictionary, fake: String) -> void:
 	teammate_pushes(shared, "x.txt", "x2\n")
 	var r := open(shared.mine)
-	check("fetch over SSH", r.fetch() == OK, GitRepository.get_last_error())
+	check("fetch over SSH", r.fetch() == OK, GitApi.get_last_error())
 	check("went through the configured ssh command", read(fake.path_join("hosts")).contains("fakehost"))
 	check("new commit arrived", r.get_sync_status().behind == 1, r.get_sync_status())
-	check("pull over SSH", r.pull() == OK, GitRepository.get_last_error())
+	check("pull over SSH", r.pull() == OK, GitApi.get_last_error())
 	check("pulled the change", read(shared.mine.path_join("x.txt")) == "x2\n")
 
 
@@ -60,7 +60,7 @@ func _push(shared: Dictionary) -> void:
 	write(shared.mine.path_join("a.txt"), "a\n")
 	commit_all(shared.mine, "Add a")
 	var r := open(shared.mine)
-	check("push over SSH", r.push() == OK, GitRepository.get_last_error())
+	check("push over SSH", r.push() == OK, GitApi.get_last_error())
 	check("remote got it", git(shared.remote, ["rev-parse", "main"]) == git(shared.mine, ["rev-parse", "HEAD"]))
 
 
@@ -68,12 +68,12 @@ func _ssh_errors(shared: Dictionary, fake: String) -> void:
 	var r := open(shared.mine)
 	_set_mode(fake, "denied")
 	check("rejected key: fetch fails", r.fetch() != OK)
-	check("says SSH couldn't log in, with ssh's own words", GitRepository.get_last_error().contains("SSH couldn't log in") and GitRepository.get_last_error().contains("Permission denied (publickey)"), GitRepository.get_last_error())
-	check("rejected key: push fails the same way", r.push() != OK and GitRepository.get_last_error().contains("SSH couldn't log in"), GitRepository.get_last_error())
+	check("says SSH couldn't log in, with ssh's own words", GitApi.get_last_error().contains("SSH couldn't log in") and GitApi.get_last_error().contains("Permission denied (publickey)"), GitApi.get_last_error())
+	check("rejected key: push fails the same way", r.push() != OK and GitApi.get_last_error().contains("SSH couldn't log in"), GitApi.get_last_error())
 
 	_set_mode(fake, "unknown")
 	check("unknown server: fetch fails", r.fetch() != OK)
-	check("says to confirm the server once", GitRepository.get_last_error().contains("doesn't know this server"), GitRepository.get_last_error())
+	check("says to confirm the server once", GitApi.get_last_error().contains("doesn't know this server"), GitApi.get_last_error())
 	_set_mode(fake, "")
 
 
@@ -84,10 +84,10 @@ func _cancel_hanging_connection(shared: Dictionary, fake: String) -> void:
 	var start := Time.get_ticks_msec()
 	thread.start(func():
 		var r := open(shared.mine)
-		return [r.fetch(), GitRepository.get_last_error()])
+		return [r.fetch(), GitApi.get_last_error()])
 	while Time.get_ticks_msec() - start < 1500:
 		await tree.process_frame
-	GitRepository.cancel_network()
+	GitApi.cancel_network()
 	while thread.is_alive() and Time.get_ticks_msec() - start < 20000:
 		await tree.process_frame
 	var finished := not thread.is_alive()

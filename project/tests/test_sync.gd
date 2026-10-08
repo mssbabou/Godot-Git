@@ -17,14 +17,14 @@ func _fetch_and_fast_forward() -> void:
 
 	for i in 3:
 		teammate_pushes(s, "t%d.txt" % i, "t\n", "Teammate %d" % i)
-	check("fetch", r.fetch() == OK, GitRepository.get_last_error())
+	check("fetch", r.fetch() == OK, GitApi.get_last_error())
 	var status := r.get_sync_status()
 	check("behind 3 after fetch", status.behind == 3 and status.ahead == 0, status)
 	check("fetch time recorded", absi(int(Time.get_unix_time_from_system()) - status.last_fetched) < 120, status.last_fetched)
 
 	var steps := []
 	r.set_progress_callback(func(step: String, _fraction: float, _cancellable: bool): steps.append(step))
-	check("pull fast-forwards", r.pull() == OK, GitRepository.get_last_error())
+	check("pull fast-forwards", r.pull() == OK, GitApi.get_last_error())
 	var result := r.get_pull_result()
 	check("pull result: 3 commits, no merge", result.commits == 3 and not result.merged, result)
 	check("files arrived", exists(s.mine.path_join("t2.txt")))
@@ -42,7 +42,7 @@ func _merge_and_push() -> void:
 	write(s.mine.path_join("y.txt"), "y-mine\n")
 	commit_all(s.mine, "My change")
 
-	check("diverged pull merges", r.pull() == OK, GitRepository.get_last_error())
+	check("diverged pull merges", r.pull() == OK, GitApi.get_last_error())
 	check("pull result: 1 commit, merged", r.get_pull_result().commits == 1 and r.get_pull_result().merged, r.get_pull_result())
 	var commits := r.get_commits(5)
 	check("merge commit on top", commits[0].summary.begins_with("Merge remote-tracking branch 'origin/main'"), commits[0].summary)
@@ -51,7 +51,7 @@ func _merge_and_push() -> void:
 	var unpushed := commits.filter(func(c): return c.unpushed).map(func(c): return c.summary)
 	check("my commit and the merge are marked unpushed, the teammate's isn't", unpushed.size() == 2 and unpushed.has("My change"), unpushed)
 
-	check("push", r.push() == OK, GitRepository.get_last_error())
+	check("push", r.push() == OK, GitApi.get_last_error())
 	check("in sync after push", r.get_sync_status().ahead == 0 and r.get_sync_status().behind == 0, r.get_sync_status())
 	check("nothing marked unpushed", not r.get_commits(1)[0].unpushed)
 	check("remote has the merge", git(s.remote, ["log", "-1", "--format=%s", "main"]).begins_with("Merge remote-tracking"))
@@ -60,7 +60,7 @@ func _merge_and_push() -> void:
 	teammate_pushes(s, "z.txt", "z-theirs\n")
 	write(s.mine.path_join("y.txt"), "y-again\n")
 	commit_all(s.mine, "Another change")
-	check("push refused when behind", r.push() != OK and GitRepository.get_last_error().contains("Pull first"), GitRepository.get_last_error())
+	check("push refused when behind", r.push() != OK and GitApi.get_last_error().contains("Pull first"), GitApi.get_last_error())
 
 
 func _conflict_refused() -> void:
@@ -71,7 +71,7 @@ func _conflict_refused() -> void:
 	commit_all(s.mine, "My x")
 	var head := git(s.mine, ["rev-parse", "HEAD"])
 
-	check("conflicting pull refused", r.pull() != OK and GitRepository.get_last_error().contains("same lines"), GitRepository.get_last_error())
+	check("conflicting pull refused", r.pull() != OK and GitApi.get_last_error().contains("same lines"), GitApi.get_last_error())
 	check("HEAD unchanged", git(s.mine, ["rev-parse", "HEAD"]) == head)
 	check("working tree clean", r.get_status().is_empty(), r.get_status())
 	check("not stuck mid-merge", not exists(s.mine.path_join(".git/MERGE_HEAD")))
@@ -83,7 +83,7 @@ func _publish_and_remote_branches() -> void:
 	var r := open(s.mine)
 	r.create_branch("feature/x")
 	check("new branch has no upstream", r.get_sync_status().upstream == "")
-	check("publish", r.push() == OK, GitRepository.get_last_error())
+	check("publish", r.push() == OK, GitApi.get_last_error())
 	check("now tracks origin/feature/x", r.get_sync_status().upstream == "origin/feature/x", r.get_sync_status())
 	check("remote has the branch", git(s.remote, ["branch", "--list", "feature/x"]).contains("feature/x"))
 
@@ -92,7 +92,7 @@ func _publish_and_remote_branches() -> void:
 	git(s.theirs, ["push", "-q", "-u", "origin", "experiment"])
 	r.fetch()
 	check("remote branch listed", r.get_remote_branches().has("origin/experiment"), r.get_remote_branches())
-	check("check out a remote branch", r.checkout_branch("origin/experiment") == OK, GitRepository.get_last_error())
+	check("check out a remote branch", r.checkout_branch("origin/experiment") == OK, GitApi.get_last_error())
 	check("local branch tracks it", r.get_current_branch() == "experiment" and r.get_sync_status().upstream == "origin/experiment", r.get_sync_status())
 	check("its files are there", exists(s.mine.path_join("exp.txt")))
 
@@ -106,10 +106,10 @@ func _prune_and_pull_blockers() -> void:
 	check("no URL for a remote that doesn't exist", r.get_remote_url("nope") == "")
 
 	git(s.theirs, ["push", "-q", "origin", "HEAD:refs/heads/old-feature"])
-	check("fetch", r.fetch() == OK, GitRepository.get_last_error())
+	check("fetch", r.fetch() == OK, GitApi.get_last_error())
 	check("new remote branch listed", Array(r.get_remote_branches()).has("origin/old-feature"), r.get_remote_branches())
 	git(s.theirs, ["push", "-q", "origin", "--delete", "old-feature"])
-	check("fetch again", r.fetch() == OK, GitRepository.get_last_error())
+	check("fetch again", r.fetch() == OK, GitApi.get_last_error())
 	check("branch deleted on the remote is gone after a fetch", not Array(r.get_remote_branches()).has("origin/old-feature"), r.get_remote_branches())
 
 	check("no blockers when there's nothing to pull", r.get_pull_blockers().is_empty(), r.get_pull_blockers())
@@ -118,11 +118,11 @@ func _prune_and_pull_blockers() -> void:
 	write(s.mine.path_join("x.txt"), "x-mine\n") # Changed by the new commits too.
 	write(s.mine.path_join("new.txt"), "mine\n") # Untracked, and the new commits add it.
 	write(s.mine.path_join("y.txt"), "y-mine\n") # Not touched by the new commits.
-	check("fetch with local changes", r.fetch() == OK, GitRepository.get_last_error())
+	check("fetch with local changes", r.fetch() == OK, GitApi.get_last_error())
 	check("blockers are what a pull can't merge at all", Array(r.get_pull_blockers()) == ["new.txt"], r.get_pull_blockers())
 	check("an edit on the same lines is a conflict, not a blocker", Array(r.get_pull_conflicts()) == ["x.txt"], r.get_pull_conflicts())
-	check("and pull refuses for the blocker", r.pull() != OK and GitRepository.get_last_error().contains("new.txt"), GitRepository.get_last_error())
+	check("and pull refuses for the blocker", r.pull() != OK and GitApi.get_last_error().contains("new.txt"), GitApi.get_last_error())
 	git(s.mine, ["checkout", "--", "x.txt"])
 	DirAccess.remove_absolute(s.mine.path_join("new.txt"))
 	check("no blockers once they're gone", r.get_pull_blockers().is_empty(), r.get_pull_blockers())
-	check("pull works then", r.pull() == OK, GitRepository.get_last_error())
+	check("pull works then", r.pull() == OK, GitApi.get_last_error())

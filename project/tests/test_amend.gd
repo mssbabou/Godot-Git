@@ -17,7 +17,7 @@ func _message_only() -> void:
 
 	var r := open(shared.mine)
 	check("unpushed commit isn't pushed", not r.is_head_pushed())
-	check("amend succeeds", r.amend("Typo fixed") == OK, GitRepository.get_last_error())
+	check("amend succeeds", r.amend("Typo fixed") == OK, GitApi.get_last_error())
 	check("message replaced", git(shared.mine, ["log", "-1", "--format=%s"]) == "Typo fixed", git(shared.mine, ["log", "-1", "--format=%s"]))
 	check("same parent (replaced, not added)", git(shared.mine, ["rev-parse", "HEAD~1"]) == parent)
 	check("same files", git(shared.mine, ["rev-parse", "HEAD^{tree}"]) == tree)
@@ -32,7 +32,7 @@ func _with_staged_files() -> void:
 
 	var r := open(shared.mine)
 	r.stage("forgotten.txt")
-	check("amend with a staged file", r.amend("Add a and the forgotten file") == OK, GitRepository.get_last_error())
+	check("amend with a staged file", r.amend("Add a and the forgotten file") == OK, GitApi.get_last_error())
 	var files := git(shared.mine, ["show", "--name-only", "--format=", "HEAD"]).split("\n")
 	check("amended commit has both files", files.has("a.txt") and files.has("forgotten.txt"), files)
 	check("nothing left staged", r.get_status().is_empty(), r.get_status())
@@ -49,5 +49,5 @@ func _refused_once_pushed() -> void:
 	var r := open(shared.mine)
 	check("pushed commit counts as pushed", r.is_head_pushed())
 	check("amend refused", r.amend("Rewritten") != OK)
-	check("says why", GitRepository.get_last_error().contains("already pushed"), GitRepository.get_last_error())
+	check("says why", GitApi.get_last_error().contains("already pushed"), GitApi.get_last_error())
 	check("commit untouched", git(shared.mine, ["rev-parse", "HEAD"]) == head)

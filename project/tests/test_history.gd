@@ -91,9 +91,9 @@ func _restore_version() -> void:
 	commit_all(repo, "v2 and b")
 	var v2: String = git(repo, ["rev-parse", "HEAD"]).strip_edges()
 	var r := open(repo)
-	check("restore an older version", r.restore_file_version(v1, "a.txt") == OK and read(repo.path_join("a.txt")).replace("\r", "") == "v1\n", GitRepository.get_last_error())
+	check("restore an older version", r.restore_file_version(v1, "a.txt") == OK and read(repo.path_join("a.txt")).replace("\r", "") == "v1\n", GitApi.get_last_error())
 	check("as an unstaged change", git(repo, ["status", "--porcelain", "a.txt"]).strip_edges() == "M a.txt")
-	check("refused while it has uncommitted changes", r.restore_file_version(v2, "a.txt") != OK and GitRepository.get_last_error().contains("uncommitted"), GitRepository.get_last_error())
+	check("refused while it has uncommitted changes", r.restore_file_version(v2, "a.txt") != OK and GitApi.get_last_error().contains("uncommitted"), GitApi.get_last_error())
 	git(repo, ["checkout", "--", "a.txt"])
 	check("before the commit that added it: deleted", r.restore_file_version(v2 + "^1", "b.txt") == OK and not exists(repo.path_join("b.txt")))
 	check("an unknown version refused", r.restore_file_version("0000000", "a.txt") != OK)
@@ -103,18 +103,18 @@ func _undo_last_commit() -> void:
 	var shared := make_shared("undo")
 	var mine: String = shared.mine
 	var r := open(mine)
-	check("a pushed commit can't be undone", r.undo_last_commit() != OK and GitRepository.get_last_error().contains("pushed"), GitRepository.get_last_error())
+	check("a pushed commit can't be undone", r.undo_last_commit() != OK and GitApi.get_last_error().contains("pushed"), GitApi.get_last_error())
 	write(mine.path_join("x.txt"), "local\n")
 	commit_all(mine, "Local commit")
 	var before: String = git(mine, ["rev-parse", "HEAD~1"]).strip_edges()
-	check("undo", r.undo_last_commit() == OK, GitRepository.get_last_error())
+	check("undo", r.undo_last_commit() == OK, GitApi.get_last_error())
 	check("the branch is back one commit", git(mine, ["rev-parse", "HEAD"]).strip_edges() == before)
 	check("its changes are staged", git(mine, ["status", "--porcelain", "x.txt"]).strip_edges() == "M  x.txt")
 
 	var solo := make_repo("undo-first")
 	write(solo.path_join("a.txt"), "a\n")
 	commit_all(solo, "First")
-	check("the first commit can't be undone", open(solo).undo_last_commit() != OK and GitRepository.get_last_error().contains("first commit"), GitRepository.get_last_error())
+	check("the first commit can't be undone", open(solo).undo_last_commit() != OK and GitApi.get_last_error().contains("first commit"), GitApi.get_last_error())
 
 
 func _revert() -> void:
@@ -130,11 +130,11 @@ func _revert() -> void:
 	var r := open(repo)
 
 	write(repo.path_join("a.txt"), "1\nTWO\n3\nmine\n")
-	check("refused with uncommitted changes in its files", r.revert_commit(change) != OK and GitRepository.get_last_error().contains("a.txt"), GitRepository.get_last_error())
+	check("refused with uncommitted changes in its files", r.revert_commit(change) != OK and GitApi.get_last_error().contains("a.txt"), GitApi.get_last_error())
 	check("and nothing changed", read(repo.path_join("a.txt")).replace("\r", "") == "1\nTWO\n3\nmine\n" and git(repo, ["log", "-1", "--format=%s"]).strip_edges() == "Change b")
 	git(repo, ["checkout", "--", "a.txt"])
 
-	check("revert", r.revert_commit(change) == OK, GitRepository.get_last_error())
+	check("revert", r.revert_commit(change) == OK, GitApi.get_last_error())
 	check("a new commit, git's message", git(repo, ["log", "-1", "--format=%s"]).strip_edges() == "Revert \"Change two\"")
 	check("the change is undone", read(repo.path_join("a.txt")).replace("\r", "") == "1\n2\n3\n" and read(repo.path_join("b.txt")).replace("\r", "") == "b2\n")
 	check("nothing left over", git(repo, ["status", "--porcelain"]).strip_edges().is_empty(), git(repo, ["status", "--porcelain"]))
@@ -143,7 +143,7 @@ func _revert() -> void:
 	write(repo.path_join("a.txt"), "1\n2 again\n3\n")
 	commit_all(repo, "Change two again")
 	var head: String = git(repo, ["rev-parse", "HEAD"]).strip_edges()
-	check("refused when later commits changed the same lines", r.revert_commit(change) != OK and GitRepository.get_last_error().contains("a.txt"), GitRepository.get_last_error())
+	check("refused when later commits changed the same lines", r.revert_commit(change) != OK and GitApi.get_last_error().contains("a.txt"), GitApi.get_last_error())
 	check("and nothing changed", git(repo, ["rev-parse", "HEAD"]).strip_edges() == head and git(repo, ["status", "--porcelain"]).strip_edges().is_empty())
 
 
@@ -155,7 +155,7 @@ func _branch_here() -> void:
 	write(repo.path_join("a.txt"), "2\n")
 	commit_all(repo, "Two")
 	var r := open(repo)
-	check("branch at an older commit", r.create_branch_at("old-idea", one) == OK, GitRepository.get_last_error())
+	check("branch at an older commit", r.create_branch_at("old-idea", one) == OK, GitApi.get_last_error())
 	check("it points there", git(repo, ["rev-parse", "old-idea"]).strip_edges() == one)
 	check("and we stay where we were", r.get_current_branch() == "main")
 	check("an existing name refused", r.create_branch_at("old-idea", one) != OK)
