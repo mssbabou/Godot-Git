@@ -1,4 +1,4 @@
-#include "git/scene_text.h"
+#include "scene/scene_diff.h"
 
 #include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/templates/hash_set.hpp>
@@ -116,9 +116,11 @@ LocalVector<Entry> parse(const String &p_text) {
 			entries.push_back(entry);
 			continue;
 		}
-		// "key = value" under the last tag.
-		const int equals = text.find("=", i);
-		const int line_end = text.find("\n", i);
+		// "key = value" under the last tag. A name with "=", quotes or spaces in it is written in
+		// quotes (String::property_name_encode), so its "=" comes after the closing quote.
+		const int key_end = text[i] == '"' ? value_end(text, i, true) : i;
+		const int equals = text.find("=", key_end);
+		const int line_end = text.find("\n", key_end);
 		if (equals < 0 || (line_end >= 0 && equals > line_end)) {
 			i = line_end < 0 ? length : line_end + 1; // Not a property.
 			continue;
@@ -126,7 +128,7 @@ LocalVector<Entry> parse(const String &p_text) {
 		const int end = value_end(text, equals + 1, false);
 		if (!entries.is_empty()) {
 			Property property;
-			property.key = text.substr(i, equals - i).strip_edges();
+			property.key = unquote(text.substr(i, equals - i));
 			property.value = text.substr(equals + 1, end - equals - 1).strip_edges();
 			entries[entries.size() - 1].properties.push_back(property);
 		}
@@ -264,6 +266,21 @@ Scene read_scene(const String &p_text) {
 			}
 			if (entry.fields.has("unbinds")) {
 				text += vformat(", %s unbound", entry.fields["unbinds"]);
+			}
+			// Object::ConnectFlags (4.7.2), as the Connect dialog names them. Persist is always on.
+			const int64_t flags = entry.fields.has("flags") ? entry.fields["flags"].to_int() : 0;
+			PackedStringArray options;
+			if (flags & 1) {
+				options.push_back("deferred");
+			}
+			if (flags & 4) {
+				options.push_back("one shot");
+			}
+			if (flags & 16) {
+				options.push_back("append source");
+			}
+			if (!options.is_empty()) {
+				text += vformat(" (%s)", String(", ").join(options));
 			}
 			scene.connections.push_back(text);
 		} else if (entry.tag == "editable") {
@@ -485,24 +502,41 @@ Dictionary scene_changes(const String &p_old_text, const String &p_new_text) {
 	const String old_root = before.root_name();
 	const String new_root = after.root_name();
 
-	// Matched by unique_id where both have one, else by path.
-	HashMap<String, int> old_by_id, old_by_path;
+	// Matched by unique_id where both have one, else by path, under the parent's old path when the
+	// parent was matched (so a node under a renamed parent is still found without an id).
+	HashMap<String, int> old_by_id, old_by_path, new_by_path;
 	for (uint32_t i = 0; i < before.nodes.size(); i++) {
 		if (!before.nodes[i].unique_id.is_empty()) {
 			old_by_id[before.nodes[i].unique_id] = i;
 		}
 		old_by_path[before.nodes[i].path(old_root)] = i;
 	}
+	// The node a node's "parent" names, as an index (-1 for the root or one not in the file).
+	auto parent_index = [](const Node &p_node, const String &p_root, const HashMap<String, int> &p_by_path) {
+		if (p_node.parent.is_empty()) {
+			return -1;
+		}
+		const String parent_path = p_node.parent == "." ? p_root : vformat("%s/%s", p_root, p_node.parent);
+		const int *index = p_by_path.getptr(parent_path);
+		return index ? *index : -1;
+	};
 	HashSet<int> matched_old;
+	LocalVector<int> new_to_old; // Parents come before their children in the file.
 	Array nodes;
-	for (const Node &node : after.nodes) {
+	for (uint32_t n = 0; n < after.nodes.size(); n++) {
+		const Node &node = after.nodes[n];
 		const String path = node.path(new_root);
+		new_by_path[path] = n;
+		const int new_parent = parent_index(node, new_root, new_by_path);
+		const int parent_match = new_parent >= 0 ? new_to_old[new_parent] : -1;
+		const String old_guess = parent_match >= 0 ? vformat("%s/%s", before.nodes[parent_match].path(old_root), node.name) : path;
 		int match = -1;
 		if (!node.unique_id.is_empty() && old_by_id.has(node.unique_id)) {
 			match = old_by_id[node.unique_id];
-		} else if (old_by_path.has(path) && !matched_old.has(old_by_path[path])) {
-			match = old_by_path[path];
+		} else if (old_by_path.has(old_guess) && !matched_old.has(old_by_path[old_guess])) {
+			match = old_by_path[old_guess];
 		}
+		new_to_old.push_back(match);
 		Dictionary change;
 		change["path"] = path;
 		change["type"] = node.type;
@@ -540,7 +574,10 @@ Dictionary scene_changes(const String &p_old_text, const String &p_new_text) {
 			if (old_editable != new_editable) {
 				changed("Editable Children", old_editable ? "On" : "Off", new_editable ? "On" : "Off");
 			}
-			if (old.parent != node.parent && !node.parent.is_empty()) {
+			// Moved when its parent is another node, not when the parent's name changed (that
+			// changes every child's "parent=").
+			const int old_parent = parent_index(old, old_root, old_by_path);
+			if (!node.parent.is_empty() && (new_parent < 0 || old_parent < 0 ? old.parent != node.parent : parent_match != old_parent)) {
 				change["status"] = "moved"; // Renamed too, maybe: the old path says.
 				change["old_path"] = old_path;
 			} else if (old.name != node.name) {

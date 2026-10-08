@@ -2,7 +2,7 @@
 // scene as a tree, the changed nodes in their status colors with their letter, under their
 // (dimmed) parents; on the right what changed on the selected node, setting by setting
 // ("shape › size   (32, 32) → (40, 32)"). The changes come from GitRepository::get_diff ("scene",
-// see scene_changes in scene_text.cpp).
+// see scene_changes in scene_diff.cpp).
 
 #include "editor/git_diff_dock.h"
 

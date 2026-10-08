@@ -32,6 +32,17 @@ void forget_lfs_check();
 // Whether the repository's .gitattributes sends files through Git LFS.
 bool repo_uses_lfs(git_repository *p_repo);
 
+// The kinds of files a Godot project keeps that git stores badly (images, audio, models, fonts,
+// video, as "*.png"), offered at Initialize.
+PackedStringArray godot_lfs_patterns();
+
+// Sends files matching p_patterns through Git LFS, as `git lfs track` does: a line each in the
+// repository's root .gitattributes (the one repo_uses_lfs reads; nothing staged), then git-lfs's
+// hooks (`git lfs install --local`), without which a `git push` from a terminal would send the
+// commits but not the files. r_hooks_failed: the lines were written but the hooks weren't (e.g.
+// the repository has its own pre-push hook); git-lfs's message is in get_last_error().
+Error track_lfs_patterns(git_repository *p_repo, const PackedStringArray &p_patterns, bool &r_hooks_failed);
+
 // FAILED, with a message saying so, if the repository uses LFS but git-lfs isn't installed:
 // checking out or committing would then silently do the wrong thing. OK otherwise.
 Error require_lfs(git_repository *p_repo, const String &p_action);

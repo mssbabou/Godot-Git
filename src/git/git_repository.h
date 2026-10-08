@@ -149,7 +149,7 @@ public:
 	void set_login_prompts_allowed(bool p_allowed);
 	Dictionary get_saved_login(const String &p_url) const;
 
-	static Error init_repository(const String &p_path, const String &p_project_path);
+	static Error init_repository(const String &p_path, const String &p_project_path, bool p_lfs = false);
 	static void set_config_home(const String &p_path);
 
 	static void cancel_network();

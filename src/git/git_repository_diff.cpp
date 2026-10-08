@@ -15,8 +15,8 @@
 
 #include "git/git_lfs.h"
 #include "git/git_util.h"
-#include "git/scene_text.h"
 #include "git/settings_text.h"
+#include "scene/scene_diff.h"
 
 using namespace godot_git;
 

@@ -19,6 +19,9 @@ func run() -> void:
 	_identity()
 	_add_remote_and_publish()
 	_pull_without_identity()
+	_init_without_lfs()
+	_init_with_lfs()
+	_init_parent_folder_with_lfs()
 
 	GitRepository.set_config_home("")
 	OS.unset_environment("GIT_CONFIG_GLOBAL")
@@ -152,3 +155,60 @@ func _pull_without_identity() -> void:
 	check("says it needs a name and email", GitRepository.get_last_error().contains("name and email") and GitRepository.get_last_error().contains("Nothing was pulled"), GitRepository.get_last_error())
 	check("HEAD unchanged", git(shared.mine, ["rev-parse", "HEAD"]) == head)
 	check("teammate's change not applied", read(shared.mine.path_join("x.txt")) == "x1\n")
+
+
+# Starting with Git LFS: images, audio and models go to LFS from the first commit, text formats
+# (svg, gltf) stay in git. Needs git-lfs; the LFS cases are skipped without it.
+func _init_with_lfs() -> void:
+	if not GitRepository.is_lfs_installed():
+		print("  (skipped; git-lfs isn't installed)")
+		return
+	var project := dir.path_join("lfs-fresh")
+	_project(project)
+	check("init with LFS", GitRepository.init_repository(project, project, true) == OK, GitRepository.get_last_error())
+	var attributes := read(project.path_join(".gitattributes"))
+	var godot_line := attributes.find("* text=auto eol=lf")
+	var png_line := attributes.find("*.png filter=lfs diff=lfs merge=lfs -text")
+	check("Godot's line comes first, then the LFS lines", godot_line != -1 and png_line > godot_line, attributes)
+	check("png goes to LFS", git(project, ["check-attr", "filter", "--", "a.png"]).contains("filter: lfs"), git(project, ["check-attr", "filter", "--", "a.png"]))
+	check("svg stays in git", not git(project, ["check-attr", "filter", "--", "a.svg"]).contains("lfs"), git(project, ["check-attr", "filter", "--", "a.svg"]))
+	check("gltf stays in git", not git(project, ["check-attr", "filter", "--", "a.gltf"]).contains("lfs"), git(project, ["check-attr", "filter", "--", "a.gltf"]))
+	check("pre-push hook installed", exists(project.path_join(".git/hooks/pre-push")))
+	check("nothing staged", git(project, ["diff", "--cached", "--name-only"]) == "", git(project, ["diff", "--cached", "--name-only"]))
+
+	# A png staged and committed through the backend is stored as an LFS pointer.
+	var bytes := PackedByteArray([137, 80, 78, 71, 0, 1, 2, 3, 255, 254])
+	var file := FileAccess.open(project.path_join("a.png"), FileAccess.WRITE)
+	file.store_buffer(bytes)
+	file.close()
+	var r := open(project)
+	check("identity set", r.set_identity("Ada", "ada@example.com", false) == OK, GitRepository.get_last_error())
+	check("png staged", r.stage("a.png") == OK, GitRepository.get_last_error())
+	check("png committed", r.commit("Add a.png") == OK, GitRepository.get_last_error())
+	var blob := git(project, ["cat-file", "-p", "HEAD:a.png"])
+	check("git holds an LFS pointer, not the image", blob.begins_with("version https://git-lfs"), blob.left(80))
+
+
+# The project is the repository's subfolder: the LFS lines go to the repository's root
+# .gitattributes, and the project's own .gitattributes stays as Godot wrote it.
+func _init_parent_folder_with_lfs() -> void:
+	if not GitRepository.is_lfs_installed():
+		return
+	var mega := dir.path_join("lfs-mega")
+	var game := mega.path_join("game")
+	_project(game)
+	check("init with LFS in the parent folder", GitRepository.init_repository(mega, game, true) == OK, GitRepository.get_last_error())
+	check("LFS lines in the repository root", read(mega.path_join(".gitattributes")).contains("*.png filter=lfs diff=lfs merge=lfs -text"), read(mega.path_join(".gitattributes")))
+	if exists(game.path_join(".gitattributes")):
+		check("project's .gitattributes has no LFS lines", not read(game.path_join(".gitattributes")).contains("filter=lfs"), read(game.path_join(".gitattributes")))
+	check("root sees png as LFS", git(mega, ["check-attr", "filter", "--", "game/a.png"]).contains("filter: lfs"), git(mega, ["check-attr", "filter", "--", "game/a.png"]))
+
+
+# Without LFS: no LFS rules anywhere and no pre-push hook.
+func _init_without_lfs() -> void:
+	var project := dir.path_join("plain-fresh")
+	_project(project)
+	check("init without LFS", GitRepository.init_repository(project, project) == OK, GitRepository.get_last_error())
+	var attributes := read(project.path_join(".gitattributes"))
+	check("no LFS rules without LFS", not attributes.contains("filter=lfs"), attributes)
+	check("no pre-push hook without LFS", not exists(project.path_join(".git/hooks/pre-push")))

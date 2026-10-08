@@ -188,7 +188,7 @@ void GitRepository::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_login_prompts_allowed", "allowed"), &GitRepository::set_login_prompts_allowed);
 	ClassDB::bind_method(D_METHOD("get_saved_login", "url"), &GitRepository::get_saved_login);
 
-	ClassDB::bind_static_method("GitRepository", D_METHOD("init_repository", "path", "project_path"), &GitRepository::init_repository);
+	ClassDB::bind_static_method("GitRepository", D_METHOD("init_repository", "path", "project_path", "lfs"), &GitRepository::init_repository, DEFVAL(false));
 	ClassDB::bind_static_method("GitRepository", D_METHOD("set_config_home", "path"), &GitRepository::set_config_home);
 	ClassDB::bind_static_method("GitRepository", D_METHOD("cancel_network"), &GitRepository::cancel_network);
 

@@ -361,6 +361,53 @@ bool repo_uses_lfs(git_repository *p_repo) {
 	return !workdir.is_empty() && FileAccess::get_file_as_string(workdir.path_join(".gitattributes")).contains("filter=lfs");
 }
 
+PackedStringArray godot_lfs_patterns() {
+	// Formats Godot imports, plus the sources artists keep next to them. Text formats (.svg,
+	// .gltf, .obj, .tscn) stay in git, where they diff and merge.
+	PackedStringArray patterns;
+	for (const char *extension : { "png", "jpg", "jpeg", "webp", "tga", "bmp", "exr", "hdr", "psd", "kra", "wav", "ogg", "mp3", "glb", "fbx", "blend", "ttf", "otf", "mp4", "webm", "ogv" }) {
+		patterns.push_back(vformat("*.%s", extension));
+	}
+	return patterns;
+}
+
+Error track_lfs_patterns(git_repository *p_repo, const PackedStringArray &p_patterns, bool &r_hooks_failed) {
+	r_hooks_failed = false;
+	const String path = workdir_of(p_repo).path_join(".gitattributes");
+	String text = FileAccess::file_exists(path) ? FileAccess::get_file_as_string(path) : String();
+	const String newline = text.contains("\r\n") ? String("\r\n") : String("\n");
+	if (!text.is_empty() && !text.ends_with("\n")) {
+		text += newline;
+	}
+	for (const String &pattern : p_patterns) {
+		const String line = vformat("%s filter=lfs diff=lfs merge=lfs -text", pattern);
+		if (!text.contains(line)) {
+			text += line + newline;
+		}
+	}
+	Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
+	if (file.is_null()) {
+		return fail("Couldn't write .gitattributes.");
+	}
+	file->store_string(text);
+	file.unref();
+
+	begin_network_operation(); // A Cancel left over from an earlier operation would stop it at once.
+	RemoteContext ctx;
+	PackedStringArray args;
+	args.push_back("lfs");
+	args.push_back("install");
+	args.push_back("--local");
+	String output;
+	int exit_code = 0;
+	const Error err = run_git_command(p_repo, ctx, args, "Setting up Git LFS", output, exit_code);
+	if (err != OK || exit_code != 0) {
+		r_hooks_failed = true;
+		fail(output_tail(output, 3));
+	}
+	return OK;
+}
+
 Error require_lfs(git_repository *p_repo, const String &p_action) {
 	if (repo_uses_lfs(p_repo) && !lfs_installed()) {
 		if (!git_installed()) {

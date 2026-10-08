@@ -105,8 +105,12 @@ Error GitRepository::set_identity(const String &p_name, const String &p_email, b
 // Makes the folder p_path a new, empty git repository. Its first branch is named like the git
 // CLI would (init.defaultBranch, else "main"). The .gitignore and .gitattributes Godot's project
 // manager writes are added to p_project_path when missing (p_path is that folder or one above it).
-Error GitRepository::init_repository(const String &p_path, const String &p_project_path) {
+// p_lfs: images, audio, models and the like go to Git LFS (godot_lfs_patterns) from the start.
+Error GitRepository::init_repository(const String &p_path, const String &p_project_path, bool p_lfs) {
 	git_error_clear();
+	if (p_lfs && !lfs_installed()) {
+		return fail("Git LFS isn't installed. Get it from git-lfs.com, then restart the editor.");
+	}
 	const String path = ProjectSettings::get_singleton()->globalize_path(p_path);
 	const String project_path = ProjectSettings::get_singleton()->globalize_path(p_project_path);
 
@@ -146,6 +150,24 @@ Error GitRepository::init_repository(const String &p_path, const String &p_proje
 		Ref<FileAccess> file = FileAccess::open(attributes, FileAccess::WRITE);
 		if (file.is_valid()) {
 			file->store_string("# Normalize EOL for all files that Git considers text files.\n* text=auto eol=lf\n");
+		}
+	}
+	if (p_lfs) {
+		// After Godot's lines when it's the same file: a later line wins, and "-text" must.
+		git_repository *opened = nullptr;
+		if (git_repository_open(&opened, path.utf8().get_data()) < 0) {
+			return to_error(-1);
+		}
+		bool hooks_failed = false;
+		const Error lfs_err = track_lfs_patterns(opened, godot_lfs_patterns(), hooks_failed);
+		const String reason = GitRepository::get_last_error();
+		release_lfs(opened);
+		git_repository_free(opened);
+		if (lfs_err != OK) {
+			return lfs_err;
+		}
+		if (hooks_failed) {
+			return fail(vformat("The repository was started, but Git LFS couldn't install its hooks: %s", reason));
 		}
 	}
 	return OK;

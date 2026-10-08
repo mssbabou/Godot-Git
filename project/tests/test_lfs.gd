@@ -151,7 +151,10 @@ func _track_with_lfs() -> void:
 	var r := open(repo)
 	check("staged normally first", r.stage("big.psd") == OK)
 	check("not LFS yet", not r.uses_lfs())
+	# The install above already made the hook; remove it so the check below shows track_with_lfs made it.
+	DirAccess.remove_absolute(repo.path_join(".git/hooks/pre-push"))
 	check("track with LFS", r.track_with_lfs(["*.psd"], ["big.psd"]) == OK, GitRepository.get_last_error())
+	check("track_with_lfs installs the pre-push hook", exists(repo.path_join(".git/hooks/pre-push")))
 	check("the rule is in .gitattributes", read(repo.path_join(".gitattributes")).contains("*.psd filter=lfs diff=lfs merge=lfs -text"), read(repo.path_join(".gitattributes")))
 	check("tracking twice adds no second line", r.track_with_lfs(["*.psd"], ["big.psd"]) == OK and read(repo.path_join(".gitattributes")).count("*.psd") == 1)
 	check("commit", r.commit("Add big.psd") == OK, GitRepository.get_last_error())

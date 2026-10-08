@@ -120,25 +120,15 @@ Error GitRepository::track_with_lfs(const PackedStringArray &p_patterns, const P
 	if (!lfs_installed()) {
 		return fail("Git LFS isn't installed, so files can't be stored with it. Install it from git-lfs.com, then restart the editor.");
 	}
-	const String path = get_workdir().path_join(".gitattributes");
-	String text = FileAccess::file_exists(path) ? FileAccess::get_file_as_string(path) : String();
-	const String newline = text.contains("\r\n") ? String("\r\n") : String("\n");
-	if (!text.is_empty() && !text.ends_with("\n")) {
-		text += newline;
+	// Hooks that couldn't be installed (the repository has its own pre-push hook) don't stop it:
+	// the panel's own push uploads LFS files either way.
+	bool hooks_failed = false;
+	Error err = track_lfs_patterns(repo, p_patterns, hooks_failed);
+	if (err != OK) {
+		return err;
 	}
-	for (const String &pattern : p_patterns) {
-		const String line = vformat("%s filter=lfs diff=lfs merge=lfs -text", pattern);
-		if (!text.contains(line)) {
-			text += line + newline;
-		}
-	}
-	Ref<FileAccess> file = FileAccess::open(path, FileAccess::WRITE);
-	if (file.is_null()) {
-		return fail("Couldn't write .gitattributes.");
-	}
-	file->store_string(text);
-	file.unref();
-	Error err = stage(".gitattributes");
+	git_error_clear();
+	err = stage(".gitattributes");
 	for (int i = 0; err == OK && i < p_paths.size(); i++) {
 		err = stage(p_paths[i]);
 	}

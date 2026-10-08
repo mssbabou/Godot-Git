@@ -335,6 +335,8 @@ class GitDock : public EditorDock {
 	MarginContainer *init_parent_indent = nullptr;
 	Label *init_here_path = nullptr;
 	Label *init_parent_path = nullptr;
+	CheckBox *init_lfs = nullptr;
+	Label *init_lfs_note = nullptr;
 	ConfirmationDialog *remote_dialog = nullptr;
 	LineEdit *remote_url_edit = nullptr;
 	ConfirmationDialog *identity_dialog = nullptr;

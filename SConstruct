@@ -69,7 +69,7 @@ env.Append(CPPPATH=["src/"])
 # Object files go to build/obj/ instead of next to the sources. Their names already carry the
 # platform, target and arch (e.g. .windows.editor.x86_64.obj), so one folder serves all builds.
 env.VariantDir("build/obj", "src", duplicate=False)
-sources = Glob("build/obj/*.cpp", exclude=["build/obj/build_info.cpp"]) + Glob("build/obj/git/*.cpp") + Glob("build/obj/editor/*.cpp")
+sources = Glob("build/obj/*.cpp", exclude=["build/obj/build_info.cpp"]) + Glob("build/obj/git/*.cpp") + Glob("build/obj/scene/*.cpp") + Glob("build/obj/editor/*.cpp")
 
 
 # Where this build comes from (see src/build_info.h). CI builds name their commit and run, which is

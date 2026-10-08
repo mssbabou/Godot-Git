@@ -152,6 +152,13 @@ void GitDock::_build_setup(Control *p_parent) {
 	parent_vb->add_child(init_parent_indent);
 	init_parent_path = make_label(init_parent_indent, String(), width);
 
+	init_lfs = memnew(CheckBox);
+	init_lfs->set_text("Store images, audio and models with Git LFS");
+	init_vb->add_child(init_lfs);
+	MarginContainer *lfs_indent = memnew(MarginContainer); // Its margin is set on showing, like the paths'.
+	init_vb->add_child(lfs_indent);
+	init_lfs_note = make_label(lfs_indent, String(), width);
+
 	make_label(init_vb, "Godot's .gitignore and .gitattributes are added if the project doesn't have them yet. Nothing is committed: your files show up as changes for your first commit.", 440 * scale);
 
 	// Add Remote: only the URL. The repository itself is created on GitHub or elsewhere first.
@@ -214,6 +221,13 @@ void GitDock::_show_init_dialog() {
 	init_here->set_visible(choice);
 	init_question->set_text(choice ? String("Where should the repository start?") : String("The repository starts in the project folder:"));
 	init_here->set_pressed(true);
+	// Off unless asked for: everyone who clones then needs Git LFS too, and hosts limit its storage.
+	const bool lfs = GitRepository::is_lfs_installed();
+	init_lfs->set_pressed(false);
+	init_lfs->set_disabled(!lfs);
+	init_lfs_note->set_text(lfs ? String("Keeps large files out of git's history, so cloning and pulling stay fast. Everyone who clones the project needs Git LFS too, and hosts limit how much LFS storage is free.") : String("Git LFS isn't installed. Get it from git-lfs.com, then restart the editor."));
+	init_lfs_note->add_theme_color_override("font_color", _dim_color());
+	Object::cast_to<MarginContainer>(init_lfs_note->get_parent())->add_theme_constant_override("margin_left", init_lfs->get_theme_icon("unchecked", "CheckBox")->get_width() + init_lfs->get_theme_constant("h_separation", "CheckBox") + init_lfs->get_theme_stylebox("normal", "CheckBox")->get_margin(SIDE_LEFT));
 	// Paths line up with the choices' text: past the radio icon and its gap.
 	const int indent = choice ? init_here->get_theme_icon("radio_unchecked", "CheckBox")->get_width() + init_here->get_theme_constant("h_separation", "CheckBox") + init_here->get_theme_stylebox("normal", "CheckBox")->get_margin(SIDE_LEFT) : 0;
 	for (MarginContainer *margin : { init_here_indent, init_parent_indent }) {
@@ -225,14 +239,21 @@ void GitDock::_show_init_dialog() {
 void GitDock::_on_init_confirmed() {
 	const String here = project_folder();
 	const String folder = init_parent->is_pressed() && init_parent_box->is_visible() ? here.get_base_dir() : here;
-	const Error err = GitRepository::init_repository(folder, here);
+	const bool lfs = init_lfs->is_pressed() && !init_lfs->is_disabled();
+	const Error err = GitRepository::init_repository(folder, here, lfs);
 	if (err != OK) {
+		const String reason = GitRepository::get_last_error();
+		refresh();
+		if (repo->is_open()) {
+			_set_status(STATUS_WARNING, reason); // Started, but Git LFS's hooks couldn't be installed.
+			return;
+		}
 		// The dock has no strip without a repository; a toast is all there is.
-		EditorInterface::get_singleton()->get_editor_toaster()->push_toast(vformat("Git: Couldn't initialize a repository. %s", GitRepository::get_last_error()), EditorToaster::SEVERITY_ERROR);
+		EditorInterface::get_singleton()->get_editor_toaster()->push_toast(vformat("Git: Couldn't initialize a repository. %s", reason), EditorToaster::SEVERITY_ERROR);
 		return;
 	}
 	refresh();
-	_set_status(STATUS_SUCCESS, vformat("Started a repository in %s. Stage your files and commit to begin its history.", folder == here ? String("the project folder") : vformat("%s/, the folder above the project", folder.get_file())));
+	_set_status(STATUS_SUCCESS, vformat("Started a repository in %s%s. Stage your files and commit to begin its history.", folder == here ? String("the project folder") : vformat("%s/, the folder above the project", folder.get_file()), lfs ? String(", with images, audio and models in Git LFS") : String()));
 }
 
 void GitDock::_show_remote_dialog() {

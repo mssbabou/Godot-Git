@@ -1,3 +1,8 @@
+// The scene module (src/scene/): Godot's scene and resource text formats (.tscn, .tres), read,
+// compared and (later) merged. Text in, text or plain data out: it never includes libgit2 or
+// editor classes, so it can be tested without a repository. src/git/ adapts it to the index,
+// src/editor/ shows its results.
+
 #pragma once
 
 #include <godot_cpp/variant/dictionary.hpp>
