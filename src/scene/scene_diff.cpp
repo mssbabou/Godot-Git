@@ -1,5 +1,7 @@
 #include "scene/scene_diff.h"
 
+#include "scene/scene_file.h"
+
 #include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/templates/hash_set.hpp>
 #include <godot_cpp/templates/local_vector.hpp>
@@ -15,126 +17,16 @@ namespace {
 
 constexpr int MAX_VALUE_LENGTH = 160; // Longer values are shortened for display ("…").
 
-// One "key = value" line (the value may span lines: arrays, dictionaries, strings).
-struct Property {
-	String key;
-	String value; // As written.
-};
-
-// One "[tag field=value ...]" and the properties under it.
-struct Entry {
-	String tag; // "gd_scene", "ext_resource", "sub_resource", "node", "connection", "editable", "resource".
-	HashMap<String, String> fields; // As written (strings keep their quotes).
-	LocalVector<Property> properties;
-};
-
-// Where a value starting at p_from ends: at a line break, or (p_in_tag) a space or the tag's "]",
-// outside strings and brackets.
-int value_end(const String &p_text, int p_from, bool p_in_tag) {
-	int depth = 0;
-	bool in_string = false;
-	const int length = p_text.length();
-	for (int i = p_from; i < length; i++) {
-		const char32_t c = p_text[i];
-		if (in_string) {
-			if (c == '\\') {
-				i++;
-			} else if (c == '"') {
-				in_string = false;
-			}
-			continue;
-		}
-		if (c == '"') {
-			in_string = true;
-		} else if (c == '(' || c == '[' || c == '{') {
-			depth++;
-		} else if (c == ')' || c == ']' || c == '}') {
-			if (depth == 0) {
-				return i; // The tag's own "]".
-			}
-			depth--;
-		} else if (depth == 0 && (c == '\n' || (p_in_tag && c == ' '))) {
-			return i;
-		}
-	}
-	return length;
-}
+// The file's sections, through the shared reader (scene_file.h).
+using Property = SceneProperty;
+using Entry = SceneSection;
 
 String unquote(const String &p_value) {
-	String value = p_value.strip_edges();
-	if (value.length() >= 2 && value.begins_with("\"") && value.ends_with("\"")) {
-		value = value.substr(1, value.length() - 2).replace("\\\"", "\"").replace("\\\\", "\\");
-	}
-	return value;
+	return scene_unquote(p_value);
 }
 
 LocalVector<Entry> parse(const String &p_text) {
-	LocalVector<Entry> entries;
-	const String text = p_text.replace("\r\n", "\n");
-	const int length = text.length();
-	int i = 0;
-	while (i < length) {
-		// At the start of a line.
-		while (i < length && (text[i] == ' ' || text[i] == '\t')) {
-			i++;
-		}
-		if (i >= length) {
-			break;
-		}
-		if (text[i] == '\n') {
-			i++;
-			continue;
-		}
-		if (text[i] == ';') { // A comment.
-			const int end = text.find("\n", i);
-			i = end < 0 ? length : end + 1;
-			continue;
-		}
-		if (text[i] == '[') {
-			Entry entry;
-			int at = i + 1;
-			while (at < length && text[at] != ' ' && text[at] != ']' && text[at] != '\n') {
-				at++;
-			}
-			entry.tag = text.substr(i + 1, at - i - 1);
-			while (at < length && text[at] != ']' && text[at] != '\n') {
-				if (text[at] == ' ') {
-					at++;
-					continue;
-				}
-				const int equals = text.find("=", at);
-				if (equals < 0) {
-					break;
-				}
-				const String key = text.substr(at, equals - at).strip_edges();
-				const int end = value_end(text, equals + 1, true);
-				entry.fields[key] = text.substr(equals + 1, end - equals - 1);
-				at = end;
-			}
-			const int line_end = text.find("\n", at);
-			i = line_end < 0 ? length : line_end + 1;
-			entries.push_back(entry);
-			continue;
-		}
-		// "key = value" under the last tag. A name with "=", quotes or spaces in it is written in
-		// quotes (String::property_name_encode), so its "=" comes after the closing quote.
-		const int key_end = text[i] == '"' ? value_end(text, i, true) : i;
-		const int equals = text.find("=", key_end);
-		const int line_end = text.find("\n", key_end);
-		if (equals < 0 || (line_end >= 0 && equals > line_end)) {
-			i = line_end < 0 ? length : line_end + 1; // Not a property.
-			continue;
-		}
-		const int end = value_end(text, equals + 1, false);
-		if (!entries.is_empty()) {
-			Property property;
-			property.key = unquote(text.substr(i, equals - i));
-			property.value = text.substr(equals + 1, end - equals - 1).strip_edges();
-			entries[entries.size() - 1].properties.push_back(property);
-		}
-		i = end + 1;
-	}
-	return entries;
+	return read_scene_file(p_text).sections;
 }
 
 // A scene or resource file, read for comparing.

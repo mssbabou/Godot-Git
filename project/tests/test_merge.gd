@@ -14,6 +14,7 @@ func run() -> void:
 	_staged_refuses()
 	_remote_branch()
 	_nothing_to_merge()
+	_scene_both_sides()
 
 
 ## A repository on main with x.txt, y.txt and z.txt (five lines each), and a branch "feature"
@@ -175,3 +176,31 @@ func _nothing_to_merge() -> void:
 	check("nothing: preview says 0 commits", r.get_merge_preview("feature").commits == 0, r.get_merge_preview("feature"))
 	check("nothing: merge changes nothing", r.merge_branch("feature") == OK and git(repo, ["rev-parse", "HEAD"]) == head)
 	check("nothing: can't merge the current branch", r.merge_branch("main") != OK, GitApi.get_last_error())
+
+
+## A scene (level.tscn) changed on both branches, a node added at the end on each: the scene merge
+## settles it, so the preview lists it under scenes, not conflicts, and the merge commit has both.
+func _scene_both_sides() -> void:
+	var repo := _repo_with_feature("scene")
+	var base := "[gd_scene format=4]\n\n[ext_resource type=\"Script\" path=\"res://player.gd\" id=\"1_a\"]\n\n[node name=\"Root\" type=\"Node2D\" unique_id=100]\nscript = ExtResource(\"1_a\")\n\n[node name=\"A\" type=\"Node2D\" parent=\".\" unique_id=200]\nposition = Vector2(10, 10)\n\n[node name=\"B\" type=\"Node2D\" parent=\".\" unique_id=300]\nposition = Vector2(20, 20)\n"
+	_commit_on_text(repo, "main", "level.tscn", base)
+	git(repo, ["branch", "-f", "feature", "main"])
+	_commit_on(repo, "feature", "level.tscn", base + "\n[node name=\"Feature\" type=\"Node2D\" parent=\".\" unique_id=400]\nposition = Vector2(30, 30)\n")
+	_commit_on(repo, "main", "level.tscn", base + "\n[node name=\"Main\" type=\"Node2D\" parent=\".\" unique_id=500]\nposition = Vector2(40, 40)\n")
+	var r := open(repo)
+	var preview := r.get_merge_preview("feature")
+	check("scene: preview lists the scene, not as a conflict", Array(preview.scenes) == ["level.tscn"] and Array(preview.conflicts).is_empty() and preview.problem == "", preview)
+	check("scene: merge", r.merge_branch("feature") == OK, GitApi.get_last_error())
+	check("scene: reported as settled by the scene merge", Array(r.get_pull_result().scenes) == ["level.tscn"] and Array(r.get_pull_result().conflicts).is_empty(), r.get_pull_result())
+	var text := read(repo.path_join("level.tscn"))
+	check("scene: both nodes in the file", text.contains("name=\"Feature\"") and text.contains("name=\"Main\""), text)
+	check("scene: a merge commit", git(repo, ["rev-list", "--parents", "-n", "1", "HEAD"]).split(" ").size() == 3, git(repo, ["log", "-1", "--format=%s %p"]))
+	check("scene: nothing left over", git(repo, ["status", "--porcelain"]) == "", git(repo, ["status", "--porcelain"]))
+
+
+## Commits p_text as p_file on p_branch, then goes back to main. Text is written as given.
+func _commit_on_text(repo: String, branch: String, file: String, text: String) -> void:
+	git(repo, ["checkout", "-q", branch])
+	write(repo.path_join(file), text)
+	commit_all(repo, "Change %s on %s" % [file, branch])
+	git(repo, ["checkout", "-q", "main"])

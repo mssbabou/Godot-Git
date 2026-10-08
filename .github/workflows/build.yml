@@ -12,6 +12,9 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+  # Weekly, for the job against the newest Godot preview (test-preview below).
+  schedule:
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
@@ -159,6 +162,66 @@ jobs:
 
       # A playground project with the dock and the smoke-test plugin. The first run registers the
       # extension; the second uses the dock and must end with "SMOKE: OK" (a crash never gets there).
+      - name: Smoke test the dock
+        shell: bash
+        run: |
+          python tools/make_playground.py "$RUNNER_TEMP/smoke" --smoke
+          "$GODOT" --headless -e --path "$RUNNER_TEMP/smoke" --quit-after 300 || true
+          "$GODOT" --headless -e --path "$RUNNER_TEMP/smoke" --quit-after 20000 2>&1 | tee smoke.log || true
+          grep -q "SMOKE: OK" smoke.log
+
+  # The tests and the smoke test against the newest Godot preview (dev, beta or rc, from
+  # godotengine/godot-builds), so a change in a coming version shows up months before users hit
+  # it. Above all the scene format: the scene merge leaves files with a newer format= to git's line
+  # merge, and this is where a new format would first show. Weekly and on demand only, and nothing
+  # waits on it (the release needs package and test), so a broken preview never blocks a release;
+  # a failure makes the weekly run red, and GitHub mails it.
+  test-preview:
+    name: Test Godot preview
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Download library
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bin-linux-x86_64
+          path: project/addons/godot_git/bin
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.x"
+
+      - name: Download the newest Godot preview
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api repos/godotengine/godot-builds/releases --jq '[.[] | select(.prerelease)][0].tag_name')
+          echo "Testing against Godot $tag"
+          echo "### Godot $tag" >> "$GITHUB_STEP_SUMMARY"
+          curl -sSfL -o godot.zip "https://github.com/godotengine/godot-builds/releases/download/$tag/Godot_v${tag}_linux.x86_64.zip"
+          mkdir -p godot && unzip -q godot.zip -d godot
+          bin=$(ls godot/Godot_v*_linux.x86_64)
+          chmod +x "$bin"
+          echo "GODOT=$PWD/$bin" >> "$GITHUB_ENV"
+
+      - name: Open project in the editor once
+        shell: bash
+        run: '"$GODOT" --headless -e --path project --quit-after 300'
+
+      - name: Install Git LFS
+        shell: bash
+        run: git lfs version || (sudo apt-get update && sudo apt-get install -y git-lfs)
+
+      - name: Run tests
+        shell: bash
+        run: '"$GODOT" --headless --path project -s res://tests/run_tests.gd'
+
       - name: Smoke test the dock
         shell: bash
         run: |

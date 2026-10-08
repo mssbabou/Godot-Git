@@ -3,6 +3,7 @@
 // two bindings instead of one per method. The editor calls the C++ methods directly and never comes here.
 
 #include "git/git_repository.h"
+#include "scene/scene_merge.h"
 
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -117,6 +118,7 @@ PackedStringArray static_names() {
 	names.push_back("get_last_error");
 	names.push_back("get_libgit2_version");
 	names.push_back("diff_lines");
+	names.push_back("merge_scene");
 	names.push_back("is_git_installed");
 	names.push_back("check_git_installed");
 	names.push_back("set_git_program");
@@ -702,6 +704,13 @@ Variant GitRepository::call_static_api(const String &p_name, const Array &p_args
 			return Variant();
 		}
 		return get_libgit2_version();
+	}
+	// The scene module's merge, for its tests (it has no repository).
+	if (p_name == "merge_scene") {
+		if (!arg_count(p_name, p_args, 3)) {
+			return Variant();
+		}
+		return godot_git::merge_scene(String(p_args[0]), String(p_args[1]), String(p_args[2]));
 	}
 	if (p_name == "diff_lines") {
 		if (!arg_count(p_name, p_args, 2)) {

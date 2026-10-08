@@ -15,6 +15,17 @@
 
 using namespace godot_git;
 
+namespace {
+
+// ". level.tscn merged node by node": conflicted scenes a pull or merge settled on its own
+// (get_pull_result()["scenes"]), said so the change isn't a surprise. "" when there were none.
+String scenes_note(const Dictionary &p_result) {
+	const PackedStringArray scenes = p_result.get("scenes", PackedStringArray());
+	return scenes.is_empty() ? String() : vformat(". %s merged node by node", join_list(scenes, 3));
+}
+
+} // namespace
+
 // Fetch / Pull / Push pressed by the user.
 void GitDock::_start_network(int p_op) {
 	if (!repo->is_open() || queued_op != NETWORK_NONE) {
@@ -316,7 +327,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		case NETWORK_PULL_MERGE:
 			if (!pull_conflicts.is_empty()) {
 				// Stopped at the conflicts, as asked: on to the first one.
-				_set_status(STATUS_SUCCESS, vformat("Pulled from %s: resolve %s under Conflicts%s", p_upstream, plural(pull_conflicts.size(), "file", "files"), String(operation.get("kind", String())) == "merge" ? String(", then commit the merge") : String()));
+				_set_status(STATUS_SUCCESS, vformat("Pulled from %s: resolve %s under Conflicts%s%s", p_upstream, plural(pull_conflicts.size(), "file", "files"), String(operation.get("kind", String())) == "merge" ? String(", then commit the merge") : String(), scenes_note(p_pull_result)));
 				_reload_changed_scenes();
 				_show_conflict(pull_conflicts[0]);
 				break;
@@ -331,7 +342,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			if (commits == 0) {
 				_set_status(STATUS_SUCCESS, vformat("Already up to date with %s", p_upstream));
 			} else if (p_pull_result.get("merged", false)) {
-				_set_status(STATUS_SUCCESS, vformat("Pulled and merged %s from %s%s", plural(commits, "commit", "commits"), p_upstream, kept));
+				_set_status(STATUS_SUCCESS, vformat("Pulled and merged %s from %s%s%s", plural(commits, "commit", "commits"), p_upstream, scenes_note(p_pull_result), kept));
 			} else {
 				_set_status(STATUS_SUCCESS, vformat("Pulled %s from %s%s", plural(commits, "commit", "commits"), p_upstream, kept));
 			}
@@ -376,7 +387,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 		case NETWORK_MERGE_START:
 			if (!pull_conflicts.is_empty()) {
 				// Stopped at the conflicts, as the dialog said: on to the first one.
-				_set_status(STATUS_SUCCESS, vformat("Merging %s into %s: resolve %s under Conflicts%s", network_branch, repo->get_current_branch(), plural(pull_conflicts.size(), "file", "files"), String(operation.get("kind", String())) == "merge" ? String(", then commit the merge") : String()));
+				_set_status(STATUS_SUCCESS, vformat("Merging %s into %s: resolve %s under Conflicts%s%s", network_branch, repo->get_current_branch(), plural(pull_conflicts.size(), "file", "files"), String(operation.get("kind", String())) == "merge" ? String(", then commit the merge") : String(), scenes_note(p_pull_result)));
 				_reload_changed_scenes();
 				_show_conflict(pull_conflicts[0]);
 				break;
@@ -390,7 +401,7 @@ void GitDock::_network_done(int p_op, int p_err, const String &p_message, const 
 			if (commits == 0) {
 				_set_status(STATUS_SUCCESS, vformat("%s has everything on %s already", current, network_branch));
 			} else if (p_pull_result.get("merged", false)) {
-				_set_status(STATUS_SUCCESS, vformat("Merged %s into %s: %s%s", network_branch, current, plural(commits, "commit", "commits"), kept));
+				_set_status(STATUS_SUCCESS, vformat("Merged %s into %s: %s%s%s", network_branch, current, plural(commits, "commit", "commits"), scenes_note(p_pull_result), kept));
 			} else {
 				_set_status(STATUS_SUCCESS, vformat("Merged %s into %s: %s, no merge commit needed%s", network_branch, current, plural(commits, "commit", "commits"), kept));
 			}

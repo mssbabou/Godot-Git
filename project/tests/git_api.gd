@@ -284,6 +284,10 @@ static func get_last_error() -> String:
 static func get_libgit2_version() -> String:
 	return GitRepository.call_static_api("get_libgit2_version", [])
 
+static func merge_scene(base: String, mine: String, theirs: String) -> Dictionary:
+	return GitRepository.call_static_api("merge_scene", [base, mine, theirs])
+
+
 static func diff_lines(old: String, new: String) -> Array:
 	return GitRepository.call_static_api("diff_lines", [old, new])
 

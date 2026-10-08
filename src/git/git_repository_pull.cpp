@@ -20,6 +20,7 @@
 #include "git/git_cli.h"
 #include "git/git_lfs.h"
 #include "git/git_remote_callbacks.h"
+#include "git/git_scene_conflicts.h"
 #include "git/git_util.h"
 
 using namespace godot_git;
@@ -45,6 +46,7 @@ struct MergeOutcome {
 	bool merged = false;
 	PackedStringArray carried;
 	PackedStringArray conflicts;
+	PackedStringArray scenes; // Conflicted scenes the scene merge settled.
 	String notice;
 };
 
@@ -61,8 +63,8 @@ struct CarriedEdit {
 	bool conflicts = false; // It overlaps the pulled changes: comes back as a conflict.
 };
 
-// A three-way merge of one file's contents, the way git merges a file both sides changed.
-// False when it conflicts.
+// A three-way merge of one file's contents, the way git merges a file both sides changed, or,
+// for a scene git can't merge, section by section (git_scene_conflicts.h). False when it conflicts.
 bool merge_text(const String &p_path, const std::string &p_base, const std::string &p_ours, const std::string &p_theirs, std::string &r_merged) {
 	const CharString path = p_path.utf8();
 	const std::string *texts[3] = { &p_base, &p_ours, &p_theirs };
@@ -80,7 +82,7 @@ bool merge_text(const String &p_path, const std::string &p_base, const std::stri
 		r_merged.assign(result.ptr, result.len);
 	}
 	git_merge_file_result_free(&result);
-	return clean;
+	return clean || merge_scene_text(p_path, p_base, p_ours, p_theirs, r_merged);
 }
 
 // The uncommitted files the incoming commits (merge base -> p_theirs) change too, in two groups.
@@ -342,10 +344,11 @@ Error fast_forward(git_repository *p_repo, git_reference *p_head, const git_anno
 	return to_error(err);
 }
 
-// Merges p_theirs into HEAD and commits the result. On conflicts (listed in r_conflicts) the merge
-// is fully undone (hard reset, merge state cleared) and an error returned; or, with
+// Merges p_theirs into HEAD and commits the result. Conflicted scenes the scene merge settles are
+// resolved on their own first (listed in r_scenes). On other conflicts (listed in r_conflicts) the
+// merge is fully undone (hard reset, merge state cleared) and an error returned; or, with
 // p_leave_conflicts, left as git leaves a conflicted merge, for the resolver, and OK returned.
-Error merge_and_commit(git_repository *p_repo, git_reference *p_head, const git_annotated_commit *p_theirs, const MergeWords &p_words, RemoteContext &p_ctx, bool p_leave_conflicts, PackedStringArray &r_conflicts) {
+Error merge_and_commit(git_repository *p_repo, git_reference *p_head, const git_annotated_commit *p_theirs, const MergeWords &p_words, RemoteContext &p_ctx, bool p_leave_conflicts, PackedStringArray &r_conflicts, PackedStringArray &r_scenes) {
 	report_progress(&p_ctx, "Merging...", String(), -1, false);
 	git_merge_options merge_opts = GIT_MERGE_OPTIONS_INIT;
 	git_checkout_options checkout_opts = GIT_CHECKOUT_OPTIONS_INIT;
@@ -370,6 +373,9 @@ Error merge_and_commit(git_repository *p_repo, git_reference *p_head, const git_
 	err = git_repository_index(index.out(), p_repo);
 	const String &message = p_words.message;
 	if (err >= 0 && git_index_has_conflicts(index)) {
+		r_scenes = settle_scene_conflicts(p_repo, index);
+	}
+	if (err >= 0 && git_index_has_conflicts(index)) {
 		IndexConflictIteratorPtr it;
 		if (git_index_conflict_iterator_new(it.out(), index) == 0) {
 			const git_index_entry *ancestor = nullptr, *ours = nullptr, *theirs = nullptr;
@@ -388,6 +394,7 @@ Error merge_and_commit(git_repository *p_repo, git_reference *p_head, const git_
 		git_revparse_single(head_commit.out(), p_repo, "HEAD");
 		git_reset(p_repo, head_commit, GIT_RESET_HARD, nullptr);
 		git_repository_state_cleanup(p_repo);
+		r_scenes.clear(); // Undone with the rest.
 		return fail(vformat("%s: your commits and %s changed the same lines in %s.", p_words.nothing(), p_words.name, name_list(r_conflicts)));
 	}
 
@@ -446,12 +453,12 @@ Error merge_and_commit(git_repository *p_repo, git_reference *p_head, const git_
 // project.godot and scenes) set aside first and put back afterwards, like `git pull --autostash`.
 // That's what lets a conflicting merge be undone completely. r_notice explains if the changes
 // couldn't be put back (a safety net: paths_blocking_pull already rules that out).
-Error merge_with_autostash(git_repository *p_repo, git_reference *p_head, const git_annotated_commit *p_theirs, const MergeWords &p_words, RemoteContext &p_ctx, String &r_notice, PackedStringArray &r_conflicts) {
+Error merge_with_autostash(git_repository *p_repo, git_reference *p_head, const git_annotated_commit *p_theirs, const MergeWords &p_words, RemoteContext &p_ctx, String &r_notice, PackedStringArray &r_conflicts, PackedStringArray &r_scenes) {
 	git_status_options status_opts = GIT_STATUS_OPTIONS_INIT;
 	status_opts.flags = 0; // Tracked files only; untracked files are left where they are.
 	StatusListPtr status;
 	if (git_status_list_new(status.out(), p_repo, &status_opts) != 0 || git_status_list_entrycount(status) == 0) {
-		return merge_and_commit(p_repo, p_head, p_theirs, p_words, p_ctx, false, r_conflicts);
+		return merge_and_commit(p_repo, p_head, p_theirs, p_words, p_ctx, false, r_conflicts, r_scenes);
 	}
 
 	git_oid stash_id;
@@ -464,7 +471,7 @@ Error merge_with_autostash(git_repository *p_repo, git_reference *p_head, const 
 		return to_error(err);
 	}
 
-	const Error result = merge_and_commit(p_repo, p_head, p_theirs, p_words, p_ctx, false, r_conflicts);
+	const Error result = merge_and_commit(p_repo, p_head, p_theirs, p_words, p_ctx, false, r_conflicts, r_scenes);
 	// Keep the merge's own error message: libgit2 may overwrite it while restoring.
 	const String merge_error = result == OK ? String() : GitRepository::get_last_error();
 
@@ -586,9 +593,9 @@ Error merge_into_head(git_repository *p_repo, git_reference *p_head, const git_a
 		} else if (leave_merge) {
 			// Unrelated uncommitted edits stay where they are: git_merge leaves files it doesn't
 			// touch alone.
-			result = merge_and_commit(p_repo, p_head, p_theirs, p_words, ctx, true, merge_conflicts);
+			result = merge_and_commit(p_repo, p_head, p_theirs, p_words, ctx, true, merge_conflicts, r_outcome.scenes);
 		} else {
-			result = merge_with_autostash(p_repo, p_head, p_theirs, p_words, ctx, r_outcome.notice, merge_conflicts);
+			result = merge_with_autostash(p_repo, p_head, p_theirs, p_words, ctx, r_outcome.notice, merge_conflicts, r_outcome.scenes);
 			if (result != OK && !merge_conflicts.is_empty()) {
 				if (!p_start_merge) {
 					r_outcome.conflicts = merge_conflicts; // The panel asks whether to start a merge.
@@ -617,6 +624,7 @@ Error merge_into_head(git_repository *p_repo, git_reference *p_head, const git_a
 	if (result != OK) {
 		r_outcome.commits = 0;
 		r_outcome.merged = false;
+		r_outcome.scenes.clear();
 	}
 	return result;
 }
@@ -733,6 +741,7 @@ Error GitRepository::pull(bool p_start_merge) {
 	pull_merged = outcome.merged;
 	pull_carried = outcome.carried;
 	pull_conflicts = outcome.conflicts;
+	pull_scenes = outcome.scenes;
 	notice = outcome.notice;
 	return result;
 }
@@ -791,6 +800,7 @@ Error GitRepository::merge_branch(const String &p_branch, bool p_start_merge) {
 	pull_merged = outcome.merged;
 	pull_carried = outcome.carried;
 	pull_conflicts = outcome.conflicts;
+	pull_scenes = outcome.scenes;
 	notice = outcome.notice;
 	return result;
 }
@@ -918,6 +928,12 @@ Dictionary GitRepository::get_merge_preview(const String &p_branch) const {
 					commit_conflicts.push_back(String::utf8(entry->path));
 				}
 			}
+			// Scenes the merge would settle on its own aren't conflicts to you.
+			const PackedStringArray scenes = settleable_scenes(repo, merged);
+			for (const String &scene : scenes) {
+				commit_conflicts.erase(scene);
+			}
+			result["scenes"] = scenes;
 		}
 		git_error_clear();
 		if (!commit_conflicts.is_empty() && (!carried.empty() || has_staged_changes(repo))) {
@@ -939,13 +955,15 @@ Dictionary GitRepository::get_merge_preview(const String &p_branch) const {
 // How the last pull() or merge_branch() went: { "commits": int (commits it brought in), "merged": bool (made a
 // merge commit rather than fast-forwarding), "carried": the files whose uncommitted edits it
 // merged into the new versions, "conflicts": the files that conflict: after a refusal, what a
-// merge would stop at; after pull(true) or merge_branch(.., true), what it stopped at }.
+// merge would stop at; after pull(true) or merge_branch(.., true), what it stopped at, "scenes":
+// conflicted scenes it merged section by section on its own (scene_merge.h) }.
 Dictionary GitRepository::get_pull_result() const {
 	Dictionary result;
 	result["commits"] = pulled_commits;
 	result["merged"] = pull_merged;
 	result["carried"] = pull_carried;
 	result["conflicts"] = pull_conflicts;
+	result["scenes"] = pull_scenes;
 	return result;
 }
 
