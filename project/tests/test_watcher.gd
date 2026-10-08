@@ -18,6 +18,10 @@ func run() -> void:
 	var watcher := GitWatcher.new()
 	check("start", watcher.start(repo, _on_changed) == OK and watcher.is_watching())
 	await _settle()
+	# macOS can still deliver the commit above (.git/refs/heads/main) after starting: fseventsd
+	# numbers events when it gets to them, so "since now" lets a just-earlier one through. Harmless
+	# for the dock (one more refresh at startup), but not what this check is about.
+	reports.clear()
 
 	write(repo.path_join("a.txt"), "a2\n")
 	write(repo.path_join("sub/b.txt"), "b2\n")
