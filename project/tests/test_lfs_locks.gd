@@ -22,11 +22,18 @@ func run() -> void:
 	if python.is_empty():
 		print("  (skipped; Python isn't installed)")
 		return
-	var port := 40000 + randi() % 20000
-	server_pid = OS.create_process(python, [ProjectSettings.globalize_path("res://tests/fake_lfs_lock_server.py"), str(port)])
-	# Up when it accepts a connection (a fixed wait was too short on CI's macOS runner).
+	# The server picks a free port itself and writes it to this file.
+	var port_file := dir.path_join("lfs_server_port")
+	server_pid = OS.create_process(python, [ProjectSettings.globalize_path("res://tests/fake_lfs_lock_server.py"), port_file])
+	var port := 0
+	for attempt in 200:
+		if FileAccess.file_exists(port_file):
+			port = FileAccess.get_file_as_string(port_file).strip_edges().to_int()
+			break
+		OS.delay_msec(100)
+	# Up when it accepts a connection (it writes the file once it listens, so this is quick).
 	var up := false
-	for attempt in 100:
+	for attempt in (100 if port > 0 else 0):
 		var peer := StreamPeerTCP.new()
 		if peer.connect_to_host("127.0.0.1", port) == OK:
 			for i in 10:

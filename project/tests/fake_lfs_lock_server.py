@@ -2,10 +2,14 @@
 for test_lfs_locks.gd: git lfs lock / unlock / locks talk to it as they would to GitHub's.
 Every lock made through it belongs to "you"; one lock, by "alice", exists from the start.
 
-    python fake_lfs_lock_server.py <port>
+    python fake_lfs_lock_server.py <port file>
+
+It listens on a free port the system picks and writes the number to <port file> once it does: a
+port the test picked could be taken or reserved (Windows runners reserve ranges for Hyper-V).
 """
 
 import json
+import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -69,4 +73,9 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+server = HTTPServer(("127.0.0.1", 0), Handler)
+# Written whole and then renamed, so the test never reads half a number.
+with open(sys.argv[1] + ".tmp", "w") as port_file:
+    port_file.write(str(server.server_address[1]))
+os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+server.serve_forever()
